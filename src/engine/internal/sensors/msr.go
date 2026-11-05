@@ -7,19 +7,18 @@ type MSR interface {
 	Read(reg int64) (uint64, error)
 }
 
-// PackageEnergyJoules is the package's energy counter in joules: MSR 0x611's low 32 bits times
-// the unit 1/2^((MSR 0x606 >> 8) & 0x1F). The counter wraps; report it as a Prometheus counter.
-func PackageEnergyJoules(m MSR) (float64, error) {
+// PackageEnergy is the package's energy counter: MSR 0x611's low 32 bits, in units of
+// 1/2^((MSR 0x606 >> 8) & 0x1F) joules. The counter wraps; the Collector accumulates across it.
+func PackageEnergy(m MSR) (raw uint32, joulesPerUnit float64, err error) {
 	units, err := m.Read(0x606)
 	if err != nil {
-		return 0, fmt.Errorf("msr 0x606: %w", err)
+		return 0, 0, fmt.Errorf("msr 0x606: %w", err)
 	}
-	raw, err := m.Read(0x611)
+	v, err := m.Read(0x611)
 	if err != nil {
-		return 0, fmt.Errorf("msr 0x611: %w", err)
+		return 0, 0, fmt.Errorf("msr 0x611: %w", err)
 	}
-	unit := 1 / float64(uint64(1)<<((units>>8)&0x1F))
-	return float64(raw&0xFFFFFFFF) * unit, nil
+	return uint32(v), 1 / float64(uint64(1)<<((units>>8)&0x1F)), nil
 }
 
 // CStateLimit is MSR 0xE2's package C-state limit (bits 0-3) and its lock (bit 15).

@@ -65,13 +65,13 @@ func TestFanOutputs(t *testing.T) {
 }
 
 func TestPackageEnergy(t *testing.T) {
-	j, err := PackageEnergyJoules(fakeMSR{0x606: 0x000A0E03, 0x611: 16384})
-	if err != nil || j != 1.0 {
-		t.Fatalf("got %v, %v", j, err)
+	raw, unit, err := PackageEnergy(fakeMSR{0x606: 0x000A0E03, 0x611: 16384})
+	if err != nil || raw != 16384 || unit != 1.0/16384 {
+		t.Fatalf("got %v, %v, %v", raw, unit, err)
 	}
-	j, _ = PackageEnergyJoules(fakeMSR{0x606: 0x000A0E03, 0x611: 1<<32 | 16384})
-	if j != 1.0 {
-		t.Fatalf("only the low 32 bits count, got %v", j)
+	raw, _, _ = PackageEnergy(fakeMSR{0x606: 0x000A0E03, 0x611: 1<<32 | 16384})
+	if raw != 16384 {
+		t.Fatalf("only the low 32 bits count, got %v", raw)
 	}
 }
 
@@ -189,5 +189,41 @@ func TestDirBytesSkipsWhatVanishesMidWalk(t *testing.T) {
 	}
 	if err := add("/d/x", vanished{}, fs.ErrPermission); err == nil {
 		t.Fatal("other errors must still fail")
+	}
+}
+
+// The 32-bit energy MSR wraps every few hours; sensord accumulates across it, so the counter only
+// resets when sensord restarts.
+func TestCollectorAccumulatesEnergyAcrossTheWrap(t *testing.T) {
+	msr := fakeMSR{0x606: 0x000A0E03, 0x611: 1<<32 - 16384, 0xE2: 0x8000} // unit 1/16384 J
+	c := &Collector{Port: &fakePort{regs: map[byte]byte{}}, MSR: msr, RAPLDir: t.TempDir(),
+		StorageEvery: time.Minute, Now: time.Now}
+	path := filepath.Join(t.TempDir(), "s.prom")
+	energy := func() string {
+		t.Helper()
+		if err := c.WriteTextfile(path); err != nil {
+			t.Fatal(err)
+		}
+		b, _ := os.ReadFile(path)
+		for _, line := range strings.Split(string(b), "\n") {
+			if strings.HasPrefix(line, "concierge_package_energy_joules_total ") {
+				return strings.TrimPrefix(line, "concierge_package_energy_joules_total ")
+			}
+		}
+		return "missing"
+	}
+	if got := energy(); got != "262143" {
+		t.Fatalf("first reading: %s", got)
+	}
+	msr[0x611] = 16384 // wrapped: 2 J later
+	if got := energy(); got != "262145" {
+		t.Fatalf("after the wrap: %s", got)
+	}
+	c.MSR = deadMSR{}
+	c.WriteTextfile(path)
+	c.MSR = msr
+	msr[0x611] = 3 * 16384
+	if got := energy(); got != "262147" {
+		t.Fatalf("after a failed read: %s", got)
 	}
 }

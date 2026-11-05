@@ -124,7 +124,8 @@ A small Go daemon that exposes what no standard exporter can read. Every 10 s it
 - **The fan outputs' state**: modes `0x15`–`0x17`, manual PWM `0x63`/`0x6B`/`0x73`. Shown as
   "output 1 manual 0%", "output 2 automatic", etc.
 - **Package energy**, as a counter in joules from `MSR 0x611` (`PKG_ENERGY_STATUS`, unit from
-  `MSR 0x606`), so Prometheus can turn it into watts.
+  `MSR 0x606`), so Prometheus can turn it into watts. The MSR is 32 bits and wraps every few hours;
+  sensord accumulates across the wrap, so the counter resets only when sensord restarts.
 - **Power limits in force**: `constraint_{0,1}_power_limit_uw` under
   `/sys/class/powercap/intel-rapl:0/`.
 - **Package C-state limit and its lock** (`MSR 0xE2`), so the page shows whether the #14 fix is in.

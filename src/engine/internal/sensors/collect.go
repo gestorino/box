@@ -22,6 +22,9 @@ type Collector struct {
 	storageAt   time.Time
 	storageLast map[string]float64
 	failing     map[string]bool
+	energy      uint64 // the package's energy in MSR units, accumulated across the MSR's wraps
+	energyLast  uint32 // the MSR's last good reading
+	energySeen  bool
 }
 
 // note logs a source's failure once per streak and clears the streak on success.
@@ -88,10 +91,17 @@ func (c *Collector) WriteTextfile(path string) error {
 			pwm.WithLabelValues(o).Set(f.ManualPWM)
 		}
 	}
-	if j, err := PackageEnergyJoules(c.MSR); c.note("package energy", err) {
+	if raw, unit, err := PackageEnergy(c.MSR); c.note("package energy", err) {
+		if c.energySeen {
+			c.energy += uint64(raw - c.energyLast) // mod 2^32: one wrap between reads is counted
+		} else {
+			c.energy, c.energySeen = uint64(raw), true
+		}
+		c.energyLast = raw
+		j := float64(c.energy) * unit
 		reg.MustRegister(prometheus.NewCounterFunc(prometheus.CounterOpts{
 			Name: "concierge_package_energy_joules_total",
-			Help: "The package's energy counter, in joules (32 bits: it wraps).",
+			Help: "The package's energy, in joules, accumulated across the 32-bit MSR's wraps (resets when sensord restarts).",
 		}, func() float64 { return j }))
 	}
 	if limit, locked, err := CStateLimit(c.MSR); c.note("c-state limit", err) {
