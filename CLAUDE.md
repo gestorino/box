@@ -335,6 +335,22 @@ docs/superpowers/  current design docs (specs/); implementation plans (plans/) a
   `GET /<name>/unread` plus a mark-read POST; opening marks read; a read the box owes a service is
   stored pending and retried; groups and channels are never counted or told. Console: `<UnreadPill>`,
   `useMarkRead`. Design: `docs/superpowers/specs/2026-10-31-unread-badges-design.md`.
+- **Health** — `/health` graphs the box's load, memory, storage, heat and power per service over 30 days,
+  with errands, sign-in runs, calls and reboots as bands. Prometheus 2.53 (Ubuntu package) on
+  127.0.0.1:9090 (10 s scrape, 30 d retention) scrapes node_exporter :9100 (with the textfile
+  directory), process-exporter :9256 (grouped by service user) and the engine's activity endpoint
+  127.0.0.1:9110 (`-metrics-addr`). The nftables table `inet concierge_metrics` lets only `concierge`
+  and `prometheus` connect to those four ports; `concierge-metrics-firewall.service` loads it and the
+  worker Requires it. **`cmd/sensord` + `internal/sensors/`** reads what no exporter can: the board
+  temps, fan outputs, package energy, power limits, C-state lock and storage per service (secretd's
+  directory is not sized: sensord can't see it). Own user, CAP_SYS_RAWIO + CAP_DAC_READ_SEARCH, no
+  network, kept out of secretd's directory, the worker's profiles, /etc/shadow and /etc/ssh; never
+  root, and its only hardware write is the IT8784 index port. calld writes `concierge-modem.prom`
+  (modem temperature once a minute, never during a call; active calls). The engine's
+  `/api/v1/health/{now,panels,events}` sit behind the login and serve named panels only, never raw
+  PromQL; event bands span the 30 d from the activity series. No per-service disk I/O (it would need
+  ptrace). Console: uPlot, `--series-1..10` and `--event-band` tokens. Design:
+  `docs/superpowers/specs/2026-11-05-health-design.md`.
 - **`src/ui/`** — the console: React 19 + Vite + React Router, Tailwind CSS v4, shadcn/ui (Radix)
   components copied into `src/components/ui/`, lucide icons, system fonts, vitest + Testing
   Library. **`docs/STYLE-GUIDE.md` binds every screen**: semantic tokens from

@@ -128,8 +128,9 @@ A small Go daemon that exposes what no standard exporter can read. Every 10 s it
 - **Power limits in force**: `constraint_{0,1}_power_limit_uw` under
   `/sys/class/powercap/intel-rapl:0/`.
 - **Package C-state limit and its lock** (`MSR 0xE2`), so the page shows whether the #14 fix is in.
-- **Storage used per service**: the size of each service's state directory and of the recordings
-  directory, re-measured every 5 minutes, not every 10 s.
+- **Storage used per service**: the size of every service's state directory except secretd's (ruling
+  R12: sensord can't see it, by design) and of the recordings directory, re-measured every 5
+  minutes, not every 10 s.
 
 Its own user `concierge-sensors`, never root. It holds only what `/dev/port` and
 `/dev/cpu/*/msr` need: `CAP_SYS_RAWIO`, `DeviceAllow` for those devices, the `msr` module loaded at
