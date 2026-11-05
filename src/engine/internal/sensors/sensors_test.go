@@ -135,7 +135,7 @@ func TestCollectorWritesAndKeepsStorage(t *testing.T) {
 		`concierge_fan_output_automatic{output="2"} 1`,
 		`concierge_fan_output_manual_pwm_ratio{output="1"} 0`,
 		`# TYPE concierge_package_energy_joules_total counter`,
-		`concierge_package_energy_joules_total 1`,
+		`concierge_package_energy_joules_total 0`, // the first reading starts at 0
 		`concierge_power_limit_watts{limit="long_term"} 15`,
 		`concierge_power_limit_watts{limit="short_term"} 20`,
 		`concierge_package_cstate_limit 0`,
@@ -193,7 +193,8 @@ func TestDirBytesSkipsWhatVanishesMidWalk(t *testing.T) {
 }
 
 // The 32-bit energy MSR wraps every few hours; sensord accumulates across it, so the counter only
-// resets when sensord restarts.
+// resets when sensord restarts, and then to 0: starting at the MSR's raw value would read, after a
+// restart past a wrap, as a reset followed by a jump of up to 2^32 units (a false spike in kW).
 func TestCollectorAccumulatesEnergyAcrossTheWrap(t *testing.T) {
 	msr := fakeMSR{0x606: 0x000A0E03, 0x611: 1<<32 - 16384, 0xE2: 0x8000} // unit 1/16384 J
 	c := &Collector{Port: &fakePort{regs: map[byte]byte{}}, MSR: msr, RAPLDir: t.TempDir(),
@@ -212,18 +213,18 @@ func TestCollectorAccumulatesEnergyAcrossTheWrap(t *testing.T) {
 		}
 		return "missing"
 	}
-	if got := energy(); got != "262143" {
+	if got := energy(); got != "0" {
 		t.Fatalf("first reading: %s", got)
 	}
 	msr[0x611] = 16384 // wrapped: 2 J later
-	if got := energy(); got != "262145" {
+	if got := energy(); got != "2" {
 		t.Fatalf("after the wrap: %s", got)
 	}
 	c.MSR = deadMSR{}
 	c.WriteTextfile(path)
 	c.MSR = msr
 	msr[0x611] = 3 * 16384
-	if got := energy(); got != "262147" {
+	if got := energy(); got != "4" {
 		t.Fatalf("after a failed read: %s", got)
 	}
 }

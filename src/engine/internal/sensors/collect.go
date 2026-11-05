@@ -92,16 +92,14 @@ func (c *Collector) WriteTextfile(path string) error {
 		}
 	}
 	if raw, unit, err := PackageEnergy(c.MSR); c.note("package energy", err) {
-		if c.energySeen {
+		if c.energySeen { // the first reading starts the counter at 0
 			c.energy += uint64(raw - c.energyLast) // mod 2^32: one wrap between reads is counted
-		} else {
-			c.energy, c.energySeen = uint64(raw), true
 		}
-		c.energyLast = raw
+		c.energyLast, c.energySeen = raw, true
 		j := float64(c.energy) * unit
 		reg.MustRegister(prometheus.NewCounterFunc(prometheus.CounterOpts{
 			Name: "concierge_package_energy_joules_total",
-			Help: "The package's energy, in joules, accumulated across the 32-bit MSR's wraps (resets when sensord restarts).",
+			Help: "The package's energy, in joules, accumulated across the 32-bit MSR's wraps since sensord started (from 0).",
 		}, func() float64 { return j }))
 	}
 	if limit, locked, err := CStateLimit(c.MSR); c.note("c-state limit", err) {
