@@ -36,13 +36,13 @@ const CONSOLE: NavItem[] = [
   { to: '/errands', label: 'Errands', icon: ClipboardCheck },
   { to: '/appointments', label: 'Appointments', icon: CalendarClock },
   { to: '/logs', label: 'Logs', icon: ScrollText },
-  { to: '/health', label: 'Health', icon: Activity },
 ]
 const SYSTEM: NavItem[] = [
   { to: '/account', label: 'Account', icon: UserRound },
   { to: '/ai', label: 'AI', icon: Sparkles },
   { to: '/settings', label: 'Settings', icon: Settings },
   { to: '/style-guide', label: 'Style guide', icon: Palette },
+  { to: '/health', label: 'Health', icon: Activity },
 ]
 
 export function AppSidebar() {
