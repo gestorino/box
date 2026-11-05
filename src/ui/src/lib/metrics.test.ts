@@ -15,6 +15,11 @@ describe('parseRange', () => {
   it('reads a quick range', () => {
     expect(parseRange(new URLSearchParams('range=24h'))).toEqual({ kind: 'quick', quick: '24h' })
   })
+  it('ignores a range named after an inherited property', () => {
+    for (const name of ['constructor', 'toString', '__proto__']) {
+      expect(parseRange(new URLSearchParams(`range=${name}`))).toEqual({ kind: 'quick', quick: '6h' })
+    }
+  })
   it('reads a custom pair', () => {
     vi.useFakeTimers().setSystemTime(NOW * 1000)
     const p = new URLSearchParams(`from=${NOW - 7200}&to=${NOW - 3600}`)

@@ -97,7 +97,7 @@ export function customRange(from: number, to: number, now: number): Range | null
 
 export function parseRange(params: URLSearchParams): Range {
   const quick = params.get('range')
-  if (quick !== null && quick in QUICK_SECONDS) return { kind: 'quick', quick: quick as Quick }
+  if (quick !== null && Object.hasOwn(QUICK_SECONDS, quick)) return { kind: 'quick', quick: quick as Quick }
   const from = params.get('from')
   const to = params.get('to')
   if (from && to) return customRange(Number(from), Number(to), Math.floor(Date.now() / 1000)) ?? DEFAULT_RANGE
