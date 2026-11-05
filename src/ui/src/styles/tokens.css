@@ -65,6 +65,21 @@
   --chart-4: var(--status-attention);
   --chart-5: var(--status-failed);
 
+  /* Series: categorical data on the Health graphs, never a status. Five hues clear of the status
+   * colours (no blue, green, red, and never the attention amber), each in two lightnesses. */
+  --series-1: oklch(0.55 0.12 190);
+  --series-2: oklch(0.55 0.18 305);
+  --series-3: oklch(0.6 0.12 225);
+  --series-4: oklch(0.6 0.18 345);
+  --series-5: oklch(0.6 0.13 115);
+  --series-6: oklch(0.72 0.1 190);
+  --series-7: oklch(0.72 0.13 305);
+  --series-8: oklch(0.42 0.1 225);
+  --series-9: oklch(0.75 0.12 345);
+  --series-10: oklch(0.45 0.1 115);
+  /* The box's activity (errands, sign-ins, calls) behind a graph's series: one neutral shade. */
+  --event-band: oklch(0.94 0 0);
+
   /* The page an email's own HTML is drawn on: white in both themes — senders design for it. */
   --email-canvas: oklch(1 0 0);
   --sidebar: oklch(0.97 0 0);
@@ -109,6 +124,18 @@
     --status-waiting-foreground: oklch(0.87 0.01 258);
     --status-done-foreground: oklch(0.87 0.14 154);
     --status-failed-foreground: oklch(0.81 0.11 20);
+
+    --series-1: oklch(0.75 0.12 190);
+    --series-2: oklch(0.72 0.16 305);
+    --series-3: oklch(0.75 0.11 225);
+    --series-4: oklch(0.75 0.15 345);
+    --series-5: oklch(0.78 0.13 115);
+    --series-6: oklch(0.6 0.1 190);
+    --series-7: oklch(0.58 0.15 305);
+    --series-8: oklch(0.87 0.07 225);
+    --series-9: oklch(0.6 0.14 345);
+    --series-10: oklch(0.88 0.1 115);
+    --event-band: oklch(0.27 0 0);
 
     --sidebar: oklch(0.18 0 0);
     --sidebar-foreground: oklch(0.96 0 0);
@@ -186,6 +213,17 @@
   --color-chart-3: var(--chart-3);
   --color-chart-4: var(--chart-4);
   --color-chart-5: var(--chart-5);
+  --color-series-1: var(--series-1);
+  --color-series-2: var(--series-2);
+  --color-series-3: var(--series-3);
+  --color-series-4: var(--series-4);
+  --color-series-5: var(--series-5);
+  --color-series-6: var(--series-6);
+  --color-series-7: var(--series-7);
+  --color-series-8: var(--series-8);
+  --color-series-9: var(--series-9);
+  --color-series-10: var(--series-10);
+  --color-event-band: var(--event-band);
 
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);

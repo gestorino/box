@@ -30,6 +30,12 @@ const DIFF = [
   { name: 'diff-changed', className: 'bg-diff-changed', use: 'A line a difference changed' },
 ]
 
+// The Health graphs' colours: a line per series, and the activity behind them.
+const SERIES = [
+  'bg-series-1', 'bg-series-2', 'bg-series-3', 'bg-series-4', 'bg-series-5',
+  'bg-series-6', 'bg-series-7', 'bg-series-8', 'bg-series-9', 'bg-series-10',
+]
+
 const STATUS_SOLID: Record<string, string> = {
   running: 'bg-status-running',
   attention: 'bg-status-attention',
@@ -91,6 +97,26 @@ export function StyleGuide() {
               </div>
             </div>
           ))}
+        </div>
+      </Section>
+
+      <Section title="Series" description="Categorical data on the Health graphs, never a status. Activity is one neutral band behind them.">
+        <div className="space-y-3">
+          <div className="grid grid-cols-5 gap-2 sm:grid-cols-10">
+            {SERIES.map((c, i) => (
+              <div key={c} className="space-y-1">
+                <div className={`h-8 rounded-md ${c}`} />
+                <p className="font-mono text-xs">series-{i + 1}</p>
+              </div>
+            ))}
+          </div>
+          <div className="overflow-hidden rounded-lg border">
+            <div className="h-8 bg-event-band" />
+            <div className="space-y-0.5 p-3">
+              <p className="font-mono text-xs">event-band</p>
+              <p className="text-xs text-muted-foreground">An errand, sign-in or call behind a graph; hover names it</p>
+            </div>
+          </div>
         </div>
       </Section>
 

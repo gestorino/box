@@ -3,23 +3,21 @@ import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
 import { formatValue, type HealthEvent, type Panel } from '@/lib/metrics'
 
-// One Health graph: uPlot draws the series, and the box's activity over them as shaded bands.
-// Colours are the tokens' (tokens.css), read when the chart is drawn, so it follows the theme.
+// One Health graph: uPlot draws the series over the box's activity, shown as neutral bands.
+// Colours are the tokens' (tokens.css), read when the chart is built, so it follows the theme.
 
 const HEIGHT = 200
-const SERIES_TOKENS = ['--chart-1', '--chart-2', '--chart-3', '--chart-4', '--chart-5']
-const KIND_TOKENS: Record<HealthEvent['kind'], string> = {
-  errand: '--chart-1',
-  signin: '--chart-2',
-  call: '--chart-3',
-  reboot: '--chart-5',
-}
-const BAND_ALPHA = 0.18
-/** A band is never thinner than this, in CSS px: a reboot (start = end) is a thin marker line. */
+const SERIES_TOKENS = Array.from({ length: 10 }, (_, i) => `--series-${i + 1}`)
+const seriesToken = (i: number) => SERIES_TOKENS[i % SERIES_TOKENS.length]
+/** The letter at a wide band's top. A reboot is a dashed line instead. */
+const INITIAL: Record<Exclude<HealthEvent['kind'], 'reboot'>, string> = { errand: 'E', signin: 'S', call: 'C' }
+/** A band is never thinner than this, in CSS px. */
 const MIN_BAND = 2
+/** A band this wide (CSS px) carries its kind's initial. */
+const LABELLED_BAND = 12
 /** How far beside a band the pointer still names it, in CSS px. */
 const HIT_SLACK = 2
-/** A press that moved further than this is a drag (a zoom), not a click. */
+/** A press that moves this far (CSS px) is a drag (a zoom), not a click: uPlot's `drag.dist`. */
 const CLICK_SLOP = 3
 
 const token = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim()
@@ -42,6 +40,17 @@ function stack(series: Panel['series'], length: number): (number | null)[][] {
   )
 }
 
+const plotData = (p: Panel): uPlot.AlignedData =>
+  [p.times, ...(p.stacked ? stack(p.series, p.times.length) : p.series.map((s) => s.values))] as uPlot.AlignedData
+
+/** What takes a new uPlot rather than new data. */
+const shapeOf = (p: Panel) => JSON.stringify([p.unit, p.stacked, p.series.map((s) => s.name), p.lines])
+
+function inRange(u: uPlot, e: HealthEvent): boolean {
+  const { min, max } = u.scales.x
+  return min != null && max != null && e.start <= max && (e.end ?? max) >= min
+}
+
 /** Where a band lies over the plot, in CSS px from its left edge: at least MIN_BAND wide. */
 function span(u: uPlot, e: HealthEvent): { left: number; width: number } {
   const left = u.valToPos(e.start, 'x')
@@ -51,6 +60,7 @@ function span(u: uPlot, e: HealthEvent): { left: number; width: number } {
 
 function bandAt(u: uPlot, events: HealthEvent[], x: number): HealthEvent | null {
   for (let i = events.length - 1; i >= 0; i--) {
+    if (!inRange(u, events[i])) continue
     const { left, width } = span(u, events[i])
     if (x >= left - HIT_SLACK && x <= left + width + HIT_SLACK) return events[i]
   }
@@ -66,14 +76,18 @@ export function HealthChart(props: {
   const { panel, events } = props
   const frame = useRef<HTMLDivElement>(null)
   const host = useRef<HTMLDivElement>(null)
-  // The callbacks change on every render of the page; the chart reads the current ones.
-  const handlers = useRef(props)
+  const plot = useRef<uPlot | null>(null)
+  /** The panel whose readings the chart holds. */
+  const shown = useRef<Panel | null>(null)
+  // The chart outlives renders: its hooks and listeners read the current props.
+  const latest = useRef(props)
   useLayoutEffect(() => {
-    handlers.current = props
+    latest.current = props
   })
   const [cursor, setCursor] = useState<number | null>(null)
   const [hover, setHover] = useState<{ event: HealthEvent; x: number } | null>(null)
   const [theme, setTheme] = useState(0)
+  const shape = shapeOf(panel)
 
   useEffect(() => {
     const dark = window.matchMedia('(prefers-color-scheme: dark)')
@@ -82,38 +96,70 @@ export function HealthChart(props: {
     return () => dark.removeEventListener('change', change)
   }, [])
 
+  // A new uPlot only when the panel's shape or the theme changes: new readings go through setData,
+  // so the cursor, the tooltip and a drag in progress survive a refresh.
   useEffect(() => {
     const el = host.current
     if (!el) return
-    const colors = panel.series.map((_, i) => token(SERIES_TOKENS[i % SERIES_TOKENS.length]))
-    const kinds = Object.fromEntries(Object.entries(KIND_TOKENS).map(([k, t]) => [k, token(t)]))
-    const axis = { stroke: token('--muted-foreground'), grid: { stroke: token('--border') }, ticks: { stroke: token('--border') } }
+    const p = latest.current.panel
+    let live = true
+    const colors = p.series.map((_, i) => token(seriesToken(i)))
+    const band = token('--event-band')
+    const quiet = token('--muted-foreground')
+    const axis = { stroke: quiet, grid: { stroke: token('--border') }, ticks: { stroke: token('--border') } }
     const family = token('--font-system') || 'system-ui'
     const font = `11px ${family}`
-    const values = panel.stacked ? stack(panel.series, panel.times.length) : panel.series.map((s) => s.values)
-    const lineValues = panel.lines.map((l) => l.value)
+    const lineValues = p.lines.map((l) => l.value)
 
-    const draw = (u: uPlot) => {
+    // Under the series: one neutral band per event, its kind's initial on top; a reboot is a dashed line.
+    const drawBands = (u: uPlot) => {
       const ctx = u.ctx
       const px = uPlot.pxRatio
       const { left, top, width, height } = u.bbox
+      const clamp = (v: number) => Math.min(Math.max(v * px + left, left), left + width)
       ctx.save()
-      for (const e of events) {
+      ctx.font = `${10 * px}px ${family}`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'top'
+      for (const e of latest.current.events) {
+        if (!inRange(u, e)) continue
         const b = span(u, e)
-        const clamp = (v: number) => Math.min(Math.max(v * px + left, left), left + width)
+        if (e.kind === 'reboot') {
+          const x = clamp(b.left)
+          ctx.strokeStyle = quiet
+          ctx.lineWidth = px
+          ctx.setLineDash([3 * px, 3 * px])
+          ctx.beginPath()
+          ctx.moveTo(x, top)
+          ctx.lineTo(x, top + height)
+          ctx.stroke()
+          ctx.setLineDash([])
+          continue
+        }
         const x0 = clamp(b.left)
         const w = Math.max(clamp(b.left + b.width) - x0, MIN_BAND * px)
         const x = Math.min(x0, left + width - w)
-        ctx.globalAlpha = BAND_ALPHA
-        ctx.fillStyle = kinds[e.kind]
+        ctx.fillStyle = band
         ctx.fillRect(x, top, w, height)
+        if (w >= LABELLED_BAND * px) {
+          ctx.fillStyle = quiet
+          ctx.fillText(INITIAL[e.kind], x + w / 2, top + 2 * px)
+        }
       }
-      ctx.globalAlpha = 1
-      ctx.strokeStyle = axis.stroke
-      ctx.fillStyle = axis.stroke
+      ctx.restore()
+    }
+
+    // Over the series: the panel's lines, dashed, with their names.
+    const drawLines = (u: uPlot) => {
+      const ctx = u.ctx
+      const px = uPlot.pxRatio
+      const { left, width } = u.bbox
+      ctx.save()
+      ctx.strokeStyle = quiet
+      ctx.fillStyle = quiet
       ctx.lineWidth = px
       ctx.font = `${11 * px}px ${family}`
-      for (const l of panel.lines) {
+      for (const l of p.lines) {
         const y = u.valToPos(l.value, 'y', true)
         ctx.setLineDash([6 * px, 4 * px])
         ctx.beginPath()
@@ -131,14 +177,16 @@ export function HealthChart(props: {
         width: el.clientWidth || 600,
         height: HEIGHT,
         legend: { show: false },
-        cursor: { drag: { x: true, y: false, setScale: false } },
+        cursor: { drag: { x: true, y: false, setScale: false, dist: CLICK_SLOP } },
         scales: lineValues.length
           ? {
-              // Keep the lines in view: the scale reaches them even when the series stay below.
+              // Keep the lines in view: the scale reaches them even when the series stay below,
+              // or have no readings at all.
               y: {
                 range: (_u, min, max) => {
-                  const lo = Math.min(min, ...lineValues)
-                  const hi = Math.max(max, ...lineValues)
+                  const seen = [...lineValues, ...[min, max].filter((v): v is number => v != null)]
+                  const lo = Math.min(...seen)
+                  const hi = Math.max(...seen)
                   const pad = (hi - lo) * 0.1 || 1
                   return [lo - pad, hi + pad]
                 },
@@ -147,55 +195,59 @@ export function HealthChart(props: {
           : {},
         axes: [
           { ...axis, font },
-          { ...axis, font, size: 70, values: (_u, splits) => splits.map((v) => formatValue(v, panel.unit)) },
+          { ...axis, font, size: 70, values: (_u, splits) => splits.map((v) => formatValue(v, p.unit)) },
         ],
         series: [
           {},
-          ...panel.series.map((s, i) => ({
+          ...p.series.map((s, i) => ({
             label: s.name,
             stroke: colors[i],
             width: 1.5,
             spanGaps: false,
-            ...(panel.stacked ? { fill: translucent(colors[i], 0.35) } : {}),
+            ...(p.stacked ? { fill: translucent(colors[i], 0.35) } : {}),
           })),
         ],
-        bands: panel.stacked ? panel.series.slice(1).map((_, i) => ({ series: [i + 2, i + 1] as [number, number] })) : [],
+        bands: p.stacked ? p.series.slice(1).map((_, i) => ({ series: [i + 2, i + 1] as [number, number] })) : [],
         hooks: {
-          draw: [draw],
+          drawClear: [drawBands],
+          draw: [drawLines],
           setCursor: [(u) => setCursor(u.cursor.idx ?? null)],
           setSelect: [
             (u) => {
-              if (u.select.width <= 0) return
-              const from = Math.round(u.posToVal(u.select.left, 'x'))
-              const to = Math.round(u.posToVal(u.select.left + u.select.width, 'x'))
+              const { left, width } = u.select
+              if (!live || width <= 0) return
               u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false)
-              handlers.current.onZoom(from, to)
+              const from = Math.round(u.posToVal(left, 'x'))
+              const to = Math.round(u.posToVal(left + width, 'x'))
+              if (width < CLICK_SLOP || to <= from) return
+              latest.current.onZoom(from, to)
             },
           ],
         },
       },
-      [panel.times, ...values],
+      plotData(p),
       el,
     )
+    plot.current = u
+    shown.current = p
 
     const over = u.over
     const at = (e: MouseEvent) => e.clientX - over.getBoundingClientRect().left
     let pressed: number | null = null
     const move = (e: MouseEvent) => {
-      const x = at(e)
-      const band = bandAt(u, events, x)
-      over.style.cursor = band?.link ? 'pointer' : ''
-      setHover(band ? { event: band, x: e.clientX - (frame.current?.getBoundingClientRect().left ?? 0) } : null)
+      const b = bandAt(u, latest.current.events, at(e))
+      over.style.cursor = b?.link ? 'pointer' : ''
+      setHover(b ? { event: b, x: e.clientX - (frame.current?.getBoundingClientRect().left ?? 0) } : null)
     }
     const leave = () => setHover(null)
     const down = (e: MouseEvent) => { pressed = at(e) }
     const click = (e: MouseEvent) => {
       const x = at(e)
-      const dragged = pressed !== null && Math.abs(x - pressed) > CLICK_SLOP
+      const dragged = pressed !== null && Math.abs(x - pressed) >= CLICK_SLOP
       pressed = null
       if (dragged) return
-      const band = bandAt(u, events, x)
-      if (band?.link) handlers.current.onOpen(band.link)
+      const b = bandAt(u, latest.current.events, x)
+      if (b?.link) latest.current.onOpen(b.link)
     }
     over.addEventListener('mousemove', move)
     over.addEventListener('mouseleave', leave)
@@ -205,16 +257,30 @@ export function HealthChart(props: {
     const resize = new ResizeObserver(() => u.setSize({ width: el.clientWidth, height: HEIGHT }))
     resize.observe(el)
     return () => {
+      live = false
       resize.disconnect()
       over.removeEventListener('mousemove', move)
       over.removeEventListener('mouseleave', leave)
       over.removeEventListener('mousedown', down)
       over.removeEventListener('click', click)
       u.destroy()
+      plot.current = null
+      shown.current = null
       setCursor(null)
       setHover(null)
     }
-  }, [panel, events, theme])
+  }, [shape, theme])
+
+  useEffect(() => {
+    if (plot.current && shown.current !== panel) {
+      plot.current.setData(plotData(panel))
+      shown.current = panel
+    }
+  }, [panel])
+
+  useEffect(() => {
+    plot.current?.redraw(false)
+  }, [events])
 
   const idx = cursor ?? panel.times.length - 1
   return (
@@ -235,8 +301,8 @@ export function HealthChart(props: {
         {panel.series.map((s, i) => {
           const none = s.values.every((v) => v === null)
           return (
-            <li key={s.name} className="flex items-center gap-1.5">
-              <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: `var(${SERIES_TOKENS[i % SERIES_TOKENS.length]})` }} />
+            <li key={i} className="flex items-center gap-1.5">
+              <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: `var(${seriesToken(i)})` }} />
               <span>{s.name}</span>{' '}
               <span className="text-muted-foreground tabular-nums">
                 {none ? '— no readings' : formatValue(s.values[idx] ?? null, panel.unit)}

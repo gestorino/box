@@ -33,6 +33,8 @@ A new need gets a new token in `tokens.css`, with a comment saying what it is fo
 | `border` | hairlines between things |
 | `status-*` | a run's status (below), and only that |
 | `diff-added`, `diff-removed`, `diff-changed` | the tint behind a line of a difference, always with a word and an icon |
+| `series-1` … `series-10` | series: categorical data, never a status — a line per series on the Health graphs; hues clear of the status colours, never the attention amber |
+| `event-band` | the box's activity (an errand, sign-in or call) as one neutral band behind a graph's series; hovering names it |
 
 Light and dark follow the system setting (`prefers-color-scheme`). There is no theme toggle and no
 `.dark` class; the `dark:` variant in components means "the system is dark".
