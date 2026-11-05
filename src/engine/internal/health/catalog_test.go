@@ -26,7 +26,9 @@ func TestStep(t *testing.T) {
 func TestPanelsCatalog(t *testing.T) {
 	f, q, _ := newFake(t)
 	h := Handler(q, nil, nil)
-	service := []string{"cpu", "memory", "disk_io", "storage"}
+	// No per-service disk I/O: process-exporter would need ptrace over every process to read
+	// another user's /proc/<pid>/io. The overview's box-wide disk I/O is node_exporter's.
+	service := []string{"cpu", "memory", "storage"}
 	want := map[string][]string{
 		"overview": {"cpu_by_service", "memory_by_service", "temperatures", "power", "clock", "storage_by_service", "disk_io"},
 		"hardware": {"power", "clock", "temp_cpu", "temp_board", "temp_disk", "temp_wifi", "temp_modem", "load"},
@@ -61,6 +63,9 @@ func TestPanelsCatalog(t *testing.T) {
 		}
 		mentioned := false
 		for _, query := range f.asked() {
+			if strings.Contains(query, "_bytes_total") && strings.Contains(query, "namedprocess") {
+				t.Errorf("%s: asks for a service's disk I/O: %s", tab, query)
+			}
 			if strings.Contains(query, "namedprocess") {
 				if !strings.Contains(query, `groupname="`+user+`"`) {
 					t.Errorf("%s: query not limited to %s: %s", tab, user, query)

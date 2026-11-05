@@ -103,12 +103,11 @@ const (
 	cstateLock = `concierge_package_cstate_locked`
 	storage    = `concierge_storage_bytes`
 
-	// process-exporter, grouped by user; %s is the groupname matcher.
+	// process-exporter, grouped by user; %s is the groupname matcher. No disk I/O: another user's
+	// /proc/<pid>/io needs ptrace over every process, which process-exporter is not given.
 	groupCPU    = `100 * sum by (groupname) (rate(namedprocess_namegroup_cpu_seconds_total{%s}[$w])) / ` + cpus
 	groupMemNow = `sum by (groupname) (namedprocess_namegroup_memory_bytes{memtype="resident",%s})`
 	groupMemory = `sum by (groupname) (avg_over_time(namedprocess_namegroup_memory_bytes{memtype="resident",%s}[$step]))`
-	groupRead   = `sum by (groupname) (rate(namedprocess_namegroup_read_bytes_total{%s}[$w]))`
-	groupWrite  = `sum by (groupname) (rate(namedprocess_namegroup_write_bytes_total{%s}[$w]))`
 	groupProcs  = `sum by (groupname) (namedprocess_namegroup_num_procs{%s})`
 )
 
@@ -195,9 +194,6 @@ func service(tab string) tabDef {
 		panels: []panel{
 			{id: "cpu", title: "CPU", unit: Percent, series: mine(groupCPU)},
 			{id: "memory", title: "Memory", unit: Bytes, series: mine(groupMemory)},
-			{id: "disk_io", title: "Disk I/O", unit: BytesPerSecond, series: []source{
-				{name: "Read", expr: fmt.Sprintf(groupRead, match)}, {name: "Write", expr: fmt.Sprintf(groupWrite, match)},
-			}},
 			{id: "storage", title: "Storage", unit: Bytes, series: []source{{name: label, expr: stored}}},
 		},
 	}

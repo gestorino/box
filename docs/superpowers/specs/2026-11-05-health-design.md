@@ -95,7 +95,8 @@ side-channel fix, so package power comes from sensord (below).
 
 ### 3. process-exporter (Ubuntu package `prometheus-process-exporter`)
 
-CPU, resident memory, disk read/write and process count **per service**. Every daemon already runs
+CPU, resident memory and process count **per service** (no disk read/write: another user's
+`/proc/<pid>/io` needs ptrace over every process, refused 2026-11-05). Every daemon already runs
 as its own user (`ansible/group_vars/all.yml`), so the grouping is by user:
 
 | User | Tab |
@@ -202,7 +203,7 @@ Layout A as the owner chose it:
   - a current-state block: fan outputs, power limits, C-state limit and lock
 - **Service tab**:
   - tiles: CPU %, memory, storage used, running or not
-  - graphs: CPU, memory, disk read/write, storage used
+  - graphs: CPU, memory, storage used
   - only that service's own events: Browser shows runs and errands, Calls shows calls
 
 Charts: **uPlot** (npm), my call: small, fast with thousands of points, made for time series. It is
