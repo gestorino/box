@@ -5,6 +5,7 @@ import { AiPage } from '@/pages/ai'
 import { Connections } from '@/pages/connections'
 import { ConnectorSetupPage } from '@/pages/connector-setup'
 import { ConnectorsPage } from '@/pages/connectors'
+import { HealthPage } from '@/pages/health'
 import { Logs } from '@/pages/logs'
 import { NotFound } from '@/pages/not-found'
 import { PageError } from '@/pages/page-error'
@@ -61,6 +62,8 @@ export const routes: RouteObject[] = [
           { path: 'account', element: <AccountPage />, ...page('Account') },
           { path: 'ai', element: <AiPage />, ...page('AI') },
           { path: 'logs', element: <Logs />, ...page('Logs') },
+          { path: 'health', element: <HealthPage />, ...page('Health') },
+          { path: 'health/:tab', element: <HealthPage />, ...page('Health') },
           { path: 'connectors', element: <ConnectorsPage />, ...page('Connectors') },
           { path: 'connectors/:name/setup', element: <ConnectorSetupPage />, ...page('Connectors') },
           { path: 'voice', element: <VoicePage />, ...page('Voice') },

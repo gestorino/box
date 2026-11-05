@@ -23,6 +23,8 @@ describe('routes', () => {
     ['/errands/runs/7', 'Errand 7'],
     ['/appointments', 'Appointments'],
     ['/logs', 'Logs'],
+    ['/health', 'Health'],
+    ['/health/hardware', 'Health'],
     ['/ai', 'AI'],
     ['/voice', 'Voice'],
     ['/sms', 'SMS'],
@@ -54,6 +56,11 @@ describe('routes', () => {
     expect(await screen.findByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/settings')
   })
 
+  it('the sidebar links to Health', async () => {
+    at('/')
+    expect(await screen.findByRole('link', { name: 'Health' })).toHaveAttribute('href', '/health')
+  })
+
   it('the sidebar links to AI', async () => {
     at('/')
     expect(await screen.findByRole('link', { name: 'AI' })).toHaveAttribute('href', '/ai')
@@ -71,7 +78,7 @@ describe('routes', () => {
     stubFetch({ 'GET /api/v1/connectors': { body: connectors(['sms', 'email', 'telegram']) } })
     render(<RouterProvider router={createMemoryRouter(routes, { initialEntries: ['/'] })} />)
     expect(await screen.findByRole('link', { name: 'SMS' })).toBeInTheDocument()
-    expect(sections(group('Console'))).toEqual([['Overview', 'Connections', 'Accounts', 'Errands', 'Appointments', 'Logs']])
+    expect(sections(group('Console'))).toEqual([['Overview', 'Connections', 'Accounts', 'Errands', 'Appointments', 'Logs', 'Health']])
     expect(sections(group('System'))).toEqual([['Account', 'AI', 'Settings', 'Style guide']])
     expect(sections(group('Connectors'))).toEqual([['Email'], ['SMS'], ['Telegram']])
     expect(group('Connectors').querySelectorAll('[data-sidebar="separator"]')).toHaveLength(2)
