@@ -1,6 +1,12 @@
 package calls
 
-import "testing"
+import (
+	"context"
+	"sync/atomic"
+	"syscall"
+	"testing"
+	"time"
+)
 
 func TestATReply(t *testing.T) {
 	for buf, want := range map[string]string{
@@ -48,5 +54,50 @@ func TestParseQTEMP(t *testing.T) {
 func TestATText(t *testing.T) {
 	if got := atText([]byte("AT+QTEMP\r\r\n+QTEMP: 34,35,33\r\n\r\nOK\r\n")); got != "+QTEMP: 34,35,33" {
 		t.Fatalf("%q", got)
+	}
+}
+
+// exclusivePort stands in for the EC25's AT port as go.bug.st/serial opens it (TIOCEXCL): a second
+// open while one is held fails with EBUSY. It answers OK after a short wait.
+type exclusivePort struct {
+	held  *atomic.Bool
+	wrote []byte
+	reads int
+}
+
+func (p *exclusivePort) ResetInputBuffer() error            { return nil }
+func (p *exclusivePort) SetReadTimeout(time.Duration) error { return nil }
+func (p *exclusivePort) Write(b []byte) (int, error) {
+	p.wrote = append(p.wrote, b...)
+	return len(b), nil
+}
+func (p *exclusivePort) Close() error { p.held.Store(false); return nil }
+func (p *exclusivePort) Read(b []byte) (int, error) {
+	p.reads++
+	if p.reads == 1 {
+		time.Sleep(50 * time.Millisecond) // the modem thinking
+		return 0, nil
+	}
+	return copy(b, "\r\nOK\r\n"), nil
+}
+
+// Every use of the AT port waits for the one before it, so a call's Route never fails because a
+// temperature query holds the port.
+func TestATUsesSerialise(t *testing.T) {
+	var held atomic.Bool
+	defer func(open func() (atPort, error)) { openATPort = open }(openATPort)
+	openATPort = func() (atPort, error) {
+		if !held.CompareAndSwap(false, true) {
+			return nil, syscall.EBUSY
+		}
+		return &exclusivePort{held: &held}, nil
+	}
+	errs := make(chan error, 2)
+	go func() { _, err := ModemTemperature(context.Background()); errs <- err }()
+	go func() { errs <- modemAudio{}.Route(context.Background()) }()
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("a concurrent AT use failed: %v", err)
+		}
 	}
 }

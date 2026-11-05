@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"go.bug.st/serial"
@@ -75,13 +76,33 @@ func at(ctx context.Context, command string) error {
 	return err
 }
 
-// atQuery is at, returning the reply's text before the final OK.
-func atQuery(ctx context.Context, command string) (string, error) {
+// atPort is what atQuery uses of the serial port.
+type atPort interface {
+	ResetInputBuffer() error
+	SetReadTimeout(time.Duration) error
+	Write([]byte) (int, error)
+	Read([]byte) (int, error)
+	Close() error
+}
+
+// openATPort opens the EC25's spare AT port, exclusively (go.bug.st/serial sets TIOCEXCL).
+var openATPort = func() (atPort, error) {
 	ports, _ := filepath.Glob(atPortGlob)
 	if len(ports) == 0 {
-		return "", errors.New("no EC25 AT port")
+		return nil, errors.New("no EC25 AT port")
 	}
-	port, err := serial.Open(ports[0], &serial.Mode{BaudRate: 115200})
+	return serial.Open(ports[0], &serial.Mode{BaudRate: 115200})
+}
+
+// atMu serialises every use of the AT port: it opens exclusively, so a Route arriving while a
+// temperature query holds the port waits (at most atTimeout) instead of failing with EBUSY.
+var atMu sync.Mutex
+
+// atQuery is at, returning the reply's text before the final OK.
+func atQuery(ctx context.Context, command string) (string, error) {
+	atMu.Lock()
+	defer atMu.Unlock()
+	port, err := openATPort()
 	if err != nil {
 		return "", err
 	}
