@@ -75,8 +75,8 @@ func TestPanelsCatalog(t *testing.T) {
 }
 
 // TestGaugesAggregateOverTheStep pins that a graph's gauge points summarise their whole step
-// (max for heat and load, average for memory and clock), with the step itself as the window,
-// while a tile reads the gauge's current value.
+// (max for heat and load, average for memory and clock), over max(step, 20 s), while a tile reads
+// the gauge's current value.
 func TestGaugesAggregateOverTheStep(t *testing.T) {
 	f, q, _ := newFake(t)
 	h := Handler(q)
@@ -95,31 +95,38 @@ func TestGaugesAggregateOverTheStep(t *testing.T) {
 		"node_load":                           "max_over_time(node_load",
 	}
 	for _, tab := range []string{"overview", "hardware", "whatsapp"} {
-		// 1 h: the step is 10 s, below the 30 s rate window, so only the step can give [10s].
-		f.forget()
-		getRaw(t, h, "/api/v1/health/panels?tab="+tab+"&from=1700000000&to=1700003600")
-		seen := 0
-		for _, query := range f.asked() {
-			if !isGauge(query) {
-				continue
-			}
-			seen++
-			if !strings.Contains(query, "[10s]") {
-				t.Errorf("%s graph: window is not the step: %s", tab, query)
-			}
-			for g, agg := range want {
-				if strings.Contains(query, g) && !strings.Contains(query, agg) {
-					t.Errorf("%s graph: %s not under %s: %s", tab, g, agg, query)
+		for _, r := range []struct{ to, window string }{
+			// 1 h: a 10 s step; the window is 20 s, so a late or missed scrape leaves no gap
+			// (ranges are left-open) and the rates' 30 s floor isn't what sets it.
+			{"1700003600", "[20s]"},
+			// 24 h: a 180 s step, wider than 20 s, so the window is the step itself.
+			{"1700086400", "[180s]"},
+		} {
+			f.forget()
+			getRaw(t, h, "/api/v1/health/panels?tab="+tab+"&from=1700000000&to="+r.to)
+			seen := 0
+			for _, query := range f.asked() {
+				if !isGauge(query) {
+					continue
+				}
+				seen++
+				if !strings.Contains(query, r.window) {
+					t.Errorf("%s graph to %s: window is not %s: %s", tab, r.to, r.window, query)
+				}
+				for g, agg := range want {
+					if strings.Contains(query, g) && !strings.Contains(query, agg) {
+						t.Errorf("%s graph: %s not under %s: %s", tab, g, agg, query)
+					}
+				}
+				if strings.Contains(query, "node_cpu_scaling_frequency_hertz") &&
+					!strings.Contains(query, "avg(avg_over_time(node_cpu_scaling_frequency_hertz") &&
+					!strings.Contains(query, "max(max_over_time(node_cpu_scaling_frequency_hertz") {
+					t.Errorf("%s graph: clock not aggregated over the step: %s", tab, query)
 				}
 			}
-			if strings.Contains(query, "node_cpu_scaling_frequency_hertz") &&
-				!strings.Contains(query, "avg(avg_over_time(node_cpu_scaling_frequency_hertz") &&
-				!strings.Contains(query, "max(max_over_time(node_cpu_scaling_frequency_hertz") {
-				t.Errorf("%s graph: clock not aggregated over the step: %s", tab, query)
+			if seen == 0 {
+				t.Errorf("%s: no gauge graph queried", tab)
 			}
-		}
-		if seen == 0 {
-			t.Errorf("%s: no gauge graph queried", tab)
 		}
 
 		f.forget()

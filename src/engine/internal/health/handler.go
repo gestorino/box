@@ -195,7 +195,6 @@ func (h handler) panels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	step := Step(from, to)
-	window := rateWindow(step)
 	times := []int64{}
 	for t := from; !t.After(to); t = t.Add(step) {
 		times = append(times, t.Unix())
@@ -206,7 +205,7 @@ func (h handler) panels(w http.ResponseWriter, r *http.Request) {
 		pj := panelJSON{ID: p.id, Title: p.title, Unit: p.unit, Stacked: p.stacked, Times: times,
 			Series: []seriesJSON{}, Lines: []lineJSON{}}
 		for _, src := range p.series {
-			got, err := h.q.Range(r.Context(), expand(src.expr, window, step), from, to, step)
+			got, err := h.q.Range(r.Context(), expand(src.expr, rateWindow(step), gaugeWindow(step)), from, to, step)
 			if err != nil {
 				unavailable(w, err)
 				return
@@ -260,7 +259,7 @@ func align(points []Point, from time.Time, step time.Duration, n int) []*float64
 func parseRange(r *http.Request) (from, to time.Time, ok bool) {
 	f, err1 := strconv.ParseInt(r.URL.Query().Get("from"), 10, 64)
 	t, err2 := strconv.ParseInt(r.URL.Query().Get("to"), 10, 64)
-	if err1 != nil || err2 != nil || f >= t || t-f > int64(maxRange/time.Second) {
+	if err1 != nil || err2 != nil || f < 0 || f >= t || t-f > int64(maxRange/time.Second) {
 		return time.Time{}, time.Time{}, false
 	}
 	return time.Unix(f, 0), time.Unix(t, 0), true

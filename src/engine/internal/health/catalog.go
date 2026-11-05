@@ -54,7 +54,7 @@ type panel struct {
 }
 
 // A source is one PromQL expression and the name of the series it gives, or, when it gives one
-// series per label value, nameBy to name each. `$w` in expr is the rate window, `$step` the step.
+// series per label value, nameBy to name each. `$w` in expr is the rate window, `$step` the gauge window.
 type source struct {
 	name   string
 	expr   string
@@ -69,8 +69,9 @@ type tabDef struct {
 
 // PromQL. Every `rate` reads over `$w`, which the handler sets to the graph's step (at least 30 s),
 // so a point averages its whole step instead of sampling 30 s of it. A graph's gauge reads over
-// `$step`, exactly the step: heat and load as the step's max, memory and clock as its average, so a
-// 30-day graph still shows a spike between its points. A tile reads a gauge's current value.
+// `$step`, the step but at least 20 s: heat and load as the step's max, memory and clock as its
+// average, so a 30-day graph still shows a spike between its points. A tile reads a gauge's current
+// value.
 const (
 	cpus     = `scalar(count(node_cpu_seconds_total{mode="idle"}))`
 	boxCPU   = `100 * sum(rate(node_cpu_seconds_total{mode!~"idle|iowait"}[$w])) / ` + cpus
@@ -278,8 +279,13 @@ func Step(from, to time.Time) time.Duration {
 // rateWindow is what `$w` stands for: the step, at least 30 s so a rate always has three samples.
 func rateWindow(step time.Duration) time.Duration { return max(step, 30*time.Second) }
 
+// gaugeWindow is what `$step` stands for: the step, at least 20 s. A range is left-open, (t-w, t],
+// so a 10 s window would hold no sample whenever a scrape is late or missed, and the graph would
+// show a gap that isn't there.
+func gaugeWindow(step time.Duration) time.Duration { return max(step, 20*time.Second) }
+
 // expand sets an expression's windows: `$w` (rates) and `$step` (a graph's gauges).
-func expand(expr string, rateWindow, step time.Duration) string {
+func expand(expr string, rateWindow, gaugeWindow time.Duration) string {
 	secs := func(d time.Duration) string { return strconv.FormatInt(int64(d/time.Second), 10) + "s" }
-	return strings.NewReplacer("$step", secs(step), "$w", secs(rateWindow)).Replace(expr)
+	return strings.NewReplacer("$step", secs(gaugeWindow), "$w", secs(rateWindow)).Replace(expr)
 }
