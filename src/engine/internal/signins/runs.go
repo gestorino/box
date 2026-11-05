@@ -191,6 +191,50 @@ func (s *Store) Runs(ctx context.Context, site string) ([]Run, error) {
 	return out, rows.Err()
 }
 
+// Running is every run still running, oldest first.
+func (s *Store) Running(ctx context.Context) ([]Run, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+runColumns+runTables+` WHERE r.state = 'running' ORDER BY r.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Run{}
+	for rows.Next() {
+		r, err := scanRun(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// RunsByID is the existing runs among ids; an id of a pruned run is absent.
+func (s *Store) RunsByID(ctx context.Context, ids []int64) (map[int64]Run, error) {
+	out := map[int64]Run{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	marks := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	rows, err := s.db.QueryContext(ctx, `SELECT `+runColumns+runTables+` WHERE r.id IN (`+marks+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		r, err := scanRun(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out[r.ID] = r
+	}
+	return out, rows.Err()
+}
+
 // Run is one run of the site with its lines in order; found is false for an id of another site.
 func (s *Store) Run(ctx context.Context, site string, id int64) (Run, []RunLine, bool, error) {
 	r, err := scanRun(s.db.QueryRowContext(ctx, `SELECT `+runColumns+runTables+` WHERE r.id = ? AND r.site = ?`, id, site).Scan)

@@ -179,3 +179,45 @@ func TestTheEmailsLinkOrCodeIsSaidInTheConversation(t *testing.T) {
 		}
 	}
 }
+
+func TestRunning(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTestStore(t)
+	a, _ := s.StartRun(ctx, shopKey, "errand", runT0)
+	b, _ := s.StartRun(ctx, shopKey, "check", runT0.Add(time.Hour))
+	c, _ := s.StartRun(ctx, "other.test", "errand", runT0.Add(2*time.Hour))
+	if err := s.EndRun(ctx, b, runT0.Add(3*time.Hour), "signed_in", ""); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := s.Running(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 2 || runs[0].ID != a || runs[1].ID != c {
+		t.Fatalf("running = %+v", runs)
+	}
+	if runs[0].Kind != "errand" || runs[0].Site != shopKey || runs[1].Site != "other.test" {
+		t.Fatalf("kind/site = %+v", runs)
+	}
+}
+
+func TestRunsByID(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTestStore(t)
+	a, _ := s.StartRun(ctx, shopKey, "errand", runT0)
+	b, _ := s.StartRun(ctx, "other.test", "check", runT0)
+	got, err := s.RunsByID(ctx, []int64{a, b, 999})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[a].Kind != "errand" || got[b].Site != "other.test" {
+		t.Fatalf("got %+v", got)
+	}
+	if _, ok := got[999]; ok {
+		t.Fatal("a pruned id is present")
+	}
+	none, err := s.RunsByID(ctx, nil)
+	if err != nil || len(none) != 0 {
+		t.Fatalf("empty ids: %v %v", none, err)
+	}
+}
