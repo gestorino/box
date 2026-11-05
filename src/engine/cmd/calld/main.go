@@ -49,6 +49,7 @@ func run() error {
 	secretsSocket := flag.String("secrets-socket", "", "secretd's socket, where the owner's OpenAI key is kept (required)")
 	settingsSocket := flag.String("settings-socket", "/run/concierge-hostd/settings.sock", "hostd's read-only settings socket")
 	listen := flag.String("listen", "", "a Unix socket path when not socket-activated (development)")
+	textfileDir := flag.String("textfile-dir", "", "where node_exporter's textfile collector reads concierge-modem.prom (empty: off)")
 	flag.Parse()
 	if *secretsSocket == "" {
 		return errors.New("no secrets socket: pass -secrets-socket")
@@ -129,6 +130,11 @@ func run() error {
 		defer cancel()
 		settings.Refresh(ctx)
 		return settings.Owner()
+	}
+	if *textfileDir != "" {
+		metrics := &calls.MetricsWriter{Dir: *textfileDir, Live: archive.Live, Now: time.Now,
+			QTemp: calls.ModemTemperature}
+		go metrics.Run(ctx)
 	}
 	caller := calls.NewCaller(modem, calls.NewAudio(), calls.NewDuplex(), archiver.Hold, archiver.Keep, callsKeep, tmp, 45*time.Second, 500*time.Millisecond)
 	srv := &http.Server{Handler: calls.NewHandler(ctx, archive, caller, ai, voice, owner), Protocols: h2c.Protocols(), ReadHeaderTimeout: 10 * time.Second}

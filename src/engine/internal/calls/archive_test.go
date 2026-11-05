@@ -1,6 +1,7 @@
 package calls
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -297,5 +298,24 @@ func TestOldCallsStartSeen(t *testing.T) {
 	defer a.Close()
 	if n, err := a.Unseen(ctx); err != nil || n != 0 {
 		t.Fatalf("unseen %d, %v", n, err)
+	}
+}
+
+func TestArchiveLive(t *testing.T) {
+	a := openTest(t, t0)
+	ctx := context.Background()
+	ringing, _ := a.Start(ctx, "+351911111111", "outgoing", t0)
+	talking, _ := a.Start(ctx, "+351922222222", "incoming", t0)
+	if err := a.End(ctx, talking, t0, "in-progress"); err != nil {
+		t.Fatal(err)
+	}
+	ended, _ := a.Start(ctx, "+351933333333", "outgoing", t0)
+	if err := a.End(ctx, ended, t0, "answered"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.Live(ctx)
+	want := []LiveCall{{ringing, "outgoing"}, {talking, "incoming"}}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("%v %v, want %v", got, err, want)
 	}
 }

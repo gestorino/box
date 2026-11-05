@@ -203,6 +203,30 @@ func (a *Archive) CloseLive(ctx context.Context, at time.Time) error {
 	return err
 }
 
+// LiveCall is a call in progress: ringing or answered.
+type LiveCall struct {
+	ID        int64
+	Direction string
+}
+
+// Live are the calls that have not ended, oldest first.
+func (a *Archive) Live(ctx context.Context) ([]LiveCall, error) {
+	rows, err := a.db.QueryContext(ctx, `SELECT id, direction FROM calls WHERE outcome IN ('ringing', 'in-progress') ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LiveCall
+	for rows.Next() {
+		var c LiveCall
+		if err := rows.Scan(&c.ID, &c.Direction); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // Calls are the newest `limit` calls, newest first.
 func (a *Archive) Calls(ctx context.Context, limit int) ([]CallRecord, error) {
 	rows, err := a.db.QueryContext(ctx, `SELECT id, number, direction, started_at, answered_at, ended_at, outcome, summary, result, prompt, usage,

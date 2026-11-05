@@ -26,9 +26,27 @@ func TestATReply(t *testing.T) {
 	}
 }
 
-// The AT port is touched for routing the call's audio and nothing else.
-func TestATCommandsAreOnlyAudioRouting(t *testing.T) {
-	if atRoute != "AT+QPCMV=1,2" || atUnroute != "AT+QPCMV=0" {
-		t.Fatalf("%q %q", atRoute, atUnroute)
+// The AT port is touched for routing the call's audio and reading the temperature, nothing else.
+func TestATCommandsAreOnlyAudioRoutingAndTemperature(t *testing.T) {
+	if atRoute != "AT+QPCMV=1,2" || atUnroute != "AT+QPCMV=0" || atTemp != "AT+QTEMP" {
+		t.Fatalf("%q %q %q", atRoute, atUnroute, atTemp)
+	}
+}
+
+func TestParseQTEMP(t *testing.T) {
+	pmic, xo, pa, err := parseQTEMP("\r\n+QTEMP: 34,35,33\r\n")
+	if err != nil || pmic != 34 || xo != 35 || pa != 33 {
+		t.Fatalf("%v %v %v %v", pmic, xo, pa, err)
+	}
+	for _, bad := range []string{"+QTEMP: x", "", "+QTEMP: 1,2", "34,35,33"} {
+		if _, _, _, err := parseQTEMP(bad); err == nil {
+			t.Errorf("%q: no error", bad)
+		}
+	}
+}
+
+func TestATText(t *testing.T) {
+	if got := atText([]byte("AT+QTEMP\r\r\n+QTEMP: 34,35,33\r\n\r\nOK\r\n")); got != "+QTEMP: 34,35,33" {
+		t.Fatalf("%q", got)
 	}
 }
