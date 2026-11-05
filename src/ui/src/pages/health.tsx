@@ -14,7 +14,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { NetworkError } from '@/lib/http'
 import {
-  AUTO_REFRESH_MS, autoRefreshes, fetchEvents, fetchNow, fetchPanels, formatValue, parseRange, rangeParams, resolve, TABS,
+  AUTO_REFRESH_MS, autoRefreshes, customRange, fetchEvents, fetchNow, fetchPanels, formatValue, parseRange, rangeParams, resolve, RETENTION_SECONDS, TABS,
   type HardwareState, type HealthEvent, type HealthNow, type HealthTab, type Panel, type Quick, type Range, type Tile,
 } from '@/lib/metrics'
 
@@ -22,7 +22,6 @@ import {
 // the tiles now and the graphs over the range with the box's activity as bands.
 
 const QUICKS: Quick[] = ['15m', '1h', '6h', '24h', '7d', '30d']
-const RETENTION_SECONDS = 30 * 86400
 
 const TILE_ICONS: Record<string, LucideIcon> = {
   cpu: Cpu, memory: MemoryStick, disk: HardDrive, storage: HardDrive, cpu_temp: Thermometer, board_temp_max: Thermometer, power: Zap, clock: Gauge,
@@ -35,7 +34,8 @@ export function HealthPage() {
   const location = useLocation()
   const navigate = useNavigate()
   const [search, setSearch] = useSearchParams()
-  const rangeKey = rangeParams(parseRange(search)).toString()
+  // Parsed once per URL: a clamped custom start would otherwise move with the clock on every render.
+  const rangeKey = search.toString()
   const range = useMemo(() => parseRange(new URLSearchParams(rangeKey)), [rangeKey])
   const tab = TABS.find((t) => t.id === (params.tab ?? 'overview'))
   const [attempt, setAttempt] = useState(0)
@@ -185,18 +185,17 @@ function RangePicker({ range, onPick }: { range: Range; onPick: (r: Range) => vo
   const [to, setTo] = useState('')
   const openCustom = () => {
     const r = resolve(range, Math.floor(Date.now() / 1000))
-    setFrom(toLocalInput(r.from))
+    setFrom(toLocalInput(upToMinute(r.from)))
     setTo(toLocalInput(r.to))
     setOpen((o) => !o)
   }
-  const f = fromLocalInput(from)
-  const t = fromLocalInput(to)
-  const valid = Number.isFinite(f) && Number.isFinite(t) && f < t && f >= Date.now() / 1000 - RETENTION_SECONDS
+  const now = Math.floor(Date.now() / 1000)
+  const picked = customRange(fromLocalInput(from), fromLocalInput(to), now)
   const apply = (e: FormEvent) => {
     e.preventDefault()
-    if (!valid) return
+    if (!picked) return
     setOpen(false)
-    onPick({ kind: 'custom', from: f, to: t })
+    onPick(picked)
   }
   return (
     <div className="flex flex-col items-end gap-2">
@@ -217,18 +216,22 @@ function RangePicker({ range, onPick }: { range: Range; onPick: (r: Range) => vo
         <form onSubmit={apply} className="flex flex-wrap items-end gap-2">
           <div className="space-y-1">
             <Label htmlFor="health-from">From</Label>
-            <Input id="health-from" type="datetime-local" value={from} min={toLocalInput(Math.ceil(Date.now() / 1000 - RETENTION_SECONDS))} onChange={(e) => setFrom(e.target.value)} />
+            <Input id="health-from" type="datetime-local" value={from} min={toLocalInput(upToMinute(now - RETENTION_SECONDS))} onChange={(e) => setFrom(e.target.value)} />
           </div>
           <div className="space-y-1">
             <Label htmlFor="health-to">To</Label>
             <Input id="health-to" type="datetime-local" value={to} onChange={(e) => setTo(e.target.value)} />
           </div>
-          <Button type="submit" size="sm" variant="secondary" disabled={!valid}>Apply</Button>
+          <Button type="submit" size="sm" variant="secondary" disabled={!picked}>Apply</Button>
         </form>
       )}
     </div>
   )
 }
+
+/** The next whole minute at or after s: a datetime-local input holds minutes, and rounding the oldest
+ *  start down would ask for a reading the box no longer keeps. */
+const upToMinute = (s: number) => Math.ceil(s / 60) * 60
 
 /** Unix seconds as a datetime-local input's value, in the browser's time zone. */
 function toLocalInput(s: number): string {

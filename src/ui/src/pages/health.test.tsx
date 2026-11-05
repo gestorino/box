@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { HealthPage } from '@/pages/health'
 import { NetworkError } from '@/lib/http'
-import { AUTO_REFRESH_MS, fetchEvents, fetchNow, fetchPanels, type HealthEvent, type HealthNow, type Panel } from '@/lib/metrics'
+import { AUTO_REFRESH_MS, RETENTION_SECONDS, fetchEvents, fetchNow, fetchPanels, type HealthEvent, type HealthNow, type Panel } from '@/lib/metrics'
 
 vi.mock('@/lib/metrics', async (original) => ({
   ...(await original<typeof import('@/lib/metrics')>()),
@@ -125,6 +125,34 @@ describe('Health', () => {
     await userEvent.click((await screen.findAllByRole('button', { name: 'zoom temperatures' }))[0])
     expect(where()).toBe(`/health?from=${t - 3000}&to=${t - 1000}`)
     await waitFor(() => expect(panels).toHaveBeenLastCalledWith('overview', t - 3000, t - 1000, expect.any(AbortSignal)))
+  })
+
+  it('zoom from the left edge of 30d stays custom, its start moved up to the oldest reading', async () => {
+    const t = Math.floor(Date.now() / 1000)
+    ZOOM.from = t - RETENTION_SECONDS - 5
+    ZOOM.to = t - 86400
+    show('/health?range=30d')
+    await userEvent.click((await screen.findAllByRole('button', { name: 'zoom temperatures' }))[0])
+    expect(where()).toBe(`/health?from=${t - RETENTION_SECONDS - 5}&to=${t - 86400}`)
+    expect(screen.getByRole('button', { name: 'Custom' })).toHaveAttribute('aria-pressed', 'true')
+    await waitFor(() => expect(panels.mock.lastCall?.[2]).toBe(t - 86400))
+    const [, from] = panels.mock.lastCall!
+    expect(from).toBeGreaterThanOrEqual(t - RETENTION_SECONDS)
+    expect(from).toBeLessThanOrEqual(Math.floor(Date.now() / 1000) - RETENTION_SECONDS)
+  })
+
+  it('Custom on 30d opens with a range it can apply', async () => {
+    show('/health?range=30d')
+    await screen.findAllByTestId('chart')
+    await userEvent.click(screen.getByRole('button', { name: 'Custom' }))
+    const apply = screen.getByRole('button', { name: 'Apply' })
+    expect(apply).toBeEnabled()
+    const from = screen.getByLabelText('From') as HTMLInputElement
+    expect(from.value >= from.min).toBe(true)
+    await userEvent.click(apply)
+    expect(screen.getByRole('button', { name: 'Custom' })).toHaveAttribute('aria-pressed', 'true')
+    const [, f, to] = panels.mock.lastCall!
+    expect(Number.isInteger(f) && Number.isInteger(to) && to - f <= RETENTION_SECONDS).toBe(true)
   })
 
   it('a band opens its page', async () => {

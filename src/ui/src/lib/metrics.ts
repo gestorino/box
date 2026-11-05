@@ -82,17 +82,25 @@ export type Quick = keyof typeof QUICK_SECONDS
 export type Range = { kind: 'quick'; quick: Quick } | { kind: 'custom'; from: number; to: number }
 
 const DEFAULT_RANGE: Range = { kind: 'quick', quick: '6h' }
-const RETENTION_SECONDS = 30 * 86400
+/** How far back the box keeps its readings; the engine refuses a longer range. */
+export const RETENTION_SECONDS = 30 * 86400
+
+/** A custom range the engine accepts, in whole seconds: a start older than the history moves up to
+ *  its oldest second, an end in the future is now, so it spans at most RETENTION_SECONDS. Null when
+ *  either end is not a whole number of seconds, or nothing of the range is left. */
+export function customRange(from: number, to: number, now: number): Range | null {
+  if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to)) return null
+  const f = Math.max(from, now - RETENTION_SECONDS)
+  const t = Math.min(to, now)
+  return f < t ? { kind: 'custom', from: f, to: t } : null
+}
 
 export function parseRange(params: URLSearchParams): Range {
   const quick = params.get('range')
   if (quick !== null && quick in QUICK_SECONDS) return { kind: 'quick', quick: quick as Quick }
-  const from = Number(params.get('from'))
-  const to = Number(params.get('to'))
-  const oldest = Date.now() / 1000 - RETENTION_SECONDS
-  if (params.get('from') && params.get('to') && Number.isFinite(from) && Number.isFinite(to) && from < to && from >= oldest) {
-    return { kind: 'custom', from, to }
-  }
+  const from = params.get('from')
+  const to = params.get('to')
+  if (from && to) return customRange(Number(from), Number(to), Math.floor(Date.now() / 1000)) ?? DEFAULT_RANGE
   return DEFAULT_RANGE
 }
 

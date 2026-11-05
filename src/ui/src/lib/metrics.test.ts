@@ -25,10 +25,26 @@ describe('parseRange', () => {
     const p = new URLSearchParams(`from=${NOW - 100}&to=${NOW - 200}`)
     expect(parseRange(p)).toEqual({ kind: 'quick', quick: '6h' })
   })
-  it('falls back on a start older than 30 days', () => {
+  it('moves a start older than 30 days up to the oldest reading', () => {
     vi.useFakeTimers().setSystemTime(NOW * 1000)
-    const p = new URLSearchParams(`from=${NOW - 31 * 86400}&to=${NOW}`)
+    const p = new URLSearchParams(`from=${NOW - 30 * 86400 - 5}&to=${NOW - 3600}`)
+    expect(parseRange(p)).toEqual({ kind: 'custom', from: NOW - 30 * 86400, to: NOW - 3600 })
+  })
+  it('ends a range in the future now, so it never spans more than 30 days', () => {
+    vi.useFakeTimers().setSystemTime(NOW * 1000)
+    expect(parseRange(new URLSearchParams(`from=${NOW - 3600}&to=${NOW + 600}`))).toEqual({ kind: 'custom', from: NOW - 3600, to: NOW })
+    const r = parseRange(new URLSearchParams(`from=${NOW - 40 * 86400}&to=${NOW + 86400}`))
+    expect(r).toEqual({ kind: 'custom', from: NOW - 30 * 86400, to: NOW })
+  })
+  it('falls back on a range wholly older than 30 days', () => {
+    vi.useFakeTimers().setSystemTime(NOW * 1000)
+    const p = new URLSearchParams(`from=${NOW - 40 * 86400}&to=${NOW - 31 * 86400}`)
     expect(parseRange(p)).toEqual({ kind: 'quick', quick: '6h' })
+  })
+  it('falls back on seconds that are not whole', () => {
+    vi.useFakeTimers().setSystemTime(NOW * 1000)
+    expect(parseRange(new URLSearchParams(`from=${NOW - 7200.5}&to=${NOW - 3600}`))).toEqual({ kind: 'quick', quick: '6h' })
+    expect(parseRange(new URLSearchParams(`from=${NOW - 7200}&to=${NOW - 0.25}`))).toEqual({ kind: 'quick', quick: '6h' })
   })
   it('falls back on NaN and unknown quick values', () => {
     expect(parseRange(new URLSearchParams('from=abc&to=def'))).toEqual({ kind: 'quick', quick: '6h' })
