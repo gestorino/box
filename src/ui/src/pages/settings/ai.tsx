@@ -1,7 +1,6 @@
 import { CircleCheck, CircleX, Loader } from 'lucide-react'
 import { type FormEvent, useState } from 'react'
 import { HostError } from '@/components/host-error'
-import { PageHeader } from '@/components/page-header'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -17,11 +16,11 @@ type Checked = { kind: 'checking' } | { kind: 'works'; credit?: number } | { kin
 
 /** The owner's OpenRouter key: registrations and errands run on it. Saved only once OpenRouter accepts
  *  it; shown back only masked. */
-export function AiPage() {
+export function AiSettings() {
   const { data, error, reload } = useAiKey()
   return (
     <div className="space-y-4">
-      <PageHeader title="AI" description="Registrations and errands use this key. You pay OpenRouter for what they use." />
+      <p className="text-sm text-muted-foreground">Registrations and errands use this key. You pay OpenRouter for what they use.</p>
       {error && !data && <HostError error={error} what="the OpenRouter key" />}
       {!data && !error && <Skeleton className="h-32 w-full" />}
       {data && <KeyCard set={data.set} masked={data.masked} reload={reload} />}

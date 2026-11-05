@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AiPage } from '@/pages/ai'
+import { AiSettings } from '@/pages/settings/ai'
 import { stubFetch } from '@/test/fetch'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -14,13 +14,12 @@ const CHECK = 'POST /api/v1/ai/check'
 const UNSET = { body: { set: false, masked: '' } }
 const SET = { body: { set: true, masked: 'sk-or-…a1b2' } }
 
-const show = () => render(<MemoryRouter><AiPage /></MemoryRouter>)
+const show = () => render(<MemoryRouter><AiSettings /></MemoryRouter>)
 
-describe('the AI page', () => {
+describe('AI settings', () => {
   it('says what the key is for', async () => {
     stubFetch({ [G]: UNSET })
     show()
-    expect(screen.getByRole('heading', { level: 1, name: 'AI' })).toBeInTheDocument()
     expect(screen.getByText('Registrations and errands use this key. You pay OpenRouter for what they use.')).toBeInTheDocument()
   })
 

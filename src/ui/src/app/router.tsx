@@ -1,7 +1,6 @@
 import { Navigate, type RouteObject } from 'react-router'
 import { ConnectorGate } from '@/components/connector-page'
 import { AccountPage } from '@/pages/account'
-import { AiPage } from '@/pages/ai'
 import { Connections } from '@/pages/connections'
 import { ConnectorSetupPage } from '@/pages/connector-setup'
 import { ConnectorsPage } from '@/pages/connectors'
@@ -27,6 +26,7 @@ import { AppointmentsPage } from '@/pages/appointments'
 import { ErrandsPage } from '@/pages/errands'
 import { AccountRunLogPage, ErrandRunLogPage } from '@/pages/run-log'
 import { ErrandRunPage } from '@/pages/errand-run'
+import { AiSettings } from '@/pages/settings/ai'
 import { SettingsLayout } from '@/pages/settings/layout'
 import { SimSettings } from '@/pages/settings/sim'
 import { WifiSettings } from '@/pages/settings/wifi'
@@ -60,7 +60,6 @@ export const routes: RouteObject[] = [
           { path: 'errands/runs/:run/logs', element: <ErrandRunLogPage />, ...page('Errands') },
           { path: 'appointments', element: <AppointmentsPage />, ...page('Appointments') },
           { path: 'account', element: <AccountPage />, ...page('Account') },
-          { path: 'ai', element: <AiPage />, ...page('AI') },
           { path: 'logs', element: <Logs />, ...page('Logs') },
           { path: 'health', element: <HealthPage />, ...page('Health') },
           { path: 'health/:tab', element: <HealthPage />, ...page('Health') },
@@ -83,6 +82,7 @@ export const routes: RouteObject[] = [
               { index: true, element: <Navigate to="wifi" replace /> },
               { path: 'wifi', element: <WifiSettings /> },
               { path: 'sim', element: <SimSettings /> },
+              { path: 'ai', element: <AiSettings /> },
             ],
           },
           { path: 'style-guide', element: <StyleGuide />, ...page('Style guide') },

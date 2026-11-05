@@ -124,11 +124,11 @@ describe('Errands', () => {
     expect(await screen.findByText('No errands yet')).toBeInTheDocument()
   })
 
-  it('without an OpenRouter key, points to the AI page and cannot start', async () => {
+  it('without an OpenRouter key, points to the AI settings and cannot start', async () => {
     stubFetch({ [L]: { body: [] }, 'GET /api/v1/ai': { body: { set: false, masked: '' } } })
     show()
-    expect(await screen.findByRole('link', { name: 'AI page' })).toHaveAttribute('href', '/ai')
-    expect(screen.getByText(/Add your OpenRouter key on the/)).toBeInTheDocument()
+    expect(await screen.findByRole('link', { name: 'AI settings' })).toHaveAttribute('href', '/settings/ai')
+    expect(screen.getByText(/Add your OpenRouter key in the/)).toBeInTheDocument()
     await userEvent.type(screen.getByLabelText('Link'), 'https://shop.test/place/1')
     await userEvent.type(screen.getByLabelText('What to do'), 'book a table')
     expect(screen.getByRole('button', { name: 'Start' })).toBeDisabled()

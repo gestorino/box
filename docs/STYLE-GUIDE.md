@@ -1,7 +1,7 @@
 # Style guide
 
 The rules for every screen of the concierge console. The tokens live in one file,
-`src/ui/src/styles/tokens.css`; the console renders them live at its own **[/style-guide](/style-guide)** page. When this
+`src/ui/src/styles/tokens.css`; the console renders them live at its own **[/style-guide](/style-guide)** page (by its address: it isn't in the sidebar). When this
 document and the tokens disagree, fix whichever is wrong — do not let them drift.
 
 ## Stack
@@ -102,7 +102,7 @@ Dense by default — this is a console, read on a laptop.
 - Never name the developer's computer ("the Mac"): say where the thing is, such as "in the
   concierge repo". `src/test/words.test.ts` checks every source file.
 - Secrets never render: no API key, password, cookie or session token appears on any screen, even
-  masked. One exception, the owner's model keys: the OpenRouter key on the AI page and the OpenAI
+  masked. One exception, the owner's model keys: the OpenRouter key in Settings' AI tab and the OpenAI
   key on Voice's setup and its settings show as the box masks them (the prefix and last four,
   `sk-or-…a1b2`, `sk-…a1b2`), so the owner can tell which key is stored; the full key never comes
   back from the box.

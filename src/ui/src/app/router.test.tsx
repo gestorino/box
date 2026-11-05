@@ -25,7 +25,7 @@ describe('routes', () => {
     ['/logs', 'Logs'],
     ['/health', 'Health'],
     ['/health/hardware', 'Health'],
-    ['/ai', 'AI'],
+    ['/ai', 'Page not found'],
     ['/voice', 'Voice'],
     ['/sms', 'SMS'],
     ['/whatsapp', 'WhatsApp'],
@@ -34,6 +34,7 @@ describe('routes', () => {
     ['/connectors', 'Connectors'],
     ['/settings/wifi', 'Settings'],
     ['/settings/sim', 'Settings'],
+    ['/settings/ai', 'Settings'],
   ])('%s renders the %s page', async (path, title) => {
     at(path)
     expect(await screen.findByRole('heading', { level: 1, name: title })).toBeInTheDocument()
@@ -61,9 +62,16 @@ describe('routes', () => {
     expect(await screen.findByRole('link', { name: 'Health' })).toHaveAttribute('href', '/health')
   })
 
-  it('the sidebar links to AI', async () => {
+  it('the AI key is a Settings tab, not a sidebar entry', async () => {
+    at('/settings/ai')
+    expect(await screen.findByRole('link', { name: 'AI', current: 'page' })).toHaveAttribute('href', '/settings/ai')
+    expect(screen.getByText('Registrations and errands use this key. You pay OpenRouter for what they use.')).toBeInTheDocument()
+  })
+
+  it('the style guide opens by its address only, not from the sidebar', async () => {
     at('/')
-    expect(await screen.findByRole('link', { name: 'AI' })).toHaveAttribute('href', '/ai')
+    expect(await screen.findByRole('link', { name: 'Settings' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Style guide' })).toBeNull()
   })
 
   const connectors = (added: string[]) => ({
@@ -79,7 +87,7 @@ describe('routes', () => {
     render(<RouterProvider router={createMemoryRouter(routes, { initialEntries: ['/'] })} />)
     expect(await screen.findByRole('link', { name: 'SMS' })).toBeInTheDocument()
     expect(sections(group('Console'))).toEqual([['Overview', 'Connections', 'Accounts', 'Errands', 'Appointments', 'Logs']])
-    expect(sections(group('System'))).toEqual([['Account', 'AI', 'Settings', 'Style guide', 'Health']])
+    expect(sections(group('System'))).toEqual([['Account', 'Settings', 'Health']])
     expect(sections(group('Connectors'))).toEqual([['Email'], ['SMS'], ['Telegram']])
     expect(group('Connectors').querySelectorAll('[data-sidebar="separator"]')).toHaveLength(2)
     expect(screen.getByRole('link', { name: 'Manage connectors' })).toHaveAttribute('href', '/connectors')

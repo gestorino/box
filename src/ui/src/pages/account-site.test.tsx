@@ -59,11 +59,11 @@ describe('a site’s page', () => {
     stubFetch({ [S]: page([], { ...registered, footprint: 'https://www.shop.test/account/me' }), 'GET /api/v1/ai': { body: { set: false } } })
     const { unmount } = show()
     expect(await screen.findByRole('button', { name: 'Check sign-in' })).toBeEnabled()
-    expect(screen.queryByRole('link', { name: 'AI page' })).toBeNull()
+    expect(screen.queryByRole('link', { name: 'AI settings' })).toBeNull()
     unmount()
     stubFetch({ [S]: page([], registered), 'GET /api/v1/ai': { body: { set: false } } })
     show()
-    expect(await screen.findByRole('link', { name: 'AI page' })).toBeInTheDocument()
+    expect(await screen.findByRole('link', { name: 'AI settings' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Check sign-in' })).toBeDisabled()
   })
 
@@ -131,7 +131,7 @@ describe('a site’s page', () => {
   it('without the OpenRouter key registers nothing and says where to add it', async () => {
     stubFetch({ [S]: page([]), 'GET /api/v1/ai': { body: { set: false } } })
     show()
-    expect(await screen.findByRole('link', { name: 'AI page' })).toBeInTheDocument()
+    expect(await screen.findByRole('link', { name: 'AI settings' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Register' })).toBeDisabled()
   })
 

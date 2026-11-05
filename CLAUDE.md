@@ -133,10 +133,10 @@ docs/superpowers/  current design docs (specs/); implementation plans (plans/) a
 - **Every run counts its model use**: calls, model, tokens and OpenRouter's billed cost, told call by
   call by the worker (`model_call`), by provider. A call OpenRouter didn't bill shows "price
   unknown", never $0.
-- **One model key, the owner's OpenRouter key**, set on the console's AI page (`/ai`): the engine
+- **One model key, the owner's OpenRouter key**, set in the console's Settings, its AI tab (`/settings/ai`): the engine
   checks it with OpenRouter before keeping it in secretd (`openrouter`, through `-secrets-socket`;
   never logged, never answered back but masked) and refuses to start any run without it, or while
-  secretd doesn't answer ("secrets unavailable"; the AI page answers 502).
+  secretd doesn't answer ("secrets unavailable"; the AI tab answers 502).
   The engine puts the key in each request frame that runs a model (`openrouter_key`; contract 19), and the
   worker pops it out of the frame for its model clients (errands use `ChatOpenRouter`). No model key is in `engine.env` or the vault (Voice's OpenAI key is the
   owner's too, kept by calld: below). Design:
@@ -188,7 +188,7 @@ docs/superpowers/  current design docs (specs/); implementation plans (plans/) a
   working keeps its row; each row has a status circle (green, amber, grey). Each daemon's
   `POST /<name>/remove {delete_data, force}` logs out (424 when it can't reach the service, unless
   `force`) and keeps or wipes everything it stored, in any state. Each connector's settings are a
-  panel on its page; Settings is Wi-Fi and SIM only. Design:
+  panel on its page; Settings is Wi-Fi, SIM and the AI key only. Design:
   `docs/superpowers/specs/2026-10-28-connectors-design.md`; verified setup and health:
   `docs/superpowers/specs/2026-10-28-connectors-write-and-verify-design.md`.
 - **`cmd/smsd` + `internal/sms/`, `cmd/calld` + `internal/calls/`** — every SMS / every call, in
@@ -278,7 +278,7 @@ docs/superpowers/  current design docs (specs/); implementation plans (plans/) a
   recording, live view): an agent run (`internal/signins/agent.go`, its facts in the `agent_runs`
   table), as a registration and a sign-in check are; `/api/v1/runs` serves every kind (list, page,
   answer, stop, log). Captchas go to the owner (`human_check`; the owner's input on only then). Every
-  model call goes through OpenRouter (the owner's key from the AI page): DeepSeek V4.1 Flash on a fixed US/EU
+  model call goes through OpenRouter (the owner's key from Settings' AI tab): DeepSeek V4.1 Flash on a fixed US/EU
   provider list, Haiku for `extract`; OpenRouter's billed cost is the run's cost, by provider. The
   worker's policy gate drops payment, destructive and captcha controls. Design:
   `docs/superpowers/specs/2026-11-03-errands-design.md`.
