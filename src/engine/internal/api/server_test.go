@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"concierge/engine/internal/browser"
@@ -235,6 +236,30 @@ func TestAccountsAndSignInsAreBehindTheLogin(t *testing.T) {
 		h.ServeHTTP(rec, r)
 		if rec.Code != http.StatusOK || rec.Body.String() != c.method+" "+c.path {
 			t.Errorf("%s %s with the login: %d %s", c.method, c.path, rec.Code, rec.Body)
+		}
+	}
+}
+
+func TestHealthRoutesNeedLogin(t *testing.T) {
+	reg, _ := channels.NewRegistry(stubChannel("email"))
+	stub := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(r.Method + " " + r.URL.Path)) })
+	paths := []string{"/api/v1/health/now", "/api/v1/health/panels", "/api/v1/health/events"}
+	h := New(Config{Login: testLogin, Channels: reg, Health: stub})
+	for _, p := range paths {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", p, nil))
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("GET %s without the login: %d", p, rec.Code)
+		}
+		if rec := get(t, h, p); rec.Code != http.StatusOK || rec.Body.String() != "GET "+p {
+			t.Errorf("GET %s with the login: %d %s", p, rec.Code, rec.Body)
+		}
+	}
+	h = New(Config{Login: testLogin, Channels: reg})
+	for _, p := range paths {
+		rec := get(t, h, p)
+		if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), `"error":"health data unavailable"`) {
+			t.Errorf("GET %s with no Health: %d %s", p, rec.Code, rec.Body)
 		}
 	}
 }

@@ -56,6 +56,7 @@ type Config struct {
 	SignIns  http.Handler // the run machinery's own routes: /api/v1/signins/sites/{site}/… (screen, live, recording)
 	Accounts http.Handler // the catalog and the box's accounts: /api/v1/accounts, GET POST PUT DELETE
 	Runs     http.Handler // the engine's agent runs: /api/v1/runs, POST /api/v1/errands to start one, /api/v1/appointments
+	Health   http.Handler // the box's health history: /api/v1/health/{now,panels,events}; nil answers 503
 	AI       http.Handler // the OpenRouter key (aikey): /api/v1/ai, /api/v1/ai/key and /api/v1/ai/check
 }
 
@@ -151,6 +152,15 @@ func New(c Config) http.Handler {
 			mux.Handle(m+" /api/v1/accounts", c.Accounts)
 			mux.Handle(m+" /api/v1/accounts/", c.Accounts)
 		}
+	}
+	health := c.Health
+	if health == nil {
+		health = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			unavailable(w, "health data unavailable")
+		})
+	}
+	for _, p := range []string{"now", "panels", "events"} {
+		mux.Handle("GET /api/v1/health/"+p, health)
 	}
 	mux.Handle("GET /api/", http.NotFoundHandler())
 	if c.UIDir != "" {

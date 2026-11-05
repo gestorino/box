@@ -53,6 +53,7 @@ func run() error {
 	smsSocket := flag.String("sms-socket", "", "smsd's Unix socket; empty leaves /api/v1/sms answering 503")
 	callsSocket := flag.String("calls-socket", "", "calld's Unix socket; empty leaves /api/v1/calls answering 503")
 	signinsDB := flag.String("signins-db", "", "the sign-ins catalog database; empty leaves /api/v1/signins answering 503")
+	prometheusURL := flag.String("prometheus-url", "", "Prometheus's base URL, where the Health page reads its history; empty leaves /api/v1/health answering 503")
 	metricsAddr := flag.String("metrics-addr", "", "serve the running runs to Prometheus at /metrics on this address, with no login (keep it on 127.0.0.1); empty serves none")
 	login := api.Login{User: os.Getenv("CONCIERGE_CONSOLE_USER"), PasswordHash: os.Getenv("CONCIERGE_CONSOLE_PASSWORD_HASH")}
 	flag.Parse()
@@ -79,6 +80,7 @@ func run() error {
 	signInsHandler, runsHandler := api.SocketProxy("", "accounts"), api.SocketProxy("", "runs")
 	var signInsSvc *signins.Service
 	var running health.RunLister
+	var runStore health.RunStore // nil without a sign-ins database: Health's bands go unlabelled
 	if *signinsDB != "" {
 		svc, store, err := openSignIns(ctx, *signinsDB, w, sc, *screensDir, *recordingsDir, *noVNCDir,
 			*smsSocket, *emailSocket, *hostdSocket)
@@ -86,7 +88,7 @@ func run() error {
 			return err
 		}
 		defer store.Close()
-		running = store
+		running, runStore = store, store
 		signInsSvc, signInsHandler, runsHandler = svc, signins.NewHandler(svc), signins.NewRunsHandler(svc)
 	}
 
@@ -97,6 +99,19 @@ func run() error {
 		// The worker is its own service: the engine dials it and re-dials, and a worker that goes away
 		// only makes browser requests unavailable until it is back.
 		go w.Run(ctx, *workerSocket, func(ctx context.Context) (string, error) { return aikey.Key(ctx, sc) })
+	}
+
+	var healthHandler http.Handler
+	if *prometheusURL != "" {
+		q, err := health.NewQuerier(*prometheusURL)
+		if err != nil {
+			return fmt.Errorf("-prometheus-url: %w", err)
+		}
+		var calls health.CallLister
+		if *callsSocket != "" {
+			calls = health.NewCallLister(*callsSocket)
+		}
+		healthHandler = health.Handler(q, runStore, calls)
 	}
 
 	srv := newServer(ctx, *addr, api.New(api.Config{
@@ -114,6 +129,7 @@ func run() error {
 		SignIns:  signInsHandler,
 		Accounts: signInsHandler,
 		Runs:     runsHandler,
+		Health:   healthHandler,
 		AI:       aikey.NewHandler(sc, aikey.NewChecker()),
 	}))
 	// The activity endpoint is a second listener, so the console's login stays on every request of the
