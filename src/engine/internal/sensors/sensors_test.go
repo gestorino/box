@@ -2,6 +2,7 @@ package sensors
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -162,5 +163,31 @@ func TestCollectorWritesAndKeepsStorage(t *testing.T) {
 	}
 	if strings.Contains(out, "concierge_package_energy") {
 		t.Fatalf("a failed source's series must be omitted:\n%s", out)
+	}
+}
+
+// vanished is a file listed by its directory and gone before its size is read.
+type vanished struct{}
+
+func (vanished) Name() string               { return "gone.mp4" }
+func (vanished) IsDir() bool                { return false }
+func (vanished) Type() fs.FileMode          { return 0 }
+func (vanished) Info() (fs.FileInfo, error) { return nil, fs.ErrNotExist }
+
+// A file renamed or pruned mid-walk (recordings) is skipped; it never drops the service's size.
+func TestDirBytesSkipsWhatVanishesMidWalk(t *testing.T) {
+	var total int64
+	add := addSize(&total)
+	if err := add("/d/gone.mp4", vanished{}, nil); err != nil {
+		t.Fatalf("a file gone before its size was read: %v", err)
+	}
+	if err := add("/d/sub", vanished{}, fs.ErrNotExist); err != nil {
+		t.Fatalf("a directory gone before it was read: %v", err)
+	}
+	if err := add("/d", nil, fs.ErrNotExist); err == nil {
+		t.Fatal("a missing root must still fail")
+	}
+	if err := add("/d/x", vanished{}, fs.ErrPermission); err == nil {
+		t.Fatal("other errors must still fail")
 	}
 }
