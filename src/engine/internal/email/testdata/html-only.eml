@@ -1,0 +1,8 @@
+From: Booking <noreply@booking.example>
+To: owner@example.com
+Subject: Your reservation
+Date: Tue, 27 Oct 2026 11:00:00 +0000
+Message-ID: <booking-1@booking.example>
+Content-Type: text/html; charset=utf-8
+
+<html><head><style>p{color:red}</style><script>alert(1)</script></head><body><p>Your reservation in <b>Porto</b> is confirmed.</p></body></html>

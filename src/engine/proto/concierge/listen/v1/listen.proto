@@ -1,0 +1,76 @@
+// The listen contract: a connector pushes each stored incoming message that matches a listener's
+// filter. emaild and smsd implement it; the engine calls it.
+syntax = "proto3";
+
+package concierge.listen.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "concierge/engine/internal/gen/listen/v1;listenv1";
+
+service ListenService {
+  rpc Listen(ListenRequest) returns (stream Event);
+}
+
+// ListenRequest is the filter. Only incoming messages match.
+message ListenRequest {
+  // Who sent it. Email: the sender's address, exactly, case-insensitive. SMS: the sender number
+  // or ID contains it, case-insensitive. Empty matches any sender.
+  string from = 1;
+  // Email only, and required: one of the email's To addresses, exactly, case-insensitive.
+  // SMS: must be empty (InvalidArgument otherwise).
+  string to = 2;
+  // Email only: case-insensitive substring of the subject. SMS: must be empty.
+  string subject_contains = 3;
+  // Unset: live only. Set: replay matching messages stored at or after it, then live. The zero
+  // time replays the whole archive.
+  google.protobuf.Timestamp since = 4;
+}
+
+// Event is one item of the stream: replayed matches oldest first, then one caught_up, then live
+// messages.
+message Event {
+  oneof kind {
+    Message message = 1;
+    CaughtUp caught_up = 2;
+  }
+}
+
+// CaughtUp marks the end of the replay (at once for a live-only listener).
+message CaughtUp {}
+
+message Message {
+  // The connector's row id, unique per connector.
+  int64 id = 1;
+  // When the box stored it.
+  google.protobuf.Timestamp stored_at = 2;
+  oneof body {
+    Email email = 3;
+    SMS sms = 4;
+  }
+}
+
+message Email {
+  string from_name = 1;
+  string from_addr = 2;
+  repeated string to = 3;
+  repeated string cc = 4;
+  string subject = 5;
+  google.protobuf.Timestamp date = 6;
+  string text = 7;
+  string html = 8;
+  repeated Attachment attachments = 9;
+}
+
+message Attachment {
+  int32 idx = 1;
+  string filename = 2;
+  string content_type = 3;
+  int64 size = 4;
+}
+
+message SMS {
+  string number = 1;
+  string text = 2;
+  string sent_at = 3;
+}

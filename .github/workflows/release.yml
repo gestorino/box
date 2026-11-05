@@ -1,0 +1,110 @@
+# A pushed vX.Y.0 tag becomes a GitHub release: `make check`, then the archive and its manifest
+# (`make dist`), attested with GitHub's build provenance and published as the tag's release.
+#
+#   tag      is this a release? A tag that isn't vX.Y.0 (a local patch tag pushed by mistake) ends
+#            green here and nothing else runs; a vX.Y.0 tag whose commit isn't on main, or whose
+#            VERSION says otherwise, fails here, before anything is built.
+#   build    read-only: checks and builds with no write credential and no restored cache, so no
+#            dependency's install script or test can publish anything.
+#   publish  holds the write rights and runs no repository code: it attests the build's two files
+#            and publishes them.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+jobs:
+  tag:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      # All history and branches: release-tag.sh checks the commit is on origin/main.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Is this tag a release?
+        id: tag
+        run: |
+          code=0
+          version=$(scripts/release-tag.sh "$GITHUB_REF_NAME") || code=$?
+          case $code in
+            0) echo "version=$version" >>"$GITHUB_OUTPUT" ;;
+            2) echo "::notice::$GITHUB_REF_NAME is not a vX.Y.0 tag: nothing is published" ;;
+            *) exit 1 ;;
+          esac
+
+  build:
+    needs: tag
+    if: needs.tag.outputs.version != ''
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      # No caches: a release is built only from what the lockfiles name, fetched fresh.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: src/engine/go.mod
+          cache: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.6"
+          enable-cache: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - run: uv sync --locked --directory src/browser
+      - run: make check
+      - name: Build the archive and its manifest
+        run: make dist V="$VERSION" R="$(git rev-parse --short HEAD)"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: |
+            dist/concierge-${{ needs.tag.outputs.version }}-linux-amd64.tar.gz
+            dist/manifest.json
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [tag, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # the release
+      id-token: write # the attestation's signing certificate
+      attestations: write # storing the attestation
+    env:
+      VERSION: ${{ needs.tag.outputs.version }}
+    steps:
+      # No checkout: nothing from the repository runs while this job holds write rights.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/concierge-${{ needs.tag.outputs.version }}-linux-amd64.tar.gz
+            dist/manifest.json
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/concierge-$VERSION-linux-amd64.tar.gz" dist/manifest.json \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --title "$GITHUB_REF_NAME" \
+            --notes "Concierge $VERSION, built from $GITHUB_SHA by release.yml. Verify a download with \`gh attestation verify concierge-$VERSION-linux-amd64.tar.gz --repo $GITHUB_REPOSITORY --signer-workflow $GITHUB_REPOSITORY/.github/workflows/release.yml\`."

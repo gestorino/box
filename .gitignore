@@ -1,0 +1,87 @@
+# No trailing slash, for the reason `.venv` below carries in full: in a worktree these are often
+# SYMLINKS to the primary checkout's, and `foo/` matches a directory only — which is how a
+# mode-120000 entry pointing outside the repository once got committed.
+node_modules
+dist/
+*.db
+*.db-wal
+*.db-shm
+
+# python worker (uv.lock IS committed — the tier has to be reproducible)
+# No trailing slash: a worktree's `.venv` is often a SYMLINK to the primary checkout's, and
+# `.venv/` matches a directory only — which is how one got committed as a mode-120000 entry
+# pointing outside the repository.
+.venv
+__pycache__/
+.pytest_cache/
+
+# The SDD workspace: briefs, per-task reports and review diffs, written by the tooling and never
+# part of the build. `.superpowers/sdd/.gitignore` already holds `*`, which covers `sdd/` only and
+# is itself a generated file — this covers the directory whatever the tooling puts in it next.
+# It matters because a task report quotes what a live run saw, and a live run sees the owner's own
+# account.
+.superpowers/
+
+# macOS / local scratch
+.DS_Store
+.env
+.env.*
+# Local test logins left by the old provisioning: never committed.
+.test-creds
+docs/files/
+docs/files.zip
+
+# The owner's box: its address, SSH user and key, SIM (Claude Code's local instructions).
+CLAUDE.local.md
+# The box's own values the public-tree audit searches for (scripts/audit-public.sh).
+scripts/audit-public.local
+# Claude Code's per-person settings (permissions, local paths).
+.claude/settings.local.json
+
+# Never published: infra/ (how to rebuild the box, a local untracked directory), and what is left
+# on the owner's computer of directories deleted from the tree (the TS PoC, its graph data, the
+# spec-kit era) — never to be added back. No trailing slash, as above: a worktree's copy may be a
+# symlink.
+/infra
+/old_src
+/adapters
+/domains
+/templates
+/specs
+/.specify
+
+# Kept on the owner's computer, never published: the deploy (its own private repo), the
+# implementation plans, and the product specs that stay private.
+/ansible
+docs/superpowers/plans
+docs/specs/gtm-distribution-spec-en.md
+docs/specs/cost-budget-model-spec-en.md
+docs/specs/scaling-model-spec-en.md
+docs/specs/ai-concierge-design.md
+docs/specs/phase1-standalone-runner-spec.md
+
+# Go engine build output
+src/engine/bin
+# `go build ./cmd/x` in src/engine drops the daemon's binary there
+/src/engine/calld
+/src/engine/emaild
+/src/engine/engine
+/src/engine/hostd
+/src/engine/secretd
+/src/engine/smsd
+/src/engine/telegramd
+/src/engine/whatsappd
+ansible/.build
+
+# Claude Code worktrees (EnterWorktree)
+.claude/worktrees
+
+# a plain `go build` in a cmd/ directory leaves its binary there (by name: anything else there is source)
+/src/engine/cmd/calld/calld
+/src/engine/cmd/emaild/emaild
+/src/engine/cmd/engine/engine
+/src/engine/cmd/hostd/hostd
+/src/engine/cmd/secretd/secretd
+/src/engine/cmd/smsd/smsd
+/src/engine/cmd/telegramd/telegramd
+/src/engine/cmd/whatsappd/whatsappd

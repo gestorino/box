@@ -1,0 +1,15 @@
+#!/bin/sh
+# Chrome for a run's screen, given none of the worker's environment: the engine's secrets never reach
+# the browser, or the display's owner, who has hands on the whole screen. HOME, LANG, TZ and DISPLAY
+# stay, as a person's session has them. The display's cookie is the run's own, named by the one
+# argument that is ours, --screen-xauthority=PATH, which Chrome is not given: two runs at once each
+# have their own screen, and the worker's one environment cannot say which cookie is whose.
+xauthority=
+for arg do
+  shift
+  case $arg in
+    --screen-xauthority=*) xauthority=${arg#--screen-xauthority=} ;;
+    *) set -- "$@" "$arg" ;;
+  esac
+done
+exec env -i ${HOME:+HOME="$HOME"} PATH=/usr/bin:/bin ${LANG:+LANG="$LANG"} ${xauthority:+XAUTHORITY="$xauthority"} ${DISPLAY:+DISPLAY="$DISPLAY"} ${TZ:+TZ="$TZ"} /usr/bin/google-chrome "$@"

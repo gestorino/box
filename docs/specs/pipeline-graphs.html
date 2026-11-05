@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pipeline Graphs — Concierge Engine</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#F3F5F7; --panel:#FFFFFF; --ink:#17242F; --ink2:#4A5B69; --line:#D4DBE1;
+    --none:#64748B; --rev:#B07A1E; --irrev:#C13A24; --await:#0E7C7B; --gate:#6D4AB0;
+    --term:#2E7D4F; --handoff:#4A5B69; --standing:#2563A8;
+    --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+    --disp:'Barlow Condensed','Arial Narrow',sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--paper);color:var(--ink);font-family:var(--mono);font-size:13px;line-height:1.45}
+  header{padding:22px 16px 10px;border-bottom:1px solid var(--line);background:var(--panel)}
+  header h1{font-family:var(--disp);font-weight:700;font-size:30px;letter-spacing:.4px;text-transform:uppercase}
+  header p{color:var(--ink2);font-size:12px;margin-top:2px}
+  .tabs{display:flex;gap:8px;overflow-x:auto;padding:12px 16px;background:var(--panel);
+        border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5;-webkit-overflow-scrolling:touch}
+  .tab{flex:0 0 auto;padding:7px 13px;border:1px solid var(--line);border-radius:999px;background:var(--paper);
+       font-family:var(--disp);font-weight:600;font-size:15px;letter-spacing:.3px;cursor:pointer;white-space:nowrap;color:var(--ink2)}
+  .tab.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .legend{display:flex;flex-wrap:wrap;gap:10px 16px;padding:12px 16px;font-size:11px;color:var(--ink2)}
+  .legend b{font-weight:500;color:var(--ink)}
+  .sw{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:-1px;margin-right:5px}
+  .dm{display:inline-block;width:9px;height:9px;transform:rotate(45deg);vertical-align:-1px;margin-right:6px;background:var(--gate)}
+  .stage{padding:6px 8px 40px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;margin:10px auto;max-width:860px;overflow:hidden}
+  .card .hd{padding:14px 16px 4px}
+  .card .hd h2{font-family:var(--disp);font-weight:700;font-size:22px;text-transform:uppercase;letter-spacing:.4px}
+  .card .hd .dom{color:var(--irrev);font-size:11px}
+  .card .hd .why{color:var(--ink2);font-size:12px;margin-top:4px;max-width:640px}
+  .svgwrap{overflow-x:auto;-webkit-overflow-scrolling:touch;padding:4px 6px 8px}
+  svg{display:block;margin:0 auto}
+  .pats{display:flex;flex-wrap:wrap;gap:6px;padding:10px 16px 16px;border-top:1px dashed var(--line)}
+  .pat{font-size:10.5px;padding:4px 9px;border-radius:4px;background:#EDF1F5;color:var(--ink2);border:1px solid var(--line)}
+  .pat.new{background:#F6EFE4;border-color:#E3CFA6;color:#7A5A14}
+  .pat.new::before{content:"NEW · ";font-weight:600}
+  /* svg text */
+  text{font-family:var(--mono)}
+  .nl{font-size:12px;font-weight:600;fill:var(--ink)}
+  .ns{font-size:9.5px;fill:var(--ink2)}
+  .el{font-size:9.5px;fill:var(--ink2)}
+  .gl{font-size:8.5px;fill:var(--gate);font-weight:600}
+  @media (prefers-reduced-motion: no-preference){
+    .card{animation:in .25s ease}
+    @keyframes in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Pipeline Graphs</h1>
+  <p>Six declared domains · vertices are typed operations · the engine walks, the LLM never routes</p>
+</header>
+
+<nav class="tabs" id="tabs"></nav>
+
+<div class="legend">
+  <span><span class="sw" style="background:var(--none)"></span><b>effects: none</b></span>
+  <span><span class="sw" style="background:var(--rev)"></span><b>reversible</b></span>
+  <span><span class="sw" style="background:var(--irrev)"></span><b>irreversible</b></span>
+  <span><span class="sw" style="background:var(--await)"></span><b>await / user input</b></span>
+  <span><span class="dm"></span><b>approval gate (on edge)</b></span>
+  <span><span class="sw" style="background:var(--term)"></span><b>terminal</b></span>
+  <span><span class="sw" style="border:1.5px dashed var(--standing);background:transparent"></span><b>standing (no terminal)</b></span>
+</div>
+
+<main class="stage" id="stage"></main>
+
+<script>
+const C = {none:'#64748B',rev:'#B07A1E',irrev:'#C13A24',await:'#0E7C7B',gate:'#6D4AB0',
+           term:'#2E7D4F',handoff:'#4A5B69',standing:'#2563A8',ink:'#17242F',line:'#C9D2DA'};
+
+// node: id,label,sub,kind(proc|await|term|handoff|standing|fan),eff,x,y  (grid units)
+// edge: f,t,label,gate,dash,curve('L'|'R' offset),back
+const GRAPHS = [
+{ id:'car', tab:'Car rental', title:'Car rental · Madeira, fixed dates', dom:'car_rental — prebuilt',
+  why:'Quotes must be compared, not grabbed: wait_all fan-in. A negotiation side-branch updates the already-shown shortlist asynchronously.',
+  w:3, nodes:[
+    {id:'disc',label:'discover',sub:'places + adapter catalog · geo:madeira',kind:'proc',eff:'none',x:1,y:0},
+    {id:'quote',label:'execute · search',sub:'⑂ fanout ×5 providers',kind:'proc',eff:'none',x:1,y:1},
+    {id:'coll',label:'fan-in · wait_all',sub:'ttl 5m · on_partial: valid',kind:'proc',eff:'none',x:1,y:2},
+    {id:'neg',label:'outreach.email',sub:'⑂ top-2 · better_weekly_rate',kind:'proc',eff:'rev',x:2.15,y:2},
+    {id:'parse',label:'parse_reply',sub:'',kind:'proc',eff:'none',x:2.15,y:3},
+    {id:'short',label:'◷ shortlist',sub:'await_input · live-updating card',kind:'await',x:1,y:3},
+    {id:'book',label:'execute · commit',sub:'adapter op',kind:'proc',eff:'irrev',x:1,y:4},
+    {id:'done',label:'done',sub:'voucher + calendar',kind:'term',x:1,y:5}],
+  edges:[
+    {f:'disc',t:'quote'},{f:'quote',t:'coll'},
+    {f:'coll',t:'neg',label:'rental ≥ 7d'},
+    {f:'coll',t:'short',label:'instant prices'},
+    {f:'neg',t:'parse'},
+    {f:'parse',t:'short',label:'update card',dash:1},
+    {f:'short',t:'book',label:'pick',gate:1},
+    {f:'book',t:'done'}],
+  pats:[['wait_all fan-in',0],['async shortlist update',1],['post-search negotiation',0],['gate before irreversible (P1)',0]]
+},
+{ id:'vac', tab:'Vacation stay', title:'Short-term vacation rental', dom:'vacation_rental',
+  why:'Nobody picks a stay from the first shortlist — refine loops back. Airbnb-style commit is two-phase: a reversible request, then the host\u2019s own 24h clock.',
+  w:3, nodes:[
+    {id:'search',label:'execute · search',sub:'⑂ booking + airbnb + local agencies',kind:'proc',eff:'none',x:1,y:0},
+    {id:'refine',label:'◷ refine',sub:'await_input · iterative_filter',kind:'await',x:1,y:1},
+    {id:'pick',label:'◷ pick',sub:'await_input',kind:'await',x:1,y:2},
+    {id:'hold',label:'execute · request_to_book',sub:'two-phase commit',kind:'proc',eff:'rev',x:1,y:3},
+    {id:'host',label:'◷ await_host',sub:'their clock · timeout 24h',kind:'await',x:1,y:4},
+    {id:'next',label:'next candidate',sub:'from ranking',kind:'proc',eff:'none',x:2.15,y:3},
+    {id:'done',label:'done',sub:'confirmation',kind:'term',x:1,y:5}],
+  edges:[
+    {f:'search',t:'refine'},
+    {f:'refine',t:'search',label:'"cheaper / with pool"',back:1},
+    {f:'refine',t:'pick'},
+    {f:'pick',t:'hold',gate:1},
+    {f:'hold',t:'host'},
+    {f:'host',t:'done',label:'accepted'},
+    {f:'host',t:'next',label:'declined / timeout'},
+    {f:'next',t:'hold',label:'',gate:1,back:1}],
+  pats:[['iterative refine loop',1],['two-phase commit, foreign TTL',1],['auto-fallback to next candidate',1]]
+},
+{ id:'lt', tab:'Long-term flat', title:'Long-term housing search', dom:'long_term_rental',
+  why:'A standing query with no terminal — it lives for months in "monitoring" status. Several viewing sub-threads run concurrently; the contract is an explicit handoff.',
+  w:3, nodes:[
+    {id:'mon',label:'discover · standing',sub:'idealista + imovirtual + olx · every 2h · dedupe',kind:'standing',x:1,y:0},
+    {id:'tri',label:'parse_listing',sub:'filters: $criteria',kind:'proc',eff:'none',x:1,y:1},
+    {id:'alert',label:'◷ instant alert',sub:'await_input · ttl 4h — fast market',kind:'await',x:1,y:2},
+    {id:'cont',label:'outreach.email|phone',sub:'viewing_request',kind:'proc',eff:'rev',x:1,y:3},
+    {id:'view',label:'◷ schedule viewing',sub:'× concurrent sub-threads',kind:'await',x:1,y:4},
+    {id:'cal',label:'execute · calendar',sub:'create_event',kind:'proc',eff:'rev',x:1,y:5},
+    {id:'dec',label:'◷ post-viewing decision',sub:'await_input',kind:'await',x:1,y:6},
+    {id:'hand',label:'done · handoff',sub:'contract & legal → user checklist',kind:'handoff',x:1,y:7}],
+  edges:[
+    {f:'mon',t:'tri',label:'new listing'},
+    {f:'tri',t:'alert',label:'match'},
+    {f:'tri',t:'mon',label:'reject → keep watching',back:1,dash:1},
+    {f:'alert',t:'cont',label:'go',gate:1},
+    {f:'cont',t:'view'},{f:'view',t:'cal'},{f:'cal',t:'dec'},
+    {f:'dec',t:'mon',label:'no → keep monitoring',back:1,dash:1},
+    {f:'dec',t:'hand',label:'yes'}],
+  pats:[['standing query, "monitoring" status',1],['cross-source dedupe (fingerprint)',1],['concurrent long-lived sub-graphs',1],['done(handoff) terminal',1]]
+},
+{ id:'dent', tab:'Dentist', title:'Dental appointment', dom:'dental_appointment',
+  why:'First graph where the user\u2019s own data enters ranking: offered slots ∩ free calendar. Insurance-network-first discovery reads the survey\u2019s policy_info.',
+  w:3, nodes:[
+    {id:'cons',label:'◷ constraints',sub:'preferred times · insurer? · clinic?',kind:'await',x:1,y:0},
+    {id:'route',label:'route',sub:'known clinic → direct · else network-first',kind:'proc',eff:'none',x:1,y:1},
+    {id:'avail',label:'execute | outreach · get_slots',sub:'⑂ fanout ×2–3 clinics',kind:'proc',eff:'none',x:1,y:2},
+    {id:'match',label:'rank',sub:'offered ∩ user calendar (calendar:read)',kind:'proc',eff:'none',x:1,y:3},
+    {id:'pick',label:'◷ slot choice',sub:'await_input',kind:'await',x:1,y:4},
+    {id:'book',label:'outreach · confirm',sub:'same channel',kind:'proc',eff:'irrev',x:1,y:5},
+    {id:'cal',label:'execute · calendar',sub:'+ remind at T−24h',kind:'proc',eff:'rev',x:1,y:6},
+    {id:'wait',label:'◷ waitlist',sub:'long await → sudden alert',kind:'await',x:2.15,y:3},
+    {id:'done',label:'done',sub:'appointment',kind:'term',x:1,y:7}],
+  edges:[
+    {f:'cons',t:'route'},{f:'route',t:'avail'},{f:'avail',t:'match'},
+    {f:'avail',t:'wait',label:'WAITLIST'},
+    {f:'wait',t:'pick',label:'slot freed',dash:1},
+    {f:'match',t:'pick'},
+    {f:'pick',t:'book',gate:1},
+    {f:'book',t:'cal'},{f:'cal',t:'done'}],
+  pats:[['user-calendar ∩ ranking',1],['insurance-network-first (survey link)',0],['waitlist: long await + urgent alert',1],['await(at:) reminder — plan, not timeout',1]]
+},
+{ id:'rest', tab:'Restaurant', title:'Restaurant table', dom:'restaurant_booking — prebuilt · pilot #1',
+  why:'The simplest of the six: one fan-out round, first_positive, short TTLs. decline_rest is non-optional — losers always get polite declines.',
+  w:3, nodes:[
+    {id:'disc',label:'discover',sub:'reservable_first ranking',kind:'proc',eff:'none',x:1,y:0},
+    {id:'pick',label:'◷ shortlist',sub:'await_input',kind:'await',x:1,y:1},
+    {id:'web',label:'execute · book_web',sub:'TheFork / widget — fast path',kind:'proc',eff:'irrev',x:0,y:2.5},
+    {id:'inq',label:'outreach.email|wa',sub:'⑂ fanout ×3',kind:'proc',eff:'rev',x:1.85,y:2},
+    {id:'coll',label:'fan-in · first_positive',sub:'ttl 45m · on_partial valid',kind:'proc',eff:'none',x:1.85,y:3},
+    {id:'parse',label:'parse_reply',sub:'',kind:'proc',eff:'none',x:1.85,y:4},
+    {id:'ctr',label:'◷ counter-offer',sub:'"19:30 instead?"',kind:'await',x:2.6,y:5},
+    {id:'commit',label:'outreach · confirm',sub:'same channel',kind:'proc',eff:'irrev',x:1.85,y:5.6},
+    {id:'decl',label:'decline_rest',sub:'automatic · non-optional',kind:'proc',eff:'rev',x:1.85,y:6.6},
+    {id:'done',label:'done',sub:'confirmation + screenshot',kind:'term',x:1,y:7.6}],
+  edges:[
+    {f:'disc',t:'pick'},
+    {f:'pick',t:'web',label:'reservable',gate:1},
+    {f:'pick',t:'inq',label:'no widget'},
+    {f:'inq',t:'coll'},{f:'coll',t:'parse'},
+    {f:'parse',t:'ctr',label:'COUNTER_OFFER'},
+    {f:'parse',t:'commit',label:'YES',gate:1},
+    {f:'ctr',t:'commit',label:'accepted',gate:1},
+    {f:'commit',t:'decl'},
+    {f:'web',t:'done'},{f:'decl',t:'done'}],
+  pats:[['reservable fast path',0],['first_positive fan-in',0],['COUNTER_OFFER edge',0],['non-optional decline_rest',0]]
+},
+{ id:'groc', tab:'Groceries', title:'Grocery shopping · recipes → orders', dom:'grocery_shopping',
+  why:'Multi-item optimization with basket splitting: N items assigned to M stores. Strategy (fast / cheap / quality) is the objective function, asked first. Offline stores are a parallel terminal, not a refusal.',
+  w:3, nodes:[
+    {id:'strat',label:'\u25f7 strategy',sub:'fast · cheap · quality · custom',kind:'await',x:1,y:0},
+    {id:'stores',label:'discover',sub:'known adapters + places · online | offline',kind:'proc',eff:'none',x:1,y:1},
+    {id:'cat',label:'execute \u00b7 product_search',sub:'\u2911 fanout \u00d7M stores \u00d7 N items',kind:'proc',eff:'none',x:1,y:2},
+    {id:'match',label:'match_products',sub:'LLM \u00b7 confidence \u00b7 substitutes',kind:'proc',eff:'none',x:1,y:3},
+    {id:'opt',label:'optimize_basket',sub:'objective: $strategy \u00b7 split plan',kind:'proc',eff:'none',x:1,y:4},
+    {id:'rev',label:'\u25f7 basket plan review',sub:'plan + substitutions + uncovered',kind:'await',x:1,y:5},
+    {id:'fill',label:'execute \u00b7 add_to_cart',sub:'\u2911 per store \u00b7 session:$store',kind:'proc',eff:'rev',x:1,y:6},
+    {id:'sub',label:'substitute_offer',sub:'out_of_stock \u2192 update review',kind:'proc',eff:'none',x:2.15,y:5.5},
+    {id:'chk',label:'execute \u00b7 place_order',sub:'\u00d7N stores \u00b7 gate each \u00b7 pay = handoff (P5)',kind:'proc',eff:'irrev',x:1,y:7},
+    {id:'off',label:'done \u00b7 offline list',sub:'per-store list \u00b7 addresses \u00b7 hours',kind:'handoff',x:2.15,y:7},
+    {id:'done',label:'done',sub:'orders[] + offline list',kind:'term',x:1,y:8}],
+  edges:[
+    {f:'strat',t:'stores'},{f:'stores',t:'cat'},{f:'cat',t:'match'},
+    {f:'match',t:'opt'},
+    {f:'match',t:'rev',label:'low confidence \u2192 flag',dash:1},
+    {f:'opt',t:'rev'},
+    {f:'rev',t:'fill',label:'approve',gate:1},
+    {f:'fill',t:'sub',label:'out_of_stock'},
+    {f:'sub',t:'rev',label:'update card',back:1,dash:1},
+    {f:'rev',t:'off',label:'uncovered \u00b7 offline only'},
+    {f:'fill',t:'chk',gate:1},
+    {f:'chk',t:'done'},{f:'off',t:'done',dash:1}],
+  pats:[['strategy as objective function, asked first',1],['match_products: semantic matching + confidence',1],['optimize_basket: split assignment',1],['composite done: orders + offline handoff',1],['substitute_offer = e-commerce COUNTER_OFFER',0],['N checkouts = N gates, one batch card',0]]
+},
+{ id:'camp', tab:'Kids camp', title:'Summer camp enrollment', dom:'kids_camp',
+  why:'Deadline-driven: timers are a plan, not a timeout. Document prerequisites are validated before the irreversible step; payment is a hard handoff (P5).',
+  w:3, nodes:[
+    {id:'res',label:'discover + survey_public',sub:'dates · ages · price · required docs',kind:'proc',eff:'none',x:1,y:0},
+    {id:'cmp',label:'◷ comparison table',sub:'shareable — two adults decide',kind:'await',x:1,y:1},
+    {id:'dl',label:'◷ await(at:)',sub:'enrollment opens / deadline − 3d',kind:'await',x:1,y:2},
+    {id:'docs',label:'documents.validate',sub:'health form · vaccination',kind:'proc',eff:'none',x:1,y:3},
+    {id:'photo',label:'device.photo',sub:'missing doc → camera',kind:'proc',eff:'none',x:2.15,y:3},
+    {id:'enr',label:'execute · application',sub:'form submit',kind:'proc',eff:'irrev',x:1,y:4},
+    {id:'pay',label:'payment · HANDOFF',sub:'P5: user pays, agent hands the link',kind:'handoff',x:1,y:5},
+    {id:'conf',label:'◷ await_reply → parse',sub:'',kind:'await',x:1,y:6},
+    {id:'wl',label:'◷ waitlist',sub:'long await · reply ttl 24h!',kind:'await',x:2.15,y:6},
+    {id:'done',label:'done',sub:'enrollment_ref',kind:'term',x:1,y:7}],
+  edges:[
+    {f:'res',t:'cmp'},{f:'cmp',t:'dl',label:'chosen'},
+    {f:'dl',t:'docs',label:'window open'},
+    {f:'docs',t:'photo',label:'missing',dash:1},
+    {f:'photo',t:'docs',back:1,dash:1},
+    {f:'docs',t:'enr',label:'ok',gate:1},
+    {f:'enr',t:'pay'},{f:'pay',t:'conf'},
+    {f:'conf',t:'wl',label:'WAITLIST'},
+    {f:'wl',t:'done',label:'spot freed → 24h to accept',dash:1},
+    {f:'conf',t:'done',label:'confirmed'}],
+  pats:[['deadline as plan — await(at:)',1],['doc prerequisites before irreversible',0],['shareable comparison input',1],['payment = hard handoff (P5)',0],['device.photo remote executor',0]]
+}];
+
+// ---- renderer ----
+const COLW=250, ROWH=104, NW=196, NH=52, PADX=26, PADY=26;
+function px(n){return {x:PADX+n.x*COLW, y:PADY+n.y*ROWH};}
+
+function edgePath(a,b,e){
+  const A=px(a), B=px(b);
+  const ax=A.x+NW/2, bx=B.x+NW/2;
+  let sy=A.y+NH, ty=B.y, sx=ax, tx=bx;
+  if(e.back){ // route around the side
+    const side = (a.x>=b.x)? -1 : 1;
+    const off = side*(NW/2+34);
+    sx = ax+ (side>0? NW/2:-NW/2)-NW/2+NW/2; // start mid, exit side
+    const x1 = Math.min(ax,bx)+ (side>0? Math.max(ax,bx)-Math.min(ax,bx)+NW/2+30 : -(NW/2+30));
+    const exitX = ax + side*NW/2, entX = bx + side*NW/2;
+    const sy2=A.y+NH/2, ty2=B.y+NH/2;
+    return {d:`M ${exitX} ${sy2} C ${exitX+side*46} ${sy2}, ${entX+side*46} ${ty2}, ${entX} ${ty2}`,
+            mid:{x:exitX+side*52, y:(sy2+ty2)/2}};
+  }
+  if(Math.abs(ax-bx)<2) return {d:`M ${sx} ${sy} L ${tx} ${ty}`, mid:{x:sx,y:(sy+ty)/2}};
+  const my=(sy+ty)/2;
+  return {d:`M ${sx} ${sy} C ${sx} ${my}, ${tx} ${my}, ${tx} ${ty}`, mid:{x:(sx+tx)/2,y:my}};
+}
+
+function nodeSVG(n){
+  const p=px(n); let g='';
+  const eff = n.eff? C[n.eff] : null;
+  if(n.kind==='term'||n.kind==='handoff'){
+    const col = n.kind==='term'?C.term:C.handoff;
+    const dash = n.kind==='handoff'?'stroke-dasharray="5 4"':'';
+    g+=`<rect x="${p.x+NW/2-78}" y="${p.y}" width="156" height="40" rx="20" fill="${n.kind==='term'?'#E7F2EA':'#fff'}" stroke="${col}" stroke-width="1.4" ${dash}/>
+        <text class="nl" x="${p.x+NW/2}" y="${p.y+18}" text-anchor="middle" fill="${col}">${n.label}</text>
+        <text class="ns" x="${p.x+NW/2}" y="${p.y+32}" text-anchor="middle">${n.sub||''}</text>`;
+    return g;
+  }
+  const isStand=n.kind==='standing', isAwait=n.kind==='await';
+  const stroke = isStand?C.standing:(isAwait?C.await:'#B9C4CD');
+  const dash = isStand?'stroke-dasharray="6 4"':'';
+  const accent = isAwait?C.await:(eff||C.none);
+  g+=`<rect x="${p.x}" y="${p.y}" width="${NW}" height="${NH}" rx="4" fill="#fff" stroke="${stroke}" stroke-width="1.3" ${dash}/>
+      <rect x="${p.x}" y="${p.y}" width="4" height="${NH}" rx="2" fill="${accent}"/>
+      <text class="nl" x="${p.x+12}" y="${p.y+21}">${n.label}</text>
+      <text class="ns" x="${p.x+12}" y="${p.y+37}">${n.sub||''}</text>`;
+  if(isStand){ // loop glyph
+    g+=`<text x="${p.x+NW-18}" y="${p.y+20}" font-size="13" fill="${C.standing}">⟳</text>`;
+  }
+  return g;
+}
+
+function render(gr){
+  const maxY=Math.max(...gr.nodes.map(n=>n.y));
+  const maxX=Math.max(...gr.nodes.map(n=>n.x));
+  const W=PADX*2+maxX*COLW+NW, H=PADY*2+maxY*ROWH+NH+16;
+  const nm=Object.fromEntries(gr.nodes.map(n=>[n.id,n]));
+  let edges='',labels='',gates='';
+  gr.edges.forEach(e=>{
+    const {d,mid}=edgePath(nm[e.f],nm[e.t],e);
+    const dash=e.dash?'stroke-dasharray="4 4"':'';
+    edges+=`<path d="${d}" fill="none" stroke="${C.line}" stroke-width="1.6" ${dash} marker-end="url(#arr)"/>`;
+    if(e.gate){
+      gates+=`<g transform="translate(${mid.x},${mid.y}) rotate(45)">
+              <rect x="-6" y="-6" width="12" height="12" fill="#fff" stroke="${C.gate}" stroke-width="1.6"/></g>
+              <text class="gl" x="${mid.x+11}" y="${mid.y+3}">gate</text>`;
+    }
+    if(e.label){
+      const dx=e.gate? 11+30 : 8;
+      labels+=`<text class="el" x="${mid.x+dx}" y="${mid.y - (e.gate? -3 : 4)}">${e.label}</text>`;
+    }
+  });
+  let nodes=''; gr.nodes.forEach(n=>nodes+=nodeSVG(n));
+  return `<svg viewBox="0 0 ${W} ${H}" width="${Math.min(W,860)}" style="min-width:${Math.min(W,560)}px">
+    <defs><marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#9AA8B4"/></marker></defs>
+    ${edges}${gates}${labels}${nodes}</svg>`;
+}
+
+function card(gr){
+  const pats=gr.pats.map(([t,nw])=>`<span class="pat${nw?' new':''}">${t}</span>`).join('');
+  return `<section class="card" id="c-${gr.id}">
+    <div class="hd"><div class="dom">${gr.dom}</div><h2>${gr.title}</h2><p class="why">${gr.why}</p></div>
+    <div class="svgwrap">${render(gr)}</div>
+    <div class="pats">${pats}</div>
+  </section>`;
+}
+
+const tabs=document.getElementById('tabs'), stage=document.getElementById('stage');
+GRAPHS.forEach((g,i)=>{
+  const b=document.createElement('button'); b.className='tab'+(i===0?' on':''); b.textContent=g.tab;
+  b.onclick=()=>{document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on')); b.classList.add('on'); show(g.id);};
+  tabs.appendChild(b);
+});
+function show(id){ const g=GRAPHS.find(x=>x.id===id); stage.innerHTML=card(g); }
+show('car');
+</script>
+</body>
+</html>

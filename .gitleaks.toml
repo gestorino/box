@@ -1,0 +1,34 @@
+# gitleaks: the default rules, less the fake keys the tests use on purpose. Each entry is one
+# file AND its fake value, so a real key in the same file is still found.
+#   docker run --rm -v "$PWD:/repo:ro" zricethezav/gitleaks:v8.24.3 dir /repo --no-banner --redact=50 -c /repo/.gitleaks.toml
+
+[extend]
+useDefault = true
+
+# The default rule's own settings stay; these allowlists are added to it.
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "RFC 6455's example Sec-WebSocket-Key"
+condition = "AND"
+paths = ['''(^|/)src/browser/tests/box/test_screen_box\.py$''']
+regexes = ['''^dGhlIHNhbXBsZSBub25jZQ==$''']
+
+[[rules.allowlists]]
+description = "fake OpenRouter key"
+condition = "AND"
+paths = ['''(^|/)src/engine/internal/(aikey/aikey|keyfile/keyfile)_test\.go$''']
+regexes = ['''^sk-or-v1-0123456789abcdefa1b2$''']
+
+[[rules.allowlists]]
+description = "fake OpenAI keys"
+condition = "AND"
+paths = ['''(^|/)src/engine/internal/calls/key_test\.go$''', '''(^|/)src/ui/src/pages/connector-setup\.test\.tsx$''']
+regexes = ['''^sk-proj-(0123456789abcdefc3d4|abc123)$''']
+
+[[rules.allowlists]]
+description = "fake Telegram api_hash"
+condition = "AND"
+paths = ['''(^|/)src/engine/internal/telegram/handler_test\.go$''']
+regexes = ['''^0123456789abcdef0123456789abcdef$''']

@@ -1,0 +1,48 @@
+# The panel of a run's screen: the open windows, the tray and the clock, as on a person's desktop.
+# No launcher: the owner's hands reach the whole display over VNC, and nothing here may start a program.
+# The worker writes it into the screen's directory with @PANEL_HEIGHT@ filled in (screen.py).
+
+# Background 1: the panel's. tint2 numbers backgrounds by their `rounded` lines, in order, and
+# segfaults at start on an id used before its background is defined, so they come first.
+rounded = 0
+border_width = 0
+background_color = #2b2b2b 100
+border_color = #000000 0
+
+panel_items = TSC
+panel_monitor = all
+panel_position = bottom center horizontal
+panel_size = 100% @PANEL_HEIGHT@
+panel_margin = 0 0
+panel_padding = 4 2 4
+panel_background_id = 1
+wm_menu = 0
+panel_dock = 0
+strut_policy = follow_size
+panel_layer = top
+
+taskbar_mode = single_desktop
+taskbar_padding = 2 2 2
+task_text = 1
+task_maximum_size = 200 28
+task_padding = 6 2 4
+task_font = sans 10
+task_font_color = #ffffff 100
+task_active_font_color = #ffffff 100
+task_background_id = 1
+task_active_background_id = 1
+
+systray_padding = 4 2 4
+systray_background_id = 0
+
+time1_format = %H:%M
+time1_font = sans 10
+clock_font_color = #ffffff 100
+clock_padding = 6 2
+clock_background_id = 0
+
+mouse_left = none
+mouse_middle = none
+mouse_right = none
+mouse_scroll_up = none
+mouse_scroll_down = none

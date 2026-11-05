@@ -1,0 +1,7 @@
+# The sites the box has had cards for, one a line: the site's name, then its host. Only the "no code
+# names a site" guards read it (src/engine/internal/signins/nosite_test.go,
+# src/browser/tests/test_no_site_named.py, src/ui/src/test/words.test.ts): nothing ships or loads it.
+# The catalog itself is the box's own, grown through the API.
+Booksy booksy.com
+idealista www.idealista.pt
+TheFork www.thefork.pt

@@ -1,0 +1,58 @@
+#!/bin/sh
+# pre-push — nothing but the public history, and no tag but a release's, ever leaves this repo.
+#
+# The public main is one parentless commit and what descends from it; the history before it (kept
+# locally on `pre-public`) and the deploys' patch tags (vX.Y.Z, Z > 0) must never be pushed.
+# For every ref git is about to push (stdin: <local ref> <local sha> <remote ref> <remote sha>):
+#   - a delete is refused (removing a remote ref is done by hand on GitHub, if ever);
+#   - a tag other than refs/tags/vX.Y.0 is refused;
+#   - a commit is refused unless every commit it reaches comes from main's root, the single
+#     parentless commit reachable from the local main: no other root may come along (a branch of
+#     the old history, or a merge of it into a public branch).
+# Any refusal fails the whole push. Installed by hand: cp scripts/git-hooks/pre-push .git/hooks/
+set -u
+
+roots=$(git rev-list --max-parents=0 refs/heads/main 2>/dev/null) || roots=
+count=$(printf '%s' "$roots" | grep -c .)
+if [ "$count" -ne 1 ]; then
+	echo "pre-push: refusing every ref: the local main has $count root commits, not the single" \
+		"public root, so the public history can't be told apart" >&2
+	exit 1
+fi
+root=$roots
+
+refused=0
+refuse() {
+	echo "pre-push: refusing $1: $2" >&2
+	refused=1
+}
+
+while read -r local_ref local_sha remote_ref _; do
+	[ -n "$local_ref" ] || continue
+	case $local_sha in
+	*[!0]*) ;;
+	*)
+		refuse "$remote_ref" "a delete of a remote ref"
+		continue
+		;;
+	esac
+	case $remote_ref in
+	refs/tags/*)
+		if ! printf '%s\n' "${remote_ref#refs/tags/}" | grep -Eqx 'v[0-9]+\.[0-9]+\.0'; then
+			refuse "$remote_ref" "only release tags (vX.Y.0) are pushed; patch tags stay local"
+			continue
+		fi
+		;;
+	esac
+	if ! commit=$(git rev-parse -q --verify "$local_sha^{commit}"); then
+		refuse "$remote_ref" "$local_sha is not a commit"
+		continue
+	fi
+	others=$(git rev-list --max-parents=0 "$commit" | grep -vxF "$root")
+	if [ -n "$others" ]; then
+		refuse "$remote_ref" "$local_ref reaches history outside the public main (root $(git rev-parse --short "$root")): other root(s) $(printf '%s' "$others" | cut -c1-12 | tr '\n' ' ')"
+	fi
+done
+
+[ "$refused" -eq 0 ] || exit 1
+exit 0

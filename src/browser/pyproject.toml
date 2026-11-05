@@ -1,0 +1,41 @@
+[project]
+name = "concierge-worker"
+version = "0.1.0"
+description = "The browser worker: a Python process speaking the daemon's IPC contract."
+requires-python = ">=3.11"
+# browser-use is PINNED to a minor line, not floated. The three properties this adoption rests on —
+# the pre-action gate, our fill action, origin containment — hang off internals their own changelog
+# does not treat as API (`register_new_step_callback`'s call site, `Tools.registry.registry.actions`,
+# `TypeTextEvent.sensitive_key_name`), and upstream ships ~790 commits a quarter with the agent loop
+# being rewritten in Rust. The bound is what turns "an upgrade silently un-refused something" into a
+# deliberate, re-verified step (spec: Risks accepted, in the open).
+#
+# pydantic is direct as well as transitive: `fill.py` declares its action's parameters to the model
+# as a `param_model` JSON schema, which should not break because browser-use dropped the dependency.
+dependencies = [
+  "browser-use>=0.13.8,<0.14",
+  "pydantic>=2",
+  # `card.py` scales a site's icon to the small PNG its card carries; already in the tree via
+  # browser-use, declared because we import it directly.
+  "pillow>=11",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["concierge_worker"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# `--strict-markers` is the half that actually bites. Declaring the marker only silences a warning:
+# `pytestmark = pytest.mark.liv` would still register, still be deselected by `-m live`, and still
+# be SELECTED by `-m 'not live'` — quietly moving the enforcement proof into the fast tier, where
+# it would try to launch Chromium on every commit. With this, an undeclared marker is a collection
+# error.
+addopts = "--strict-markers"
+markers = [
+  "live: launches a real Chromium against the loopback fixture — `npm run test:worker-py:live`, never the per-commit bar",
+  "box: the screen on the real mini-PC over SSH (Xvnc, openbox, websockify, Chrome) — `make test-box`, never the per-commit bar",
+]

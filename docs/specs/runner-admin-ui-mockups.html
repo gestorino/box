@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Concierge Runner — Admin Console (mockups)</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#F3F5F7; --panel:#FFFFFF; --ink:#17242F; --ink2:#4A5B69; --ink3:#8595A2;
+  --line:#D8DFE5; --line2:#EAEEF2;
+  --none:#64748B; --rev:#B07A1E; --irrev:#C13A24; --await:#0E7C7B; --gate:#6D4AB0;
+  --term:#2E7D4F; --standing:#2563A8; --ok:#2E7D4F; --warn:#B07A1E; --err:#C13A24;
+  --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --disp:'Barlow Condensed','Arial Narrow',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--paper);color:var(--ink);font-family:var(--mono);font-size:12.5px;line-height:1.5}
+a{color:inherit}
+button{font-family:var(--mono);font-size:11px;padding:5px 11px;border:1px solid var(--line);
+  border-radius:4px;background:#fff;cursor:pointer;color:var(--ink)}
+button:hover{border-color:var(--ink2)}
+button:focus-visible{outline:2px solid var(--gate);outline-offset:1px}
+button.primary{background:var(--ink);color:#fff;border-color:var(--ink)}
+button.danger{color:var(--err);border-color:#E4B7AE}
+.badge15{font-size:9px;background:#EFE7F8;color:var(--gate);border:1px solid #D8C8EE;
+  border-radius:3px;padding:1px 5px;vertical-align:2px;margin-left:6px}
+
+/* shell */
+.shell{display:grid;grid-template-columns:196px 1fr;min-height:100vh}
+.rail{background:var(--panel);border-right:1px solid var(--line);padding:18px 0}
+.brand{padding:0 18px 16px;border-bottom:1px solid var(--line2);margin-bottom:10px}
+.brand h1{font-family:var(--disp);font-size:21px;font-weight:700;letter-spacing:.5px;text-transform:uppercase}
+.brand .sub{font-size:10px;color:var(--ink3)}
+.brand .tun{margin-top:8px;font-size:10px;color:var(--ok)}
+.brand .tun::before{content:"●";margin-right:5px}
+.nav button{display:block;width:100%;text-align:left;border:none;border-radius:0;background:none;
+  padding:9px 18px;font-family:var(--disp);font-size:15.5px;font-weight:600;letter-spacing:.4px;
+  color:var(--ink2);border-left:3px solid transparent}
+.nav button.on{color:var(--ink);border-left-color:var(--irrev);background:var(--paper)}
+main{padding:20px 22px 60px;max-width:1060px}
+.crumb{font-size:10px;color:var(--ink3);letter-spacing:.6px;text-transform:uppercase;margin-bottom:4px}
+h2{font-family:var(--disp);font-size:26px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-bottom:14px}
+h3{font-family:var(--disp);font-size:16px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;
+   color:var(--ink2);margin:0 0 8px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin-bottom:14px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+.kv{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.chip{font-size:10px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--ink2);background:var(--paper)}
+.chip.dom{border-color:#E4B7AE;color:var(--irrev)}
+.chip.state{border-color:#BFE0DE;color:var(--await);background:#EDF6F6}
+table{width:100%;border-collapse:collapse;font-size:11.5px}
+th{font-family:var(--disp);font-size:12.5px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;
+   color:var(--ink3);text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+td{padding:7px 8px;border-bottom:1px solid var(--line2);vertical-align:top}
+tr:last-child td{border-bottom:none}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:-1px}
+.dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)} .dot.err{background:var(--err)} .dot.off{background:#B9C4CD}
+.mut{color:var(--ink3)} .sm{font-size:10.5px}
+.right{text-align:right}
+.bar{height:5px;border-radius:3px;background:var(--line2);overflow:hidden;min-width:70px}
+.bar i{display:block;height:100%;border-radius:3px}
+
+/* inspector graph strip */
+.gwrap{overflow-x:auto;-webkit-overflow-scrolling:touch;padding:4px 0 2px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:10px;color:var(--ink3);margin-top:6px}
+.sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.dm{display:inline-block;width:8px;height:8px;transform:rotate(45deg);margin-right:5px;background:#fff;border:1.5px solid var(--gate);vertical-align:-1px}
+@keyframes pulse{0%{stroke-opacity:.9;stroke-width:2}50%{stroke-opacity:.25;stroke-width:5}100%{stroke-opacity:.9;stroke-width:2}}
+.cur{animation:pulse 1.8s ease-in-out infinite}
+@media (prefers-reduced-motion: reduce){.cur{animation:none;stroke-width:3}}
+
+/* journal */
+.jrow{display:grid;grid-template-columns:44px 74px 1fr;gap:8px;padding:5px 0;border-bottom:1px dashed var(--line2);font-size:11px}
+.jrow:last-child{border-bottom:none}
+.jseq{color:var(--ink3)} .jt{color:var(--ink3)}
+.jv{font-weight:600}
+.ev-gate{color:var(--gate)} .ev-eff{color:var(--rev)} .ev-await{color:var(--await)}
+
+/* intents */
+.intent{border:1px solid var(--line2);border-radius:6px;padding:9px 11px;margin-bottom:8px}
+.intent.pending{border-color:#E4B7AE;background:#FBF3F1}
+.intent .st{font-size:9.5px;letter-spacing:.6px;text-transform:uppercase;font-weight:600}
+.intent.pending .st{color:var(--err)}
+.intent.done .st{color:var(--ok)}
+.intent .acts{margin-top:7px;display:flex;gap:6px;flex-wrap:wrap}
+
+/* threads */
+.msg{border-left:3px solid var(--line);padding:6px 10px;margin-bottom:8px}
+.msg.out{border-left-color:var(--rev)}
+.msg.in{border-left-color:var(--await)}
+.msg .hd{font-size:10px;color:var(--ink3);margin-bottom:2px}
+.tag{font-size:9px;border:1px solid var(--line);border-radius:3px;padding:0 4px;color:var(--ink3)}
+
+/* trace strip */
+.shots{display:flex;gap:8px;overflow-x:auto;padding:4px 0}
+.shot{flex:0 0 128px;border:1px solid var(--line);border-radius:5px;overflow:hidden;background:#fff}
+.shot .ph{height:76px;background:
+  repeating-linear-gradient(45deg,#EDF1F5 0 8px,#F6F8FA 8px 16px);position:relative}
+.shot .ph::after{content:attr(data-n);position:absolute;left:6px;top:5px;font-size:9px;color:var(--ink3);
+  background:#fff;border:1px solid var(--line);border-radius:3px;padding:0 4px}
+.shot figcaption{font-size:9.5px;padding:4px 7px;color:var(--ink2)}
+
+/* health widgets */
+.qr{width:92px;height:92px;border:1px solid var(--line);border-radius:4px;background:
+  repeating-conic-gradient(#17242F 0 25%,#fff 0 50%) 0 0/14px 14px}
+.timer{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed var(--line2);font-size:11px}
+.timer:last-child{border-bottom:none}
+.logline{font-size:10.5px;color:var(--ink2);padding:2px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.logline b{font-weight:600}
+.log-warn b{color:var(--warn)} .log-err b{color:var(--err)}
+
+/* status chips */
+.lad{font-size:9.5px;padding:2px 7px;border-radius:3px;border:1px solid;font-weight:600;letter-spacing:.3px}
+.lad.verified{color:var(--term);border-color:#BBDCC6;background:#EDF6F0}
+.lad.suspect{color:var(--err);border-color:#E9BDB4;background:#FBF1EF}
+.lad.browser{color:var(--none);border-color:var(--line);background:var(--paper)}
+.lad.draft{color:var(--gate);border-color:#D8C8EE;background:#F5F0FB}
+
+.spark{display:flex;align-items:flex-end;gap:3px;height:52px}
+.spark i{display:block;width:14px;background:#C6D2DB;border-radius:2px 2px 0 0}
+.spark i.hi{background:var(--irrev)}
+.note{font-size:10.5px;color:var(--ink3);margin-top:6px}
+
+@media (max-width:760px){
+  .shell{grid-template-columns:1fr}
+  .rail{display:flex;overflow-x:auto;border-right:none;border-bottom:1px solid var(--line);padding:8px 8px}
+  .brand{display:none}
+  .nav{display:flex}
+  .nav button{border-left:none;border-bottom:3px solid transparent;white-space:nowrap;padding:8px 12px}
+  .nav button.on{border-bottom-color:var(--irrev);border-left:none}
+  .grid2,.grid3{grid-template-columns:1fr}
+  main{padding:16px 12px 60px}
+}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="rail">
+    <div class="brand">
+      <h1>Runner</h1>
+      <div class="sub">concierge daemon · v0.4.1</div>
+      <div class="tun">tailscale-serve · lan only</div>
+    </div>
+    <nav class="nav" id="nav"></nav>
+  </aside>
+  <main id="main"></main>
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+const SCREENS=[
+ {id:'insp',label:'Task Inspector'},
+ {id:'sess',label:'Sessions & Vault'},
+ {id:'health',label:'Health & Config'},
+ {id:'wb',label:'Workbench',v15:1},
+ {id:'eco',label:'Economics',v15:1},
+];
+
+/* ---------- Task Inspector ---------- */
+function graphStrip(){
+  // horizontal mini-graph: car_rental madeira, current = shortlist (await), negotiate branch pending
+  const W=980,H=170;
+  const N=(x,y,w,label,sub,acc,extra)=>`
+    <g ${extra||''}>
+    <rect x="${x}" y="${y}" width="${w}" height="42" rx="4" fill="#fff" stroke="#C4CFD8" stroke-width="1.2"/>
+    <rect x="${x}" y="${y}" width="4" height="42" rx="2" fill="${acc}"/>
+    <text x="${x+11}" y="${y+18}" font-size="11" font-weight="600" fill="#17242F">${label}</text>
+    <text x="${x+11}" y="${y+32}" font-size="8.5" fill="#4A5B69">${sub}</text></g>`;
+  const E=(d,done,dash)=>`<path d="${d}" fill="none" stroke="${done?'#8B9AA6':'#D8DFE5'}"
+      stroke-width="1.6" ${dash?'stroke-dasharray="4 4"':''} marker-end="url(#a2)"/>`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="min-width:900px">
+   <defs><marker id="a2" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+     <path d="M0,0 L8,4 L0,8 z" fill="#9AA8B4"/></marker></defs>
+   ${E('M 128 51 L 158 51',1)}
+   ${E('M 300 51 L 330 51',1)}
+   ${E('M 458 40 C 500 20, 520 20, 556 30',1)}
+   ${E('M 458 62 L 556 88',1)}
+   ${E('M 700 96 C 730 96, 736 62, 758 56',0,1)}
+   ${E('M 700 34 L 758 46',0)}
+   ${E('M 868 51 L 900 51',0)}
+   ${N(18,30,110,'discover','places · 6 found','#64748B')}
+   ${N(158,30,142,'execute · search','⑂ ×5 · all replied','#64748B')}
+   ${N(330,30,128,'fan-in · wait_all','5/5 · 41 s','#64748B')}
+   ${N(556,14,144,'outreach.email','⑂ ×2 · negotiate','#B07A1E')}
+   ${N(556,76,144,'◷ shortlist','await_input · live','#0E7C7B',
+      `class=""`)}
+   <rect x="553" y="73" width="150" height="48" rx="6" fill="none" stroke="#0E7C7B" class="cur"/>
+   <g transform="translate(742,51) rotate(45)"><rect x="-5.5" y="-5.5" width="11" height="11" fill="#fff" stroke="#6D4AB0" stroke-width="1.6"/></g>
+   ${N(758,30,110,'execute · commit','irreversible','#C13A24')}
+   ${N(900,30,72,'done','voucher','#2E7D4F')}
+   <g font-size="9" fill="#4A5B69">
+     <text x="470" y="14">negotiate: awaiting reply</text>
+     <text x="470" y="25" fill="#B07A1E">◷ 3 h 12 m left (ttl 24 h)</text>
+     <text x="712" y="120" fill="#8595A2">update card (async)</text>
+     <text x="716" y="44" fill="#6D4AB0" font-weight="600">gate</text>
+   </g>
+  </svg>`;
+}
+function screenInsp(){return `
+<div class="crumb">tasks / t-8f3k</div>
+<h2>Car rental · Madeira</h2>
+<div class="kv" style="margin-bottom:12px">
+  <span class="chip dom">car_rental v2 · pinned 9c41f2</span>
+  <span class="chip state">AWAITING · shortlist + 1 reply</span>
+  <span class="chip">degradation: none</span>
+  <span class="chip">started Aug 6 · 14:02</span>
+</div>
+
+<div class="card">
+  <h3>Live graph</h3>
+  <div class="gwrap">${graphStrip()}</div>
+  <div class="legend">
+    <span><span class="sw" style="background:#64748B"></span>none</span>
+    <span><span class="sw" style="background:#B07A1E"></span>reversible</span>
+    <span><span class="sw" style="background:#C13A24"></span>irreversible</span>
+    <span><span class="sw" style="background:#0E7C7B"></span>await — current, pulsing</span>
+    <span><span class="dm"></span>gate ahead</span>
+  </div>
+</div>
+
+<div class="grid3">
+  <div class="card">
+    <h3>Journal <span class="mut sm">events 1–14</span></h3>
+    <div class="jrow"><span class="jseq">#14</span><span class="jt">16:44:10</span><span><span class="jv ev-await">shortlist</span> card updated — Guerin −15% offer applied</span></div>
+    <div class="jrow"><span class="jseq">#13</span><span class="jt">16:44:09</span><span><span class="jv">parse_reply</span> → PRICE_OFFER €197/wk <span class="mut">(conf .94)</span></span></div>
+    <div class="jrow"><span class="jseq">#12</span><span class="jt">16:44:07</span><span>inbound · reservas@guerin.pt</span></div>
+    <div class="jrow"><span class="jseq">#11</span><span class="jt">14:07:31</span><span><span class="jv ev-await">shortlist</span> presented · 5 options → device iphone-N</span></div>
+    <div class="jrow"><span class="jseq">#10</span><span class="jt">14:07:12</span><span><span class="jv ev-eff">outreach.email</span> ×2 sent <span class="mut">(intents i-77, i-78)</span></span></div>
+    <div class="jrow"><span class="jseq">#9</span><span class="jt">14:06:58</span><span><span class="jv">fan-in</span> wait_all satisfied · 5/5 · 41 s</span></div>
+    <div class="jrow"><span class="jseq">#5</span><span class="jt">14:06:17</span><span><span class="jv">execute·search</span> guerin.pt <span class="mut">executor: http ✓</span></span></div>
+    <div class="jrow"><span class="jseq">#4</span><span class="jt">14:06:17</span><span><span class="jv">execute·search</span> rentacar-madeira <span class="mut">executor: browser · trace 22 steps</span></span></div>
+  </div>
+
+  <div class="card">
+    <h3>Intents</h3>
+    <div class="intent pending">
+      <div class="st">pending — survived restart</div>
+      <div style="margin:3px 0 1px">i-78 · outreach.email → sixt-funchal</div>
+      <div class="sm mut">Send may or may not have completed before shutdown (16:51). Message-id not found in Sent.</div>
+      <div class="acts">
+        <button class="primary">Mark not executed — retry</button>
+        <button>Found it — mark done</button>
+        <button>Ask me in the app</button>
+      </div>
+    </div>
+    <div class="intent done">
+      <div class="st">done</div>
+      <div style="margin:3px 0 1px">i-77 · outreach.email → guerin</div>
+      <div class="sm mut">msg-id 8c12…@gmail.com · replied 16:44</div>
+    </div>
+    <div class="intent done">
+      <div class="st">done</div>
+      <div style="margin:3px 0 1px">i-63 · execute.search ×5</div>
+      <div class="sm mut">no side effects · effects: none</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Threads</h3>
+    <div class="msg out">
+      <div class="hd">→ reservas@guerin.pt · 14:07 · <span class="tag">from owner+t8f3k@example.com</span></div>
+      Bom dia — reserva de 14–30 ago, Mini Cabrio… melhor tarifa semanal?
+    </div>
+    <div class="msg in">
+      <div class="hd">← guerin · 16:44 · <span class="tag">attributed: plus-address</span></div>
+      Podemos oferecer €197/semana com seguro incluído…
+    </div>
+    <div class="msg out">
+      <div class="hd">→ reservas@sixt-funchal.pt · 14:07 · <span class="tag">intent i-78 ⚠</span></div>
+      <span class="mut">Delivery unconfirmed — see Intents.</span>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Browser trace · rentacar-madeira · 22 steps <span style="float:right"><button>Replay screencast</button> <button>Open HAR</button></span></h3>
+  <div class="shots">
+    <figure class="shot"><div class="ph" data-n="04"></div><figcaption>search form filled · pickup_date → “14/08”</figcaption></figure>
+    <figure class="shot"><div class="ph" data-n="09"></div><figcaption>cookie banner dismissed</figcaption></figure>
+    <figure class="shot"><div class="ph" data-n="15"></div><figcaption>results · 7 cars · anchor for HAR match</figcaption></figure>
+    <figure class="shot"><div class="ph" data-n="22"></div><figcaption>final state · €188 total captured</figcaption></figure>
+  </div>
+  <div class="note">Trace layers: actions ✓ · HAR 214 req ✓ · semantics 6 slots ✓ · screenshots 9 — eligible for distillation (Phase 1.5)</div>
+</div>`;}
+
+/* ---------- Sessions ---------- */
+function screenSess(){return `
+<div class="crumb">sessions</div>
+<h2>Sessions & Vault</h2>
+<div class="card">
+<table>
+<tr><th>Provider</th><th>Status</th><th>Age</th><th>TTL forecast</th><th>Last keepalive</th><th class="right">Actions</th></tr>
+<tr><td>medis.pt</td><td><span class="dot ok"></span>alive</td><td>19 d</td>
+    <td><div class="bar"><i style="width:38%;background:#B07A1E"></i></div><span class="sm mut">~11 d left</span></td>
+    <td class="sm mut">today 06:00</td>
+    <td class="right"><button>Check now</button> <button>Re-open login</button> <button class="danger">Delete</button></td></tr>
+<tr><td>fidelidade.pt</td><td><span class="dot err"></span>expired</td><td>44 d</td>
+    <td><div class="bar"><i style="width:100%;background:#C13A24"></i></div><span class="sm mut">re-login needed</span></td>
+    <td class="sm mut">Aug 2 · failed</td>
+    <td class="right"><button class="primary">Re-open login</button> <button class="danger">Delete</button></td></tr>
+<tr><td>europcar.com</td><td><span class="dot ok"></span>alive</td><td>6 d</td>
+    <td><div class="bar"><i style="width:12%;background:#2E7D4F"></i></div><span class="sm mut">~24 d left</span></td>
+    <td class="sm mut">today 06:00</td>
+    <td class="right"><button>Check now</button> <button>Re-open login</button> <button class="danger">Delete</button></td></tr>
+<tr><td>continente.pt</td><td><span class="dot off"></span>no session</td><td>—</td><td class="sm mut">used by grocery_shopping</td><td>—</td>
+    <td class="right"><button class="primary">Open login</button></td></tr>
+</table>
+<div class="note">Re-open login: headful window on this machine, or stream to a paired phone. MFA lands on the phone either way.</div>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h3>Capability map</h3>
+    <table>
+      <tr><th>Adapter</th><th>Requires</th><th>Satisfiable</th></tr>
+      <tr><td>medis-portal</td><td>session:medis</td><td><span class="dot ok"></span>yes</td></tr>
+      <tr><td>fidelidade-claims</td><td>session:fidelidade</td><td><span class="dot err"></span>blocked — session expired</td></tr>
+      <tr><td>guerin / sixt / rentacar-m</td><td>— (public)</td><td><span class="dot ok"></span>yes</td></tr>
+      <tr><td>outreach.email</td><td>email_credentials</td><td><span class="dot ok"></span>gmail imap+smtp</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <h3>Vault <span class="mut sm">names & metadata only — values are never shown</span></h3>
+    <table>
+      <tr><th>Entry</th><th>Kind</th><th>Added</th><th>Used by</th></tr>
+      <tr><td>gmail-app-password</td><td>smtp/imap</td><td>Jun 12</td><td>outreach.email</td></tr>
+      <tr><td>places-api-key</td><td>api key</td><td>Jun 12</td><td>discover</td></tr>
+      <tr><td>anthropic-api-key</td><td>api key</td><td>Jun 12</td><td>LLM vertices</td></tr>
+    </table>
+  </div>
+</div>`;}
+
+/* ---------- Health ---------- */
+function screenHealth(){return `
+<div class="crumb">health</div>
+<h2>Health & Config</h2>
+<div class="grid3">
+  <div class="card">
+    <h3>Tunnel & pairing</h3>
+    <div style="display:flex;gap:14px;align-items:flex-start">
+      <div class="qr" role="img" aria-label="pairing QR"></div>
+      <div class="sm">
+        <div><span class="dot ok"></span>tailscale-serve</div>
+        <div class="mut" style="margin:4px 0">https://runner.example.ts.net</div>
+        <div class="mut">/admin: lan + tailnet only<br>never mapped to public modes</div>
+        <div style="margin-top:8px"><button>New pairing code</button></div>
+      </div>
+    </div>
+    <table style="margin-top:10px">
+      <tr><th>Device</th><th>Scope</th><th></th></tr>
+      <tr><td>iphone-N · PWA</td><td>client + admin</td><td class="right"><button class="danger">Revoke</button></td></tr>
+      <tr><td>telegram-bot</td><td>client</td><td class="right"><button class="danger">Revoke</button></td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3>Channels & engine</h3>
+    <table>
+      <tr><td>IMAP poller</td><td><span class="dot ok"></span>alive · last mail 2 m ago</td></tr>
+      <tr><td>SMTP</td><td><span class="dot ok"></span>ok · <button class="sm">Send test</button></td></tr>
+      <tr><td>WhatsApp bridge</td><td><span class="dot ok"></span>connected · 24h window: 2 threads open</td></tr>
+      <tr><td>Projection</td><td><button class="primary">Verify (fsck)</button> <span class="sm mut">last: today 06:00 · clean</span></td></tr>
+      <tr><td>Pending intents</td><td><span class="dot warn"></span>1 — <a href="#" onclick="go('insp');return false">t-8f3k / i-78</a></td></tr>
+      <tr><td>Disk · traces</td><td>1.9 GB · retention 30 d · <button class="sm">Prune now</button></td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3>Timers · next 7 days</h3>
+    <div class="timer"><span>t-8f3k · negotiate ttl</span><span class="mut">today 19:56</span></div>
+    <div class="timer"><span>t-9a21 · claim follow-up (30 d SLA)</span><span class="mut">Aug 11 · 09:00</span></div>
+    <div class="timer"><span>keepalive · medis</span><span class="mut">Aug 12 · 06:00</span></div>
+    <div class="timer"><span>t-77c0 · camp await(at:) — enrollment opens</span><span class="mut">Aug 14 · 09:00 <b>Europe/Lisbon</b></span></div>
+    <div class="note">Timers missed while the daemon is down fire at startup (catch-up).</div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Daemon log <span class="mut sm">level ≥ info</span></h3>
+  <div class="logline"><b>16:52:01 info</b> restart complete · journal seq 1408 · projection rebuilt in 0.3 s</div>
+  <div class="logline log-warn"><b>16:52:01 warn</b> 1 pending intent found — reconciliation required (t-8f3k/i-78)</div>
+  <div class="logline"><b>16:44:10 info</b> inbound attributed via plus-address → t-8f3k</div>
+  <div class="logline log-err"><b>14:06:41 error</b> executor http guerin.pt → 419, fell back to form ✓ (ladder)</div>
+</div>`;}
+
+/* ---------- Workbench ---------- */
+function screenWb(){return `
+<div class="crumb">workbench</div>
+<h2>Adapters & Graphs <span class="badge15">PHASE 1.5</span></h2>
+<div class="card">
+<table>
+<tr><th>Adapter</th><th>Status</th><th>Fallback rate</th><th>Last validated</th><th class="right">Actions</th></tr>
+<tr><td>guerin.pt</td><td><span class="lad verified">VERIFIED</span></td>
+  <td><div class="bar"><i style="width:6%;background:#2E7D4F"></i></div><span class="sm mut">6%</span></td>
+  <td class="sm mut">today · CI probe (public)</td>
+  <td class="right"><button>Probe now</button></td></tr>
+<tr><td>sixt-funchal</td><td><span class="lad suspect">SUSPECT</span></td>
+  <td><div class="bar"><i style="width:64%;background:#C13A24"></i></div><span class="sm mut">64% ↑</span></td>
+  <td class="sm mut">Aug 5 · shadow diverged</td>
+  <td class="right"><button class="primary">View trace diff</button> <button>Re-distill</button></td></tr>
+<tr><td>rentacar-madeira</td><td><span class="lad browser">BROWSER-ONLY</span></td>
+  <td><div class="bar"><i style="width:100%;background:#8595A2"></i></div><span class="sm mut">100% by def.</span></td>
+  <td class="sm mut">2 traces recorded</td>
+  <td class="right"><button class="primary">Distill from t-8f3k</button></td></tr>
+<tr><td>medis-portal</td><td><span class="lad verified">VERIFIED</span></td>
+  <td><div class="bar"><i style="width:9%;background:#2E7D4F"></i></div><span class="sm mut">9%</span></td>
+  <td class="sm mut">Aug 6 · opportunistic (auth)</td>
+  <td class="right"><span class="sm mut">no CI probe — authenticated</span></td></tr>
+</table>
+<div class="note">sixt-funchal diff summary: POST /api/offers → 419; page now sets <span style="color:var(--gate)">x-csrf via /session/init</span> — one new chain step, auto-draft ready.</div>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h3>Graphs</h3>
+    <table>
+      <tr><th>Domain</th><th>Validator</th><th class="right"></th></tr>
+      <tr><td>car_rental v2</td><td><span class="dot ok"></span>7/7 checks</td><td class="right"><button>Dry-run</button></td></tr>
+      <tr><td>insurance_reimbursement v1</td><td><span class="dot ok"></span>7/7</td><td class="right"><button>Dry-run</button></td></tr>
+      <tr><td>grocery_shopping draft</td><td><span class="dot err"></span>P3: path reaches place_order bypassing gate via substitute_offer</td>
+      <td class="right"><button>Show path</button></td></tr>
+      <tr><td>generic_request v1</td><td><span class="dot ok"></span>7/7</td><td class="right"><button>Dry-run</button></td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <h3>Dry-run · car_rental</h3>
+    <div class="sm mut" style="margin-bottom:6px">All effectful executors mocked — enforced by the engine, not this UI.</div>
+    <div class="jrow"><span class="jseq">dr-1</span><span class="jt">+0.0s</span><span>discover → 6 mock candidates</span></div>
+    <div class="jrow"><span class="jseq">dr-2</span><span class="jt">+0.1s</span><span>fan-out ×5 → fan-in wait_all ok</span></div>
+    <div class="jrow"><span class="jseq">dr-3</span><span class="jt">+0.1s</span><span class="ev-gate">gate reached — would ask approval</span></div>
+    <div class="jrow"><span class="jseq">dr-4</span><span class="jt">+0.1s</span><span>commit (mock) → done · virtual clock: 26 h simulated</span></div>
+    <div style="margin-top:8px"><button class="primary">Run again</button> <button>Edit slots</button></div>
+  </div>
+</div>`;}
+
+/* ---------- Economics ---------- */
+function screenEco(){return `
+<div class="crumb">economics</div>
+<h2>Spend <span class="badge15">PHASE 1.5</span></h2>
+<div class="grid2">
+  <div class="card">
+    <h3>LLM spend · last 14 days</h3>
+    <div class="spark">
+      <i style="height:18%"></i><i style="height:24%"></i><i style="height:12%"></i><i style="height:30%"></i>
+      <i style="height:22%"></i><i style="height:8%"></i><i style="height:6%"></i><i style="height:44%"></i>
+      <i style="height:36%"></i><i style="height:28%"></i><i style="height:52%"></i><i style="height:20%"></i>
+      <i class="hi" style="height:92%"></i><i style="height:31%"></i>
+    </div>
+    <div class="note">Aug 6 spike: rentacar-madeira browser run — 27 vision calls · $1.84. Total 14 d: $9.12</div>
+  </div>
+  <div class="card">
+    <h3>Distillation prioritizer <span class="mut sm">fallback_rate × cost</span></h3>
+    <table>
+      <tr><th>Provider</th><th>Browser runs / wk</th><th>Avg cost</th><th>Priority</th></tr>
+      <tr><td>rentacar-madeira</td><td>4</td><td>$1.71</td><td><b style="color:var(--irrev)">6.8 — fix first</b></td></tr>
+      <tr><td>sixt-funchal</td><td>3</td><td>$0.94</td><td><b style="color:var(--warn)">2.8</b></td></tr>
+      <tr><td>local-tasca-sites</td><td>0.2</td><td>$0.61</td><td class="mut">0.1 — leave on browser</td></tr>
+    </table>
+  </div>
+</div>
+<div class="card">
+  <h3>By vertex · this month</h3>
+  <table>
+    <tr><th>Vertex</th><th>Calls</th><th>Tokens</th><th>Cost</th></tr>
+    <tr><td>execute (vision)</td><td>212</td><td>1.9 M</td><td>$14.20</td></tr>
+    <tr><td>parse_reply</td><td>64</td><td>0.2 M</td><td>$1.10</td></tr>
+    <tr><td>planner (intake)</td><td>31</td><td>0.1 M</td><td>$0.48</td></tr>
+    <tr><td>match_products</td><td>—</td><td>—</td><td class="mut">domain not enabled</td></tr>
+  </table>
+</div>`;}
+
+const R={insp:screenInsp,sess:screenSess,health:screenHealth,wb:screenWb,eco:screenEco};
+const nav=$('#nav');
+SCREENS.forEach(s=>{
+  const b=document.createElement('button');
+  b.innerHTML=s.label+(s.v15?' <span class="badge15">1.5</span>':'');
+  b.onclick=()=>go(s.id); b.id='nav-'+s.id; nav.appendChild(b);
+});
+function go(id){
+  document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('on'));
+  $('#nav-'+id).classList.add('on');
+  $('#main').innerHTML=R[id]();
+  window.scrollTo(0,0);
+}
+go('insp');
+</script>
+</body>
+</html>
