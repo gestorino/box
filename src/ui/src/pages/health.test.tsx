@@ -162,11 +162,13 @@ describe('Health', () => {
     expect(await screen.findByText("the errand's page")).toBeInTheDocument()
   })
 
-  it('service not running shows the empty state and no charts', async () => {
+  it('service not running says so above its tiles and keeps its history', async () => {
     now.mockResolvedValue({ running: false, tiles: [{ id: 'cpu', label: 'CPU', value: null, unit: 'percent', total: null, note: null }], hardware: null })
     show('/health/telegram')
-    expect(await screen.findByText('Telegram is not running')).toBeInTheDocument()
-    expect(screen.queryAllByTestId('chart')).toHaveLength(0)
+    expect(await screen.findByRole('alert')).toHaveTextContent("Telegram isn't running now")
+    expect(screen.getByRole('alert')).toHaveTextContent('Its graphs show what it did while it ran.')
+    expect(screen.getByText('CPU')).toBeInTheDocument()
+    expect(screen.getAllByTestId('chart').length).toBeGreaterThan(0)
   })
 
   it('hardware tab shows the fan and limit block', async () => {

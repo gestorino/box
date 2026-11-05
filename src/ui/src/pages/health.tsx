@@ -1,7 +1,6 @@
 import { Activity, CircleX, Cpu, Gauge, HardDrive, type LucideIcon, MemoryStick, PowerOff, Thermometer, Zap } from 'lucide-react'
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Navigate, useLocation, useNavigate, useParams, useSearchParams } from 'react-router'
-import { EmptyState } from '@/components/empty-state'
 import { HealthChart } from '@/components/health-chart'
 import { PageHeader } from '@/components/page-header'
 import { StatCard } from '@/components/stat-card'
@@ -80,11 +79,10 @@ export function HealthPage() {
             <LoadError error={current.error} onRetry={() => setAttempt((n) => n + 1)} />
           ) : !current?.data ? (
             <Loading />
-          ) : current.data.now.running === false ? (
-            <EmptyState icon={PowerOff} title={`${tab.label} is not running`}>Its graphs show here while it runs.</EmptyState>
           ) : (
             <Body
               tab={tab.id}
+              label={tab.label}
               data={current.data}
               onZoom={(from, to) => pick({ kind: 'custom', from: Math.floor(from), to: Math.ceil(to) })}
               onOpen={(link) => link && navigate(link)}
@@ -96,9 +94,17 @@ export function HealthPage() {
   )
 }
 
-function Body({ tab, data, onZoom, onOpen }: { tab: HealthTab; data: Loaded; onZoom: (from: number, to: number) => void; onOpen: (link: string) => void }) {
+function Body({ tab, label, data, onZoom, onOpen }: { tab: HealthTab; label: string; data: Loaded; onZoom: (from: number, to: number) => void; onOpen: (link: string) => void }) {
   return (
     <>
+      {/* A service down now keeps its history: what it did while it ran is what the owner looks for. */}
+      {data.now.running === false && (
+        <Alert>
+          <PowerOff aria-hidden />
+          <AlertTitle>{`${label} isn't running now`}</AlertTitle>
+          <AlertDescription>Its graphs show what it did while it ran.</AlertDescription>
+        </Alert>
+      )}
       {data.now.tiles.length > 0 && (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
           {data.now.tiles.map((t) => <TileCard key={t.id} tile={t} />)}

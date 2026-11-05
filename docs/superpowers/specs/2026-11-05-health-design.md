@@ -52,8 +52,9 @@ days, with the box's activity marked on every graph.
 - Anything that writes to the hardware. The collector reads sensors. Its only write is the
   fan controller's index register, which every read requires. It never changes a fan, power or
   C-state setting.
-- A service tab that silently shows zeros for a daemon that isn't running. A stopped daemon says so,
-  per the style guide's honest empty states.
+- A service tab that silently shows zeros for a daemon that isn't running. A stopped daemon says so
+  in a banner above its tiles, and keeps its graphs and bands for the range: what it did while it
+  ran is what the owner looks for.
 - Health collection that noticeably loads the box it measures (rough budget: under 1% CPU and
   about 200 MB of memory for everything together).
 
@@ -186,7 +187,7 @@ engine type.
 Layout A as the owner chose it:
 
 - **Tab bar**: Overview, Hardware, Engine, Browser, hostd, Secrets, SMS, Calls, WhatsApp, Telegram,
-  Email. A connector that isn't added keeps its tab with an honest "not running" state. The tab and
+  Email. A connector that isn't added keeps its tab with an honest "isn't running now" banner over its history. The tab and
   the range live in the URL, so back/forward and links work.
 - **Range picker**, top right: 15m, 1h, 6h, 24h, 7d, 30d, custom. Drag on any graph to zoom; a
   "back" undoes the zoom. Ranges up to 1h refresh themselves every 10 s; longer ones on demand.
