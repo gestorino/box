@@ -133,7 +133,7 @@ func TestEventsOpenRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(evs) != 1 || evs[0].End != nil || !strings.Contains(evs[0].Label, "running") {
+	if len(evs) != 1 || evs[0].End != nil || evs[0].Label != "Errand: shop.example, running" {
 		t.Fatalf("events = %+v", evs)
 	}
 }
@@ -206,7 +206,7 @@ func TestEventsEnrichmentFailure(t *testing.T) {
 	if len(evs) != 3 {
 		t.Fatalf("events = %+v", evs)
 	}
-	if c := byLabelPrefix(evs, "Call"); c == nil || c.Label != "Call, 1 min" || c.Link != "" {
+	if c := byLabelPrefix(evs, "Call"); c == nil || c.Label != "Call out, 1 min" || c.Link != "" {
 		t.Errorf("call = %+v", c)
 	}
 	if e := byLabelPrefix(evs, "Errand"); e == nil || e.Label != "Errand, 4 min" {

@@ -133,11 +133,14 @@ func Events(ctx context.Context, q Querier, runs RunStore, calls CallLister, tab
 				ev.Label = fmt.Sprintf("%s, %s", word, duration(b.start, b.end, false))
 			} else {
 				open := r.State == "running" && to.Sub(b.end) <= openSlack
-				why := r.Reason
-				if why == "" {
-					why = r.State
+				ev.Label = fmt.Sprintf("%s: %s, %s", word, r.Site, duration(b.start, b.end, open))
+				if !open { // an open run's duration already says running
+					why := r.Reason
+					if why == "" {
+						why = r.State
+					}
+					ev.Label += ", " + why
 				}
-				ev.Label = fmt.Sprintf("%s: %s, %s, %s", word, r.Site, duration(b.start, b.end, open), why)
 				if kind == "errand" {
 					ev.Link = fmt.Sprintf("/errands/runs/%d", id)
 				} else {
@@ -171,7 +174,7 @@ func Events(ctx context.Context, q Querier, runs RunStore, calls CallLister, tab
 			c, found := known[id]
 			ev := Event{Kind: "call", Start: b.start, End: &b.end}
 			if !found {
-				ev.Label = "Call, " + duration(b.start, b.end, false)
+				ev.Label = fmt.Sprintf("Call %s, %s", b.labels["direction"], duration(b.start, b.end, false))
 			} else {
 				open := (c.Outcome == "ringing" || c.Outcome == "in-progress") && to.Sub(b.end) <= openSlack
 				ev.Label = fmt.Sprintf("Call %s %s, %s, %s", b.labels["direction"], c.Number, duration(b.start, b.end, open), c.Outcome)
