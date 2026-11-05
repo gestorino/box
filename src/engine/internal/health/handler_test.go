@@ -43,7 +43,7 @@ func TestPanelsAlignsAndNulls(t *testing.T) {
 	}}}
 
 	var got panelsResponse
-	if code := getJSON(t, Handler(q), "/api/v1/health/panels?tab=overview&from=1700000000&to=1700003600", &got); code != 200 {
+	if code := getJSON(t, Handler(q, nil, nil), "/api/v1/health/panels?tab=overview&from=1700000000&to=1700003600", &got); code != 200 {
 		t.Fatalf("status %d", code)
 	}
 	if got.Step != 10 {
@@ -88,7 +88,7 @@ func TestNowServiceNotRunning(t *testing.T) {
 				{match: "namedprocess_namegroup_num_procs", result: procs},
 				{match: "namedprocess_namegroup_memory_bytes", result: []any{sample(nil, 1<<20)}},
 			}
-			code, body := getRaw(t, Handler(q), "/api/v1/health/now?tab=whatsapp")
+			code, body := getRaw(t, Handler(q, nil, nil), "/api/v1/health/now?tab=whatsapp")
 			if code != 200 {
 				t.Fatalf("status %d: %s", code, body)
 			}
@@ -120,7 +120,7 @@ func TestNowServiceNotRunning(t *testing.T) {
 			{match: "namedprocess_namegroup_memory_bytes", result: []any{sample(nil, 1<<20)}},
 		}
 		var got nowResponse
-		if code := getJSON(t, Handler(q), "/api/v1/health/now?tab=whatsapp", &got); code != 200 {
+		if code := getJSON(t, Handler(q, nil, nil), "/api/v1/health/now?tab=whatsapp", &got); code != 200 {
 			t.Fatalf("status %d", code)
 		}
 		if got.Running == nil || !*got.Running {
@@ -154,7 +154,7 @@ func TestNowHardwareBlock(t *testing.T) {
 		{match: "concierge_package_cstate_limit", result: []any{sample(nil, 0)}},
 		{match: "concierge_package_cstate_locked", result: []any{sample(nil, 1)}},
 	}
-	code, body := getRaw(t, Handler(q), "/api/v1/health/now?tab=hardware")
+	code, body := getRaw(t, Handler(q, nil, nil), "/api/v1/health/now?tab=hardware")
 	if code != 200 {
 		t.Fatalf("status %d: %s", code, body)
 	}
@@ -191,7 +191,7 @@ func TestNowHardwareBlock(t *testing.T) {
 
 	t.Run("no sensord", func(t *testing.T) {
 		_, q, _ := newFake(t)
-		_, body := getRaw(t, Handler(q), "/api/v1/health/now?tab=hardware")
+		_, body := getRaw(t, Handler(q, nil, nil), "/api/v1/health/now?tab=hardware")
 		for _, want := range []string{
 			`"fan_outputs":[]`,
 			`"power_limits":{"long_term":null,"short_term":null}`,
@@ -211,7 +211,7 @@ func TestNowOverview(t *testing.T) {
 		{match: "node_memory_MemAvailable_bytes", result: []any{sample(nil, 3e9)}},
 		{match: "node_memory_MemTotal_bytes", result: []any{sample(nil, 8e9)}},
 	}
-	code, body := getRaw(t, Handler(q), "/api/v1/health/now?tab=overview")
+	code, body := getRaw(t, Handler(q, nil, nil), "/api/v1/health/now?tab=overview")
 	if code != 200 {
 		t.Fatalf("status %d: %s", code, body)
 	}
@@ -239,7 +239,7 @@ func TestNowOverview(t *testing.T) {
 
 func TestBadRequests(t *testing.T) {
 	_, q, _ := newFake(t)
-	h := Handler(q)
+	h := Handler(q, nil, nil)
 	for target, want := range map[string]int{
 		"/api/v1/health/now?tab=nope": 404,
 		"/api/v1/health/now":          404,
@@ -288,11 +288,11 @@ func TestPrometheusDown(t *testing.T) {
 	t.Run("answers 500", func(t *testing.T) {
 		f, q, _ := newFake(t)
 		f.status = 500
-		check(t, Handler(q))
+		check(t, Handler(q, nil, nil))
 	})
 	t.Run("closed", func(t *testing.T) {
 		_, q, srv := newFake(t)
 		srv.Close()
-		check(t, Handler(q))
+		check(t, Handler(q, nil, nil))
 	})
 }

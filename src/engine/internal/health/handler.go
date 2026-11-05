@@ -73,16 +73,22 @@ type panelsResponse struct {
 	Panels []panelJSON `json:"panels"`
 }
 
-type handler struct{ q Querier }
+type handler struct {
+	q     Querier
+	runs  RunStore
+	calls CallLister
+}
 
 // Handler serves the Health page's named data, read from Prometheus: GET /api/v1/health/now
-// (a tab's tiles) and GET /api/v1/health/panels (a tab's graphs over a range). The browser never
-// sends a query.
-func Handler(q Querier) http.Handler {
-	h := handler{q}
+// (a tab's tiles), GET /api/v1/health/panels (a tab's graphs over a range) and
+// GET /api/v1/health/events (the bands over them). The browser never sends a query. runs and calls
+// only enrich the bands; either may be nil.
+func Handler(q Querier, runs RunStore, calls CallLister) http.Handler {
+	h := handler{q, runs, calls}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/health/now", h.now)
 	mux.HandleFunc("GET /api/v1/health/panels", h.panels)
+	mux.HandleFunc("GET /api/v1/health/events", h.events)
 	return mux
 }
 

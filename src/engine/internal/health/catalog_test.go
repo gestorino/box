@@ -25,7 +25,7 @@ func TestStep(t *testing.T) {
 
 func TestPanelsCatalog(t *testing.T) {
 	f, q, _ := newFake(t)
-	h := Handler(q)
+	h := Handler(q, nil, nil)
 	service := []string{"cpu", "memory", "disk_io", "storage"}
 	want := map[string][]string{
 		"overview": {"cpu_by_service", "memory_by_service", "temperatures", "power", "clock", "storage_by_service", "disk_io"},
@@ -79,7 +79,7 @@ func TestPanelsCatalog(t *testing.T) {
 // the gauge's current value.
 func TestGaugesAggregateOverTheStep(t *testing.T) {
 	f, q, _ := newFake(t)
-	h := Handler(q)
+	h := Handler(q, nil, nil)
 	gauges := []string{
 		"node_hwmon_temp_celsius", "concierge_board_temp_celsius", "concierge_modem_temp_celsius",
 		"namedprocess_namegroup_memory_bytes", "node_cpu_scaling_frequency_hertz", "node_load",
