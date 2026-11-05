@@ -27,7 +27,7 @@ type CallLister interface {
 // CallInfo is what calld knows of a call that the bands show.
 type CallInfo struct {
 	ID                         int64
-	Number, Direction, Outcome string
+	Number, Direction, Outcome string // Direction is calld's: incoming | outgoing
 }
 
 type callClient struct{ c *http.Client }
@@ -174,7 +174,7 @@ func Events(ctx context.Context, q Querier, runs RunStore, calls CallLister, tab
 				ev.Label = "Call, " + duration(b.start, b.end, false)
 			} else {
 				open := (c.Outcome == "ringing" || c.Outcome == "in-progress") && to.Sub(b.end) <= openSlack
-				ev.Label = fmt.Sprintf("Call %s %s, %s, %s", c.Direction, c.Number, duration(b.start, b.end, open), c.Outcome)
+				ev.Label = fmt.Sprintf("Call %s %s, %s, %s", b.labels["direction"], c.Number, duration(b.start, b.end, open), c.Outcome)
 				ev.Link = "/voice"
 				if open {
 					ev.End = nil
@@ -185,19 +185,27 @@ func Events(ctx context.Context, q Querier, runs RunStore, calls CallLister, tab
 	}
 
 	if kinds["reboot"] {
-		boots, err := q.Instant(ctx, "node_boot_time_seconds", to)
-		if err != nil {
-			return nil, err
-		}
+		// node_exporter has one boot-time series whose value changes in place at a reboot, so read
+		// the range, not an instant: every distinct value inside it is a reboot.
+		step := Step(from, to)
+		w := int64(gaugeWindow(step) / time.Second)
 		seen := map[int64]bool{}
-		for _, s := range boots {
-			t := int64(s.Value)
-			if seen[t] || t < from.Unix() || t > to.Unix() {
-				continue
+		for _, fn := range []string{"min_over_time", "max_over_time"} {
+			got, err := q.Range(ctx, fmt.Sprintf("%s(node_boot_time_seconds[%ds])", fn, w), from, to, step)
+			if err != nil {
+				return nil, err
 			}
-			seen[t] = true
-			at := time.Unix(t, 0)
-			out = append(out, Event{Kind: "reboot", Start: at, End: &at, Label: "Reboot"})
+			for _, s := range got {
+				for _, p := range s.Points {
+					t := int64(p.V)
+					if seen[t] || t < from.Unix() || t > to.Unix() {
+						continue
+					}
+					seen[t] = true
+					at := time.Unix(t, 0)
+					out = append(out, Event{Kind: "reboot", Start: at, End: &at, Label: "Reboot"})
+				}
+			}
 		}
 	}
 

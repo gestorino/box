@@ -58,7 +58,7 @@ func fixture(t *testing.T) (*fakeProm, Querier) {
 		[]map[string]string{runLabels("7", "errand", "shop.example"), runLabels("8", "check", "gone.example")},
 		[]float64{evTo - 1800, evTo - 900}, []float64{evTo - 1560, evTo - 780})
 	cannedBands(f, "concierge_call_active",
-		[]map[string]string{{"call": "3", "direction": "in"}},
+		[]map[string]string{{"call": "3", "direction": "out"}},
 		[]float64{evTo - 600}, []float64{evTo - 540})
 	return f, q
 }
@@ -70,7 +70,7 @@ func goodRuns() fakeRunStore {
 }
 
 func goodCalls() fakeCallLister {
-	return fakeCallLister{calls: []CallInfo{{ID: 3, Number: "+351900000000", Direction: "in", Outcome: "answered"}}}
+	return fakeCallLister{calls: []CallInfo{{ID: 3, Number: "+351900000000", Direction: "outgoing", Outcome: "answered"}}}
 }
 
 func byLabelPrefix(evs []Event, prefix string) *Event {
@@ -103,7 +103,7 @@ func TestEventsEnrichedAndPruned(t *testing.T) {
 		t.Errorf("pruned = %+v", s)
 	}
 	c := byLabelPrefix(evs, "Call")
-	if c == nil || c.Label != "Call in +351900000000, 1 min, answered" || c.Link != "/voice" {
+	if c == nil || c.Label != "Call out +351900000000, 1 min, answered" || c.Link != "/voice" {
 		t.Errorf("call = %+v", c)
 	}
 }
@@ -140,13 +140,11 @@ func TestEventsOpenRun(t *testing.T) {
 
 func TestEventsReboots(t *testing.T) {
 	f, q, _ := newFake(t)
-	t1, t2 := float64(evTo-2000), float64(evTo-500)
-	f.instant = []answer{{match: "node_boot_time_seconds", result: []any{
-		sample(map[string]string{"instance": "a"}, t1),
-		sample(map[string]string{"instance": "b"}, t1),
-		sample(map[string]string{"instance": "c"}, t2),
-		sample(map[string]string{"instance": "d"}, evTo-7200), // before from
-	}}}
+	t0, t1, t2 := int64(evTo-7200), int64(evTo-2000), int64(evTo-500)
+	times := []int64{evTo - 3500, evTo - 3000, evTo - 1500, evTo - 1000, evTo - 400}
+	vals := map[int64]float64{times[0]: float64(t0), times[1]: float64(t0), times[2]: float64(t1), times[3]: float64(t1), times[4]: float64(t2)}
+	pts := series(map[string]string{"instance": "box"}, times, func(x int64) float64 { return vals[x] })
+	f.ranges = []answer{{match: "node_boot_time_seconds", result: []any{pts}}}
 	evs, err := Events(context.Background(), q, nil, nil, "sms", evFrom, evEnd)
 	if err != nil {
 		t.Fatal(err)
@@ -154,13 +152,11 @@ func TestEventsReboots(t *testing.T) {
 	if len(evs) != 2 {
 		t.Fatalf("events = %+v", evs)
 	}
-	for _, e := range evs {
-		if e.Kind != "reboot" || e.End == nil || !e.End.Equal(e.Start) || e.Link != "" {
-			t.Errorf("reboot = %+v", e)
+	for i, at := range []int64{t1, t2} {
+		e := evs[i]
+		if e.Kind != "reboot" || !e.Start.Equal(time.Unix(at, 0)) || e.End == nil || !e.End.Equal(e.Start) || e.Link != "" {
+			t.Errorf("reboot %d = %+v", i, e)
 		}
-	}
-	if !evs[1].Start.Equal(time.Unix(int64(t2), 0)) {
-		t.Errorf("last reboot = %v", evs[1].Start)
 	}
 }
 
@@ -172,8 +168,8 @@ func TestEventsTabFilter(t *testing.T) {
 		"overview": {"call", "errand", "reboot", "signin"},
 	} {
 		f, q := fixture(t)
-		f.instant = append(f.instant, answer{match: "node_boot_time_seconds", result: []any{
-			sample(map[string]string{}, evTo-100)}})
+		f.ranges = []answer{{match: "node_boot_time_seconds", result: []any{
+			series(map[string]string{}, []int64{evTo - 100}, func(int64) float64 { return evTo - 100 })}}}
 		evs, err := Events(context.Background(), q, goodRuns(), goodCalls(), tab, evFrom, evEnd)
 		if err != nil {
 			t.Fatal(err)
@@ -273,7 +269,7 @@ func TestCallListerOverSocket(t *testing.T) {
 	var query string
 	srv := &http.Server{Protocols: h2c.Protocols(), Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		query = r.URL.Path + "?" + r.URL.RawQuery
-		w.Write([]byte(`[{"id":3,"number":"+3519","direction":"out","started_at":"x","outcome":"missed","summary":"s"}]`))
+		w.Write([]byte(`[{"id":3,"number":"+3519","direction":"outgoing","started_at":"x","outcome":"missed","summary":"s"}]`))
 	})}
 	go srv.Serve(ln)
 	t.Cleanup(func() { srv.Close() })
@@ -282,7 +278,7 @@ func TestCallListerOverSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0] != (CallInfo{ID: 3, Number: "+3519", Direction: "out", Outcome: "missed"}) {
+	if len(got) != 1 || got[0] != (CallInfo{ID: 3, Number: "+3519", Direction: "outgoing", Outcome: "missed"}) {
 		t.Errorf("calls = %+v", got)
 	}
 	if query != "/calls?limit=5000" {
