@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AUTO_REFRESH_MS, TABS, autoRefreshes, fetchEvents, fetchNow, fetchPanels, formatValue, parseRange, rangeParams, resolve } from './metrics'
+import { AUTO_REFRESH_MS, TABS, autoRefreshes, axisDigits, fetchEvents, fetchNow, fetchPanels, formatValue, parseRange, rangeParams, resolve } from './metrics'
 
 const NOW = 1_800_000_000
 
@@ -91,6 +91,25 @@ describe('autoRefreshes', () => {
 describe('TABS', () => {
   it('lists the tabs in order', () => {
     expect(TABS.map((t) => t.label)).toEqual(['Overview', 'Hardware', 'Engine', 'Browser', 'hostd', 'Secrets', 'SMS', 'Calls', 'WhatsApp', 'Telegram', 'Email'])
+  })
+})
+
+describe('small values keep their meaning', () => {
+  it('shows a small percent with a decimal, and a trace as under 0.1%', () => {
+    expect(formatValue(0.4, 'percent')).toBe('0.4%')
+    expect(formatValue(0.04, 'percent')).toBe('<0.1%')
+    expect(formatValue(0, 'percent')).toBe('0%')
+    expect(formatValue(37.6, 'percent')).toBe('38%')
+  })
+  it('gives an axis as many decimals as its tick spacing needs', () => {
+    expect(axisDigits([0, 0.25, 0.5, 0.75, 1])).toBe(2)
+    expect(axisDigits([40, 40.5, 41])).toBe(1)
+    expect(axisDigits([0, 5, 10])).toBe(0)
+    expect(axisDigits([5])).toBeUndefined()
+    const ticks = [0, 0.25, 0.5, 0.75, 1].map((v) => formatValue(v, 'percent', axisDigits([0, 0.25])))
+    expect(new Set(ticks).size).toBe(5)
+    expect(formatValue(40.5, 'celsius', 1)).toBe('40.5 °C')
+    expect(formatValue(10, 'watts', 0)).toBe('10.0 W')
   })
 })
 

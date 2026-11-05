@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
-import { formatValue, type HealthEvent, type Panel } from '@/lib/metrics'
+import { axisDigits, formatValue, type HealthEvent, type Panel } from '@/lib/metrics'
 
 // One Health graph: uPlot draws the series over the box's activity, shown as neutral bands.
 // Colours are the tokens' (tokens.css), read when the chart is built, so it follows the theme.
@@ -159,6 +159,8 @@ export function HealthChart(props: {
       ctx.fillStyle = quiet
       ctx.lineWidth = px
       ctx.font = `${11 * px}px ${family}`
+      ctx.textAlign = 'left' // set, not inherited: uPlot leaves its y axis's right alignment on the canvas
+      ctx.textBaseline = 'alphabetic'
       for (const l of p.lines) {
         const y = u.valToPos(l.value, 'y', true)
         ctx.setLineDash([6 * px, 4 * px])
@@ -195,7 +197,7 @@ export function HealthChart(props: {
           : {},
         axes: [
           { ...axis, font },
-          { ...axis, font, size: 70, values: (_u, splits) => splits.map((v) => formatValue(v, p.unit)) },
+          { ...axis, font, size: 70, values: (_u, splits) => splits.map((v) => formatValue(v, p.unit, axisDigits(splits))) },
         ],
         series: [
           {},

@@ -141,15 +141,31 @@ function scaled(v: number): string {
   return `${i === 0 ? Math.round(v) : v.toFixed(1)} ${SIZES[i]}`
 }
 
-export function formatValue(v: number | null, unit: Unit): string {
+// digits: an axis's precision (axisDigits); without it a value takes its unit's own, and a small
+// percent keeps a decimal so a quiet service doesn't read as 0%.
+export function formatValue(v: number | null, unit: Unit, digits?: number): string {
   if (v === null) return '—'
   switch (unit) {
-    case 'percent': return `${Math.round(v)}%`
+    case 'percent':
+      if (digits !== undefined) return `${v.toFixed(digits)}%`
+      if (v > 0 && v < 0.05) return '<0.1%'
+      return Math.abs(v) < 10 ? `${+v.toFixed(1)}%` : `${Math.round(v)}%`
     case 'bytes': return scaled(v)
     case 'bytes_per_second': return `${scaled(v)}/s`
-    case 'celsius': return `${Math.round(v)} °C`
-    case 'watts': return `${v.toFixed(1)} W`
-    case 'ghz': return `${v.toFixed(1)} GHz`
-    case 'number': return v.toFixed(2)
+    case 'celsius': return `${v.toFixed(digits ?? 0)} °C`
+    case 'watts': return `${v.toFixed(Math.max(digits ?? 1, 1))} W`
+    case 'ghz': return `${v.toFixed(Math.max(digits ?? 1, 1))} GHz`
+    case 'number': return v.toFixed(digits ?? 2)
   }
+}
+
+// The decimals an axis's ticks need to stay distinct: those of their spacing (at most 3).
+export function axisDigits(splits: number[]): number | undefined {
+  const step = splits[1] - splits[0]
+  if (!(step > 0)) return undefined
+  for (let d = 0; d < 3; d++) {
+    const scaledStep = step * 10 ** d
+    if (Math.abs(scaledStep - Math.round(scaledStep)) < 1e-6) return d
+  }
+  return 3
 }
