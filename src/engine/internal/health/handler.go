@@ -108,7 +108,7 @@ func (h handler) now(w http.ResponseWriter, r *http.Request) {
 		tj := tileJSON{ID: t.id, Label: t.label, Unit: t.unit}
 		if running {
 			var err error
-			if tj.Value, err = h.value(ctx, expand(t.value, nowWindow), at); err != nil {
+			if tj.Value, err = h.value(ctx, expand(t.value, nowWindow, nowWindow), at); err != nil {
 				unavailable(w, err)
 				return
 			}
@@ -206,7 +206,7 @@ func (h handler) panels(w http.ResponseWriter, r *http.Request) {
 		pj := panelJSON{ID: p.id, Title: p.title, Unit: p.unit, Stacked: p.stacked, Times: times,
 			Series: []seriesJSON{}, Lines: []lineJSON{}}
 		for _, src := range p.series {
-			got, err := h.q.Range(r.Context(), expand(src.expr, window), from, to, step)
+			got, err := h.q.Range(r.Context(), expand(src.expr, window, step), from, to, step)
 			if err != nil {
 				unavailable(w, err)
 				return
@@ -260,7 +260,7 @@ func align(points []Point, from time.Time, step time.Duration, n int) []*float64
 func parseRange(r *http.Request) (from, to time.Time, ok bool) {
 	f, err1 := strconv.ParseInt(r.URL.Query().Get("from"), 10, 64)
 	t, err2 := strconv.ParseInt(r.URL.Query().Get("to"), 10, 64)
-	if err1 != nil || err2 != nil || f >= t || time.Duration(t-f)*time.Second > maxRange {
+	if err1 != nil || err2 != nil || f >= t || t-f > int64(maxRange/time.Second) {
 		return time.Time{}, time.Time{}, false
 	}
 	return time.Unix(f, 0), time.Unix(t, 0), true

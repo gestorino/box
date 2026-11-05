@@ -249,6 +249,8 @@ func TestBadRequests(t *testing.T) {
 		"/api/v1/health/panels?tab=overview&from=1700000000&to=1702678400": 400, // 31 d
 		"/api/v1/health/panels?tab=overview&from=abc&to=1700003600":        400,
 		"/api/v1/health/panels?tab=overview&from=1700000000":               400,
+		"/api/v1/health/panels?tab=overview&from=0&to=9223372037":          400, // overflows a Duration to negative
+		"/api/v1/health/panels?tab=overview&from=0&to=18446744074":         400, // overflows a Duration to 290 ms
 		"/api/v1/health/panels?tab=overview&from=1700000000&to=1702592000": 200, // exactly 30 d
 	} {
 		if code, body := getRaw(t, h, target); code != want {

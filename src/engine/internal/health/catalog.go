@@ -54,7 +54,7 @@ type panel struct {
 }
 
 // A source is one PromQL expression and the name of the series it gives, or, when it gives one
-// series per label value, nameBy to name each. `$w` in expr is the rate window.
+// series per label value, nameBy to name each. `$w` in expr is the rate window, `$step` the step.
 type source struct {
 	name   string
 	expr   string
@@ -68,7 +68,9 @@ type tabDef struct {
 }
 
 // PromQL. Every `rate` reads over `$w`, which the handler sets to the graph's step (at least 30 s),
-// so a point averages its whole step instead of sampling 30 s of it.
+// so a point averages its whole step instead of sampling 30 s of it. A graph's gauge reads over
+// `$step`, exactly the step: heat and load as the step's max, memory and clock as its average, so a
+// 30-day graph still shows a spike between its points. A tile reads a gauge's current value.
 const (
 	cpus     = `scalar(count(node_cpu_seconds_total{mode="idle"}))`
 	boxCPU   = `100 * sum(rate(node_cpu_seconds_total{mode!~"idle|iowait"}[$w])) / ` + cpus
@@ -78,14 +80,16 @@ const (
 	diskSize = `node_filesystem_size_bytes{mountpoint="/"}`
 	diskRead = `sum(rate(node_disk_read_bytes_total[$w]))`
 	diskWrit = `sum(rate(node_disk_written_bytes_total[$w]))`
-	clockAvg = `avg(node_cpu_scaling_frequency_hertz) / 1e9`
-	clockMax = `max(node_cpu_scaling_frequency_hertz) / 1e9`
+	clockNow = `avg(node_cpu_scaling_frequency_hertz) / 1e9`
+	clockAvg = `avg(avg_over_time(node_cpu_scaling_frequency_hertz[$step])) / 1e9`
+	clockMax = `max(max_over_time(node_cpu_scaling_frequency_hertz[$step])) / 1e9`
 
 	// hwmon: temp1 is coretemp's package and the NVMe's composite; cores are named by their label.
-	cpuTemp   = `max(node_hwmon_temp_celsius{sensor="temp1"} * on(chip) group_left node_hwmon_chip_names{chip_name="coretemp"})`
-	coreTemps = `node_hwmon_temp_celsius * on(chip, sensor) group_left(label) node_hwmon_sensor_label{label=~"(?i)core.*"}`
-	diskTemp  = `max(node_hwmon_temp_celsius{sensor="temp1"} * on(chip) group_left node_hwmon_chip_names{chip_name="nvme"})`
-	wifiTemp  = `max(node_hwmon_temp_celsius{sensor="temp1"} * on(chip) group_left node_hwmon_chip_names{chip_name=~"iwlwifi.*"})`
+	cpuTempNow = `max(node_hwmon_temp_celsius{sensor="temp1"} * on(chip) group_left node_hwmon_chip_names{chip_name="coretemp"})`
+	cpuTemp    = `max(max_over_time(node_hwmon_temp_celsius{sensor="temp1"}[$step]) * on(chip) group_left node_hwmon_chip_names{chip_name="coretemp"})`
+	coreTemps  = `max_over_time(node_hwmon_temp_celsius[$step]) * on(chip, sensor) group_left(label) node_hwmon_sensor_label{label=~"(?i)core.*"}`
+	diskTemp   = `max(max_over_time(node_hwmon_temp_celsius{sensor="temp1"}[$step]) * on(chip) group_left node_hwmon_chip_names{chip_name="nvme"})`
+	wifiTemp   = `max(max_over_time(node_hwmon_temp_celsius{sensor="temp1"}[$step]) * on(chip) group_left node_hwmon_chip_names{chip_name=~"iwlwifi.*"})`
 
 	// sensord and calld.
 	power      = `rate(concierge_package_energy_joules_total[$w])`
@@ -100,15 +104,17 @@ const (
 
 	// process-exporter, grouped by user; %s is the groupname matcher.
 	groupCPU    = `100 * sum by (groupname) (rate(namedprocess_namegroup_cpu_seconds_total{%s}[$w])) / ` + cpus
-	groupMemory = `sum by (groupname) (namedprocess_namegroup_memory_bytes{memtype="resident",%s})`
+	groupMemNow = `sum by (groupname) (namedprocess_namegroup_memory_bytes{memtype="resident",%s})`
+	groupMemory = `sum by (groupname) (avg_over_time(namedprocess_namegroup_memory_bytes{memtype="resident",%s}[$step]))`
 	groupRead   = `sum by (groupname) (rate(namedprocess_namegroup_read_bytes_total{%s}[$w]))`
 	groupWrite  = `sum by (groupname) (rate(namedprocess_namegroup_write_bytes_total{%s}[$w]))`
 	groupProcs  = `sum by (groupname) (namedprocess_namegroup_num_procs{%s})`
 )
 
 var (
-	board     = func(n string) string { return `concierge_board_temp_celsius{sensor="` + n + `"}` }
-	modem     = func(s string) string { return `concierge_modem_temp_celsius{sensor="` + s + `"}` }
+	board     = func(n string) string { return `max_over_time(concierge_board_temp_celsius{sensor="` + n + `"}[$step])` }
+	modem     = func(s string) string { return `max_over_time(concierge_modem_temp_celsius{sensor="` + s + `"}[$step])` }
+	load      = func(m string) string { return `max_over_time(node_load` + m + `[$step])` }
 	powerLine = []source{{name: "Long-term limit", expr: limitLong}, {name: "Short-term limit", expr: limitShort}}
 )
 
@@ -118,7 +124,7 @@ func overview() tabDef {
 			{id: "cpu", label: "CPU", unit: Percent, value: boxCPU},
 			{id: "memory", label: "Memory", unit: Bytes, value: memUsed, total: memTotal},
 			{id: "disk", label: "Disk", unit: Bytes, value: diskUsed, total: diskSize},
-			{id: "cpu_temp", label: "CPU temperature", unit: Celsius, value: cpuTemp},
+			{id: "cpu_temp", label: "CPU temperature", unit: Celsius, value: cpuTempNow},
 			{id: "power", label: "Power", unit: Watts, value: power},
 		},
 		panels: []panel{
@@ -146,9 +152,9 @@ func overview() tabDef {
 func hardware() tabDef {
 	return tabDef{
 		tiles: []tile{
-			{id: "cpu_temp", label: "CPU temperature", unit: Celsius, value: cpuTemp},
+			{id: "cpu_temp", label: "CPU temperature", unit: Celsius, value: cpuTempNow},
 			{id: "power", label: "Power", unit: Watts, value: power},
-			{id: "clock", label: "Clock", unit: GHz, value: clockAvg},
+			{id: "clock", label: "Clock", unit: GHz, value: clockNow},
 			{id: "board_temp_max", label: "Board temperature", unit: Celsius, value: boardMax},
 		},
 		panels: []panel{
@@ -167,7 +173,7 @@ func hardware() tabDef {
 				{name: "PMIC", expr: modem("pmic")}, {name: "XO", expr: modem("xo")}, {name: "PA", expr: modem("pa")},
 			}},
 			{id: "load", title: "Load", unit: Number, series: []source{
-				{name: "1m", expr: `node_load1`}, {name: "5m", expr: `node_load5`}, {name: "15m", expr: `node_load15`},
+				{name: "1m", expr: load("1")}, {name: "5m", expr: load("5")}, {name: "15m", expr: load("15")},
 			}},
 		},
 	}
@@ -182,7 +188,7 @@ func service(tab string) tabDef {
 		procs: fmt.Sprintf(groupProcs, match),
 		tiles: []tile{
 			{id: "cpu", label: "CPU", unit: Percent, value: fmt.Sprintf(groupCPU, match)},
-			{id: "memory", label: "Memory", unit: Bytes, value: fmt.Sprintf(groupMemory, match)},
+			{id: "memory", label: "Memory", unit: Bytes, value: fmt.Sprintf(groupMemNow, match)},
 			{id: "storage", label: "Storage", unit: Bytes, value: stored},
 		},
 		panels: []panel{
@@ -272,6 +278,8 @@ func Step(from, to time.Time) time.Duration {
 // rateWindow is what `$w` stands for: the step, at least 30 s so a rate always has three samples.
 func rateWindow(step time.Duration) time.Duration { return max(step, 30*time.Second) }
 
-func expand(expr string, window time.Duration) string {
-	return strings.ReplaceAll(expr, "$w", strconv.FormatInt(int64(window/time.Second), 10)+"s")
+// expand sets an expression's windows: `$w` (rates) and `$step` (a graph's gauges).
+func expand(expr string, rateWindow, step time.Duration) string {
+	secs := func(d time.Duration) string { return strconv.FormatInt(int64(d/time.Second), 10) + "s" }
+	return strings.NewReplacer("$step", secs(step), "$w", secs(rateWindow)).Replace(expr)
 }

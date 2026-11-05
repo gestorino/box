@@ -73,3 +73,70 @@ func TestPanelsCatalog(t *testing.T) {
 		}
 	}
 }
+
+// TestGaugesAggregateOverTheStep pins that a graph's gauge points summarise their whole step
+// (max for heat and load, average for memory and clock), with the step itself as the window,
+// while a tile reads the gauge's current value.
+func TestGaugesAggregateOverTheStep(t *testing.T) {
+	f, q, _ := newFake(t)
+	h := Handler(q)
+	gauges := []string{
+		"node_hwmon_temp_celsius", "concierge_board_temp_celsius", "concierge_modem_temp_celsius",
+		"namedprocess_namegroup_memory_bytes", "node_cpu_scaling_frequency_hertz", "node_load",
+	}
+	isGauge := func(query string) bool {
+		return slices.ContainsFunc(gauges, func(g string) bool { return strings.Contains(query, g) })
+	}
+	want := map[string]string{ // the aggregation each gauge gets on a graph
+		"node_hwmon_temp_celsius":             "max_over_time(node_hwmon_temp_celsius",
+		"concierge_board_temp_celsius":        "max_over_time(concierge_board_temp_celsius",
+		"concierge_modem_temp_celsius":        "max_over_time(concierge_modem_temp_celsius",
+		"namedprocess_namegroup_memory_bytes": "avg_over_time(namedprocess_namegroup_memory_bytes",
+		"node_load":                           "max_over_time(node_load",
+	}
+	for _, tab := range []string{"overview", "hardware", "whatsapp"} {
+		// 1 h: the step is 10 s, below the 30 s rate window, so only the step can give [10s].
+		f.forget()
+		getRaw(t, h, "/api/v1/health/panels?tab="+tab+"&from=1700000000&to=1700003600")
+		seen := 0
+		for _, query := range f.asked() {
+			if !isGauge(query) {
+				continue
+			}
+			seen++
+			if !strings.Contains(query, "[10s]") {
+				t.Errorf("%s graph: window is not the step: %s", tab, query)
+			}
+			for g, agg := range want {
+				if strings.Contains(query, g) && !strings.Contains(query, agg) {
+					t.Errorf("%s graph: %s not under %s: %s", tab, g, agg, query)
+				}
+			}
+			if strings.Contains(query, "node_cpu_scaling_frequency_hertz") &&
+				!strings.Contains(query, "avg(avg_over_time(node_cpu_scaling_frequency_hertz") &&
+				!strings.Contains(query, "max(max_over_time(node_cpu_scaling_frequency_hertz") {
+				t.Errorf("%s graph: clock not aggregated over the step: %s", tab, query)
+			}
+		}
+		if seen == 0 {
+			t.Errorf("%s: no gauge graph queried", tab)
+		}
+
+		f.forget()
+		f.instant = []answer{{match: "num_procs", result: []any{sample(nil, 1)}}}
+		getRaw(t, h, "/api/v1/health/now?tab="+tab)
+		f.instant = nil
+		tiles := 0
+		for _, query := range f.asked() {
+			if isGauge(query) {
+				tiles++
+			}
+			if strings.Contains(query, "_over_time") {
+				t.Errorf("%s tile is not a current value: %s", tab, query)
+			}
+		}
+		if tiles == 0 {
+			t.Errorf("%s: no gauge tile queried", tab)
+		}
+	}
+}
