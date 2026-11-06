@@ -1,5 +1,5 @@
 #!/bin/sh
-# test-dist.sh — `make dist` builds the release archive the way a release ships it: the eight
+# test-dist.sh — `make dist` builds the release archive the way a release ships it: the nine
 # binaries (linux/amd64, static, stamped), the UI build, the worker's source without its tests,
 # venv or caches and with its execute bits, VERSION and REVISION; and a manifest whose sha256s are
 # the archive's files. Builds for real (Go, npm), so it is `make test-dist`, not part of `make check`.
@@ -30,7 +30,7 @@ tar -tzf "$archive" | sed 's|/$||' | sort >"$work/list"
 mkdir "$work/x"
 tar -xzf "$archive" -C "$work/x" || { fail "the archive extracts"; exit 1; }
 
-for p in bin/engine bin/secretd bin/hostd bin/smsd bin/calld bin/emaild bin/whatsappd bin/telegramd \
+for p in bin/engine bin/secretd bin/hostd bin/smsd bin/calld bin/emaild bin/whatsappd bin/telegramd bin/sensord \
 	ui/index.html browser/pyproject.toml browser/uv.lock VERSION REVISION; do
 	grep -qxF "$p" "$work/list" && ok "lists $p" || fail "lists $p"
 done

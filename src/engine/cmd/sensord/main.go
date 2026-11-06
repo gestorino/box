@@ -19,6 +19,11 @@ import (
 	"concierge/engine/internal/sensors"
 )
 
+var (
+	version  = "dev"
+	revision = ""
+)
+
 func main() {
 	if err := run(); err != nil {
 		slog.Error("sensord", "err", err)
@@ -56,6 +61,7 @@ func run() error {
 	defer stop()
 	ticker := time.NewTicker(*interval)
 	defer ticker.Stop()
+	slog.Info("sensord writing", "textfile", *textfile, "version", version, "revision", revision)
 	for {
 		if err := c.WriteTextfile(*textfile); err != nil {
 			slog.Warn("sensord: write textfile", "err", err)
