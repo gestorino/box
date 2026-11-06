@@ -4,6 +4,7 @@ import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { routes } from '@/app/router'
 import { WA_POLL } from '@/lib/whatsapp'
+import { findDialog } from '@/test/dialog'
 import { stubFetch } from '@/test/fetch'
 
 const open = (path: string) => render(<RouterProvider router={createMemoryRouter(routes, { initialEntries: [path] })} />)
@@ -139,7 +140,7 @@ describe('WhatsApp settings panel', () => {
       const { unmount } = render(
         <RouterProvider router={createMemoryRouter(routes, { initialEntries: ['/whatsapp?settings=1'] })} />,
       )
-      const panel = await screen.findByRole('dialog', { name: 'WhatsApp settings' })
+      const panel = await findDialog('WhatsApp settings')
       expect(await within(panel).findByText('+351910000000')).toBeInTheDocument()
       await user.click(within(panel).getByRole('button', { name: 'Unlink…' }))
       await user.click(within(panel).getByRole('button', { name: choice }))

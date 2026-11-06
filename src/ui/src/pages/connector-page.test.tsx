@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { routes } from '@/app/router'
+import { findDialog } from '@/test/dialog'
 import { stubFetch } from '@/test/fetch'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -87,7 +88,7 @@ describe('a connector page', () => {
       'POST /api/v1/calls/remove': { status: 204 },
       'DELETE /api/v1/connectors/voice': { status: 204 },
     })
-    const panel = await screen.findByRole('dialog', { name: 'Voice settings' })
+    const panel = await findDialog('Voice settings')
     await user.click(within(panel).getByRole('button', { name: 'Remove connector…' }))
     await user.click(within(await screen.findByRole('dialog', { name: 'Remove Voice?' })).getByRole('button', { name: 'Remove, keep the data' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/connectors'))
@@ -108,7 +109,7 @@ describe('Remove anyway from a panel', () => {
       'POST /api/v1/whatsapp/remove': [{ status: 424, body: { error: "couldn't reach WhatsApp to log out" } }, { status: 204 }],
       'DELETE /api/v1/connectors/whatsapp': { status: 204 },
     })
-    const panel = await screen.findByRole('dialog', { name: 'WhatsApp settings' })
+    const panel = await findDialog('WhatsApp settings')
     await user.click(within(panel).getByRole('button', { name: 'Remove connector…' }))
     const modal = await screen.findByRole('dialog', { name: 'Remove WhatsApp?' })
     await user.click(within(modal).getByRole('button', { name: 'Remove, keep the data' }))
@@ -139,7 +140,7 @@ describe('Remove from a panel', () => {
       ...r,
       // Remove connector… on the panel opens its modal: the questions are asked there.
       remove: async (user: ReturnType<typeof userEvent.setup>) => {
-        const p = await screen.findByRole('dialog', { name: `${label} settings` })
+        const p = await findDialog(`${label} settings`)
         await user.click(within(p).getByRole('button', { name: 'Remove connector…' }))
         return screen.findByRole('dialog', { name: `Remove ${label}?` })
       },

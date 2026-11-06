@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { routes } from '@/app/router'
+import { findDialog } from '@/test/dialog'
 import { stubFetch } from '@/test/fetch'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -22,7 +23,7 @@ describe('SMS and Voice settings panels', () => {
       'GET /api/v1/calls': { body: [] },
     })
     render(<RouterProvider router={createMemoryRouter(routes, { initialEntries: [path] })} />)
-    const panel = await screen.findByRole('dialog', { name: title })
+    const panel = await findDialog(title)
     const select = await within(panel).findByLabelText(label)
     expect((select as HTMLSelectElement).value).toBe('365')
     await user.selectOptions(select, '30')
@@ -47,7 +48,7 @@ describe('SMS and Voice settings panels', () => {
   it('asks before keeping the transcript, with the art. 199 warning', async () => {
     const user = userEvent.setup()
     const api = voice()
-    const panel = await screen.findByRole('dialog', { name: 'Voice settings' })
+    const panel = await findDialog('Voice settings')
     await user.click(await within(panel).findByRole('switch', { name: 'Keep the transcript' }))
     const ask = await screen.findByRole('dialog', { name: 'Keep the transcript?' })
     expect(within(ask).getByText(WARNING)).toBeInTheDocument()
@@ -59,7 +60,7 @@ describe('SMS and Voice settings panels', () => {
   it('cancelling the warning leaves the switch off', async () => {
     const user = userEvent.setup()
     const api = voice()
-    const panel = await screen.findByRole('dialog', { name: 'Voice settings' })
+    const panel = await findDialog('Voice settings')
     const sw = await within(panel).findByRole('switch', { name: 'Keep the audio' })
     await user.click(sw)
     await user.click(within(await screen.findByRole('dialog', { name: 'Keep the audio?' })).getByRole('button', { name: 'Cancel' }))
@@ -71,7 +72,7 @@ describe('SMS and Voice settings panels', () => {
   it('shows the warning while a switch is on, and turns off without asking', async () => {
     const user = userEvent.setup()
     const api = voice({ ...KEEP, calls_keep_audio: true })
-    const panel = await screen.findByRole('dialog', { name: 'Voice settings' })
+    const panel = await findDialog('Voice settings')
     expect(await within(panel).findByText(WARNING)).toBeInTheDocument()
     await user.click(within(panel).getByRole('switch', { name: 'Keep the audio' }))
     await waitFor(() => expect(puts(api)[0]?.body).toEqual(KEEP))
@@ -80,7 +81,7 @@ describe('SMS and Voice settings panels', () => {
   it('saves the debug retention', async () => {
     const user = userEvent.setup()
     const api = voice()
-    const panel = await screen.findByRole('dialog', { name: 'Voice settings' })
+    const panel = await findDialog('Voice settings')
     await user.selectOptions(await within(panel).findByLabelText('Keep transcripts and audio for'), '90')
     await waitFor(() => expect(puts(api)[0]?.body).toEqual({ ...KEEP, calls_debug_days: 90 }))
   })
@@ -102,14 +103,14 @@ describe('SMS and Voice settings panels', () => {
   it('picks the voice model from the dropdown', async () => {
     const user = userEvent.setup()
     const api = voiceSettings()
-    const panel = await screen.findByRole('dialog', { name: 'Voice settings' })
+    const panel = await findDialog('Voice settings')
     await user.selectOptions(await within(panel).findByLabelText('Voice model'), 'gpt-realtime-2.1-mini')
     await waitFor(() => expect(voicePuts(api)[0]?.body).toEqual({ voice_model: 'gpt-realtime-2.1-mini' }))
   })
 
   it('has no name fields', async () => {
     voiceSettings()
-    const panel = await screen.findByRole('dialog', { name: 'Voice settings' })
+    const panel = await findDialog('Voice settings')
     await within(panel).findByLabelText('Voice model')
     expect(within(panel).queryByLabelText('Your name')).toBeNull()
     expect(within(panel).queryByLabelText(/in Russian/)).toBeNull()
@@ -118,7 +119,7 @@ describe('SMS and Voice settings panels', () => {
   it("shows hostd's reason when a save is refused", async () => {
     const user = userEvent.setup()
     voiceSettings({ status: 400, body: { error: 'name is too long' } })
-    const panel = await screen.findByRole('dialog', { name: 'Voice settings' })
+    const panel = await findDialog('Voice settings')
     await user.selectOptions(await within(panel).findByLabelText('Voice model'), 'gpt-realtime-2')
     expect(await within(panel).findByText('name is too long')).toBeInTheDocument()
   })
@@ -141,7 +142,7 @@ describe('SMS and Voice settings panels', () => {
       'GET /api/v1/calls/key': [{ body: { set: true, masked: 'sk-…a1b2' } }, { body: { set: true, masked: 'sk-…z9y8' } }],
       'PUT /api/v1/calls/key': { status: 204 },
     })
-    const panel = await screen.findByRole('dialog', { name: 'Voice settings' })
+    const panel = await findDialog('Voice settings')
     expect(await within(panel).findByText('sk-…a1b2')).toBeInTheDocument()
     expect(within(panel).queryByLabelText('OpenAI key')).toBeNull()
     await user.click(within(panel).getByRole('button', { name: 'Replace' }))
@@ -157,7 +158,7 @@ describe('SMS and Voice settings panels', () => {
   it("a replacement OpenAI can't be reached for shows why and keeps the field", async () => {
     const user = userEvent.setup()
     keyed({ 'PUT /api/v1/calls/key': { status: 502, body: { error: "couldn't reach OpenAI" } } })
-    const panel = await screen.findByRole('dialog', { name: 'Voice settings' })
+    const panel = await findDialog('Voice settings')
     await user.click(await within(panel).findByRole('button', { name: 'Replace' }))
     await user.type(within(panel).getByLabelText('OpenAI key'), 'sk-new')
     await user.click(within(panel).getByRole('button', { name: 'Save' }))
@@ -167,7 +168,7 @@ describe('SMS and Voice settings panels', () => {
 
   it('without a key, the field is open', async () => {
     keyed({ 'GET /api/v1/calls/key': { body: { set: false, masked: '' } } })
-    const panel = await screen.findByRole('dialog', { name: 'Voice settings' })
+    const panel = await findDialog('Voice settings')
     expect(await within(panel).findByLabelText('OpenAI key')).toBeInTheDocument()
     expect(within(panel).queryByRole('button', { name: 'Keep the current key' })).toBeNull()
   })
@@ -178,6 +179,6 @@ describe('SMS and Voice settings panels', () => {
     render(<RouterProvider router={createMemoryRouter(routes, { initialEntries: ['/voice'] })} />)
     expect(screen.queryByRole('dialog')).toBeNull()
     await user.click(await screen.findByRole('button', { name: 'Settings' }))
-    expect(await screen.findByRole('dialog', { name: 'Voice settings' })).toBeInTheDocument()
+    expect(await findDialog('Voice settings')).toBeInTheDocument()
   })
 })

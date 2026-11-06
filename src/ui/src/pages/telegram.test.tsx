@@ -4,6 +4,7 @@ import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { routes } from '@/app/router'
 import { TG_POLL } from '@/lib/telegram'
+import { findDialog } from '@/test/dialog'
 import { stubFetch } from '@/test/fetch'
 
 const open = (path: string) => render(<RouterProvider router={createMemoryRouter(routes, { initialEntries: [path] })} />)
@@ -191,7 +192,7 @@ describe('Telegram settings panel', () => {
       'GET /api/v1/telegram/chats': { body: [] },
     })
   const openSettings = () => render(<RouterProvider router={createMemoryRouter(routes, { initialEntries: ['/telegram?settings=1'] })} />)
-  const panel = () => screen.findByRole('dialog', { name: 'Telegram settings' })
+  const panel = () => findDialog('Telegram settings')
   const linked = { state: 'connected', credentials: true, api_id: 12345, phone: '+351910000000', name: 'Box', archive_channels: false }
 
   it('shows the account and credentials, with Change disabled while linked, and archives channels', async () => {
