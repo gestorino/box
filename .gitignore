@@ -3,6 +3,8 @@
 # mode-120000 entry pointing outside the repository once got committed.
 node_modules
 dist/
+# TypeScript's incremental cache (`tsc -b`), rewritten by every build
+*.tsbuildinfo
 *.db
 *.db-wal
 *.db-shm
