@@ -56,7 +56,7 @@ patch bumped by `ansible/release.sh`); details in the `deploy` skill. Those patc
 
 **Public repo and releases.** Public at https://github.com/telepenin/concierge, MIT. `ci.yml` runs
 `make check` and `make test-dist` on Linux for every branch push and pull request. A release:
-`make release` runs `make check`, bumps `VERSION` to the next minor (X.Y.Z → X.(Y+1).0), commits
+`make release` runs `make check` and `make test-dist`, bumps `VERSION` to the next minor (X.Y.Z → X.(Y+1).0), commits
 `chore(release): vX.Y.0`, tags it, rolls back on failure or interrupt and pushes nothing; the owner
 then pushes `main` first, then the tag.
 Only a `vX.Y.0` tag whose commit is on `main` and equals `VERSION` publishes: `release.yml` builds

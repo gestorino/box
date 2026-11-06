@@ -46,8 +46,9 @@ dist:
 	scripts/dist.sh "$(V)" "$(R)"
 
 # Cut a public release: VERSION to the next minor, committed and tagged on main. Prints the two
-# pushes and pushes nothing; CI publishes the tag once it is pushed. Only a green tree is tagged.
-release: check
+# pushes and pushes nothing; CI publishes the tag once it is pushed. Only a green tree whose
+# release archive builds right is tagged.
+release: check test-dist
 	scripts/cut-release.sh
 
 # Engine + worker + built UI on 127.0.0.1:8080. Console login for local runs: dev / dev.
