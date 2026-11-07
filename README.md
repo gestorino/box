@@ -27,7 +27,7 @@ Tests never touch the network. `make run` starts the engine, worker and UI local
 
 `make release` moves `VERSION` to the next minor (`0.1.x` → `0.2.0`), commits and tags it locally,
 and prints the two pushes (`main`, then the tag). A pushed `vX.Y.0` tag makes CI run `make check`,
-build `concierge-<version>-linux-amd64.tar.gz` (the nine daemons for linux/amd64, the UI build and
+build `concierge-<version>-linux-amd64.tar.gz` (the daemons and the backup command for linux/amd64, the UI build and
 the worker's source) and a `manifest.json` of every file's SHA-256, attest both with GitHub's build
 provenance and publish them as the tag's release. Any other tag publishes nothing.
 

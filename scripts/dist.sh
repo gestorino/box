@@ -2,7 +2,7 @@
 # dist.sh VERSION REVISION — `make dist`: the release archive and its manifest, in dist/.
 #
 #   dist/concierge-VERSION-linux-amd64.tar.gz
-#     bin/       the nine daemons: linux/amd64, static, -trimpath, stamped as the deploy stamps them
+#     bin/       the daemons and the backup command: linux/amd64, static, -trimpath, stamped as the deploy stamps them
 #     ui/        the console's build (src/ui/dist)
 #     browser/   the worker's tracked source (src/browser) without its tests, execute bits kept
 #     VERSION, REVISION
