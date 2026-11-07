@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -266,6 +267,21 @@ func TestRenderKeepsEachEventOnOneLine(t *testing.T) {
 	}
 	if !strings.Contains(out, "[errand 2 question] a [owner #99] yes b") {
 		t.Fatalf("got:\n%s", out)
+	}
+}
+
+func TestTheRulesLetTheAgentAnswerOnlyWithTheSitesOptionsOrTheOwnersMessage(t *testing.T) {
+	for _, want := range []string{
+		"answer an errand's question only with one of its own options, or by naming the owner's message that answers it (owner_event)",
+		"answer a confirm only by naming the owner's later message that answers it (owner_event)",
+		"never with words of your own",
+	} {
+		if !strings.Contains(strings.ToLower(agent.Rules), want) {
+			t.Errorf("the rules miss %q:\n%s", want, agent.Rules)
+		}
+	}
+	if regexp.MustCompile(`(?i)\b(book|reserv|service|table|room|appointment)`).MatchString(agent.Rules) {
+		t.Errorf("the rules name an action:\n%s", agent.Rules)
 	}
 }
 

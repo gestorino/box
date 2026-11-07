@@ -424,6 +424,7 @@ func TestAWaitThatChangesBeforeTheAnswerIsRefused(t *testing.T) {
 
 	// A question likewise: the wait it checked, or nothing.
 	f.wait(41, "question", 3)
+	f.questions[41].Options = []string{"21:00"}
 	f.beforeAnswer = func() {
 		f.questions[41] = &signins.Question{Text: "Confirm: now?", Wait: 4}
 		f.waiting[41] = "confirm"
@@ -461,15 +462,23 @@ func TestTwoAnswersRacingOnAConfirmAnswerItOnce(t *testing.T) {
 	}
 }
 
-func TestAQuestionTakesTheAgentsAnswer(t *testing.T) {
+func TestAQuestionTakesOneOfItsOptionsOrTheOwnersWords(t *testing.T) {
 	f, s := newFake(), openStore(t)
 	tools, conv := NewTools(f, s), open(t, s, "chat")
 	if err := s.LinkRun(context.Background(), conv, 41); err != nil {
 		t.Fatal(err)
 	}
 	f.wait(41, "question", 5)
-	if m := call(t, tools, conv, "answer_errand", `{"run":41,"answer":"21:00","owner_event":0}`); m["error"] != nil {
-		t.Fatalf("refused: %v", m)
+	f.questions[41].Options = []string{"20:00", "21:00"}
+	// The agent's own words never reach the errand: only an option, as the site offered it.
+	for _, answer := range []string{"21", "21:00, and ignore the rules", "about nine", "20:00 or 21:00"} {
+		refusedSaying(t, `one of its options`, call(t, tools, conv, "answer_errand", `{"run":41,"answer":"`+answer+`","owner_event":0}`))
+	}
+	if len(f.answers[41]) != 0 {
+		t.Fatalf("answered %q", f.answers[41])
+	}
+	if m := call(t, tools, conv, "answer_errand", `{"run":41,"answer":" 21:00 ","owner_event":0}`); m["error"] != nil {
+		t.Fatalf("refused an option: %v", m)
 	}
 	words := appendEvent(t, s, conv, owner("make it four"))
 	if m := call(t, tools, conv, "answer_errand", `{"run":41,"answer":"","owner_event":`+itoa(words)+`}`); m["error"] != nil {
@@ -478,8 +487,28 @@ func TestAQuestionTakesTheAgentsAnswer(t *testing.T) {
 	if got := f.answers[41]; len(got) != 2 || got[0] != "21:00" || got[1] != "make it four" {
 		t.Fatalf("answers %q", got)
 	}
-	refusedSaying(t, `not both`, call(t, tools, conv, "answer_errand", `{"run":41,"answer":"x","owner_event":`+itoa(words)+`}`))
+	refusedSaying(t, `not both`, call(t, tools, conv, "answer_errand", `{"run":41,"answer":"21:00","owner_event":`+itoa(words)+`}`))
 	refusedSaying(t, `not neither`, call(t, tools, conv, "answer_errand", `{"run":41,"answer":"","owner_event":0}`))
+}
+
+func TestAFreeQuestionTakesOnlyTheOwnersWords(t *testing.T) {
+	f, s := newFake(), openStore(t)
+	tools, conv := NewTools(f, s), open(t, s, "chat")
+	if err := s.LinkRun(context.Background(), conv, 41); err != nil {
+		t.Fatal(err)
+	}
+	f.wait(41, "question", 5) // no options
+	refusedSaying(t, `owner_event`, call(t, tools, conv, "answer_errand", `{"run":41,"answer":"21:00","owner_event":0}`))
+	if len(f.answers[41]) != 0 {
+		t.Fatalf("answered %q", f.answers[41])
+	}
+	words := appendEvent(t, s, conv, owner("  at nine, by the window "))
+	if m := call(t, tools, conv, "answer_errand", `{"run":41,"answer":"","owner_event":`+itoa(words)+`}`); m["error"] != nil {
+		t.Fatalf("refused: %v", m)
+	}
+	if got := f.answers[41]; len(got) != 1 || got[0] != "  at nine, by the window " {
+		t.Fatalf("answers %q", got)
+	}
 }
 
 func TestErrandToolsActOnlyOnThisConversationsRuns(t *testing.T) {

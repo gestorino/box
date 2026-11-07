@@ -69,11 +69,12 @@ The layering matters: no single mechanism is trusted; injection must defeat sepa
 
 ## 4a. The Owner's Agent (channel gate, sandbox, Confirm)
 
-The owner can ask the box for things from their phone, and an agent (claudd on Claude Code, codexd on Codex) picks the tools. Three boundaries keep that from becoming a way in:
+The owner can ask the box for things from their phone, and an agent (claudd on Claude Code, codexd on Codex) picks the tools. Four boundaries keep that from becoming a way in:
 
 1. **The channel gate**: a request counts only from a *live* message in a *private* WhatsApp chat whose sender is the owner's Contacts phone. Groups, other chats, and messages replayed from the archive never count. The engine checks the sender itself, on the connector's push; the model never decides who is the owner. Every recipient is filled by the engine (the owner's Contacts phone), so the agent cannot send to anyone else. Accepted risk: a caller-ID or number-spoof attack on the owner's phone is not defended beyond this check.
 2. **The daemons' sandbox and logins**: each agent daemon runs as its own user with no rights on the box: none of its CLI's tools, no MCP server, no settings, an empty working directory, egress only to its vendor's API, and a pinned, root-owned CLI. The subscription login it holds lives in its own home and nowhere else: never in secretd, the engine, a log or a reply. A prompt-injected agent can only call the engine's tools, which are the box's accounts and the card actions, under the errand's own gates (P1-P8).
 3. **The Confirm taken only from the owner's words**: an errand's "Confirm: ...?" before its irreversible press is relayed to the owner verbatim by the engine's hub, not by the model. It is answered only by the owner's later message for that exact wait; the agent's own words, an earlier message, or an answer to another wait never answer it.
+4. **No words of the agent's reach an errand**: the agent can only pick one of the site's own offered options, word for word, or pass the owner's own message verbatim; a question with no options takes only the owner's words.
 
 ## 5. Credentials & Vault
 

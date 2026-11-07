@@ -66,11 +66,12 @@ func NewTools(e Errands, s *Store) *Tools {
 				`"required":["site","action","details","appointment"],"additionalProperties":false}`},
 			(*Tools).startErrand},
 		{&agentv1.Tool{Name: "answer_errand",
-			Description: "Answer what an errand of this conversation waits on. A question: answer is the answer, only from " +
-				"what the owner said in this conversation, and owner_event is 0; or owner_event is the # of the owner's " +
-				"message that answers it, and answer is \"\". A Confirm (a question that starts \"Confirm:\"): answer " +
-				"must be \"\" and owner_event the # of the owner's own message, sent after the Confirm was told, that " +
-				"answers it; the owner's words go to the errand as they are. A Confirm takes one answer.",
+			Description: "Answer what an errand of this conversation waits on; never with words of your own. A question: " +
+				"answer is one of its options, word for word, the one the owner chose, and owner_event is 0; or " +
+				"owner_event is the # of the owner's message that answers it, and answer is \"\". A question with no " +
+				"options takes only owner_event. A Confirm (a question that starts \"Confirm:\"): answer must be \"\" and " +
+				"owner_event the # of the owner's own message, sent after the Confirm was told, that answers it. The " +
+				"owner's words go to the errand as they are. A Confirm takes one answer.",
 			ParametersJson: `{"type":"object","properties":{"run":{"type":"integer"},"answer":{"type":"string"},` +
 				`"owner_event":{"type":"integer"}},"required":["run","answer","owner_event"],"additionalProperties":false}`},
 			(*Tools).answerErrand},
@@ -425,6 +426,8 @@ func (t *Tools) answerErrand(ctx context.Context, conv, taking int64, args strin
 			if answer, err = t.ownerWords(ctx, conv, taking, ownerEvent); err != nil {
 				return nil, err
 			}
+		} else if answer, err = offered(q, answer); err != nil {
+			return nil, err
 		}
 		if err := t.errands.AnswerWait(run, q.Wait, answer); err != nil {
 			return nil, err
@@ -434,6 +437,21 @@ func (t *Tools) answerErrand(ctx context.Context, conv, taking int64, args strin
 		return nil, refuse("run %d waits for a human check, which the owner does in the console, not for an answer", run)
 	}
 	return nil, refuse("run %d is not waiting for an answer", run)
+}
+
+// offered is the question's own option the agent's answer names, word for word once trimmed: the
+// agent's own words never reach an errand. A question with no options takes the owner's words only.
+func offered(q *signins.Question, answer string) (string, error) {
+	if len(q.Options) == 0 {
+		return "", refuse("this question offers no options: answer must be \"\" and owner_event the # of the owner's " +
+			"message that answers it")
+	}
+	i := slices.IndexFunc(q.Options, func(o string) bool { return jsTrim(o) == jsTrim(answer) })
+	if i < 0 {
+		return "", refuse("answer must be one of its options, word for word, or \"\" with owner_event the # of the " +
+			"owner's message that answers it")
+	}
+	return q.Options[i], nil
 }
 
 // ownerWords is the text of the owner's message #id in this conversation, one the turn taking the
