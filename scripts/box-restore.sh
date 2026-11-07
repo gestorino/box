@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # `make restore B=<file> [FORCE=1] [NEW_BOX=1]`: restore a backup onto the box.
-# When the box runs another build than the backup's, the backup's own build goes first: a published
+# When the box runs another build than the backup's (it has run since, so FORCE=1 is needed; refused
+# here otherwise, as is NEW_BOX=1 for a backup with no recovery copy, before anything is fetched or
+# sent), the backup's own build goes first: a published
 # release (downloaded and its attestation verified here, before anything reaches the box) or a local
 # patch version (its tag must point at the backup's revision; built in a throwaway worktree).
 # The owner types the recovery code on the box's own tty (ssh -t): this script never sees it.
@@ -14,11 +16,19 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 repo=telepenin/concierge
 backup=/opt/concierge/bin/backup
 
-field() { tar -xzOf "$b" backup.json | python3 -I -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$1"; }
+field() { tar -xzOf "$b" backup.json | python3 -I -c 'import json,sys; v=json.load(sys.stdin)[sys.argv[1]]; print(v if isinstance(v, str) else json.dumps(v))' "$1"; }
 version=$(field version)
 revision=$(field revision)
+recovery=$(field recovery)
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "unexpected version in the backup: $version" >&2; exit 1; }
 [[ $revision =~ ^[0-9a-f]+$ ]] || { echo "unexpected revision in the backup: $revision" >&2; exit 1; }
+
+# Refused here, before anything is fetched, built or sent, what the box's restore would refuse only
+# after the backup's build had replaced the box's.
+if [ -n "${NEW_BOX:-}" ] && [ "$recovery" != true ]; then
+	echo "this backup has no recovery copy: it restores on its own box only" >&2
+	exit 1
+fi
 
 tmp=$(mktemp -d)
 wt=
@@ -102,6 +112,14 @@ have_version=$(printf '%s\n' "$have" | sed -n 1p)
 have_revision=$(printf '%s\n' "$have" | sed -n 2p)
 
 if [ "$have_version" != "$version" ] || [ "$have_revision" != "$revision" ]; then
+	# A deploy is refused while the box is stopped for a backup, so a box on another build has run
+	# since this one was taken: the box's restore would refuse it unforced, after the install.
+	if [ -z "${FORCE:-}" ]; then
+		echo "the box runs $have_version ($have_revision), the backup was taken on $version ($revision): the box has run since," \
+			"so what arrived since would be lost and WhatsApp may need linking again; FORCE=1 restores it anyway" \
+			"(installing the backup's build first)" >&2
+		exit 1
+	fi
 	build
 	push "$build"
 	ssh "$box" "sudo -n $backup install-build -from $pushed"

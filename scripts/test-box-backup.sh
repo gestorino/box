@@ -143,6 +143,32 @@ grep -q 'restore -from [^ ]* -force -new-box$' "$LOG" && ok "restore: FORCE and 
 FORCE=1 run box-restore.sh "$work/same.tar.gz"
 grep -q 'restore -from [^ ]* -force$' "$LOG" && ok "restore: FORCE alone" || fail "restore: FORCE alone" "$(cat "$LOG")"
 
+# nothing_fetched: no release, no tag, no build was asked for.
+nothing_fetched() { [ "$(logged '^gh ')" = 0 ] && [ "$(logged '^git ')" = 0 ] && [ "$(logged '^make ')" = 0 ]; }
+# nothing_sent: no copy, no install-build and no restore reached the box.
+nothing_sent() { [ "$(logged '^scp ')" = 0 ] && [ "$(logged install-build)" = 0 ] && [ "$(logged ' restore -from')" = 0 ]; }
+
+# --- restore: refused up front, before anything is fetched or sent ---
+# The box runs another build than the backup's, so it has run since the backup: only FORCE restores it.
+archive "$work/other.tar.gz" 0.5.0 bbb2222 true
+FAKE_RELEASE=yes FAKE_VERSION_WANTED=0.5.0 run box-restore.sh "$work/other.tar.gz"
+[ $code -ne 0 ] && nothing_fetched && nothing_sent && ok "restore: another build without FORCE is refused before anything is fetched or sent" || fail "restore: another build without FORCE" "code $code: $(cat "$LOG")"
+case $out in *"FORCE=1"*) ok "restore: says FORCE=1 is needed" ;; *) fail "restore: says FORCE=1 is needed" "$out" ;; esac
+case $out in *"0.4.1"*"0.5.0"*|*"0.5.0"*"0.4.1"*) ok "restore: names both builds" ;; *) fail "restore: names both builds" "$out" ;; esac
+# NEW_BOX needs the backup's recovery copy.
+archive "$work/norecovery.tar.gz" 0.4.1 aaa1111 false
+NEW_BOX=1 FORCE=1 run box-restore.sh "$work/norecovery.tar.gz"
+[ $code -ne 0 ] && nothing_fetched && nothing_sent && ok "restore: NEW_BOX without a recovery copy is refused before anything is fetched or sent" || fail "restore: NEW_BOX without a recovery copy" "code $code: $(cat "$LOG")"
+case $out in *"this backup has no recovery copy: it restores on its own box only"*) ok "restore: says the backup restores on its own box only" ;; *) fail "restore: no recovery copy message" "$out" ;; esac
+archive "$work/norecovery-other.tar.gz" 0.5.0 bbb2222 false
+NEW_BOX=1 FORCE=1 FAKE_RELEASE=yes FAKE_VERSION_WANTED=0.5.0 run box-restore.sh "$work/norecovery-other.tar.gz"
+[ $code -ne 0 ] && nothing_fetched && nothing_sent && ok "restore: NEW_BOX without a recovery copy is refused before another build is fetched" || fail "restore: NEW_BOX, no recovery copy, another build" "code $code: $(cat "$LOG")"
+run box-restore.sh "$work/norecovery.tar.gz"
+[ $code -eq 0 ] && ok "restore: without NEW_BOX a backup with no recovery copy restores" || fail "restore: no recovery copy, same box" "$out"
+
+# From here on the builds differ: the box has run since each backup, so each restore is forced.
+export FORCE=1
+
 # --- restore: a published release ---
 export FAKE_RELEASE=yes
 archive "$work/pub.tar.gz" 0.5.0 bbb2222 true
@@ -180,8 +206,6 @@ FAKE_TAG_REV=ddd4444eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee run box-restore.sh "$work/
 FAKE_TAG_REV= run box-restore.sh "$work/patch.tar.gz"
 [ $code -ne 0 ] && [ "$(logged '^scp ')" = 0 ] && ok "restore patch: refuses a missing tag" || fail "restore patch: refuses a missing tag"
 
-# nothing_sent: no copy, no install-build and no restore reached the box.
-nothing_sent() { [ "$(logged '^scp ')" = 0 ] && [ "$(logged install-build)" = 0 ] && [ "$(logged ' restore -from')" = 0 ]; }
 # all_removed: every file copied to the box has its rm -f.
 all_removed() {
 	n=0
