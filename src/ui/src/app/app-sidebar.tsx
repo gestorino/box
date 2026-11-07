@@ -1,4 +1,4 @@
-import { Activity, Cable, CalendarClock, ClipboardCheck, ConciergeBell, KeyRound, LayoutDashboard, type LucideIcon, Menu, ScrollText, Settings, UserRound } from 'lucide-react'
+import { Activity, Bot, Cable, CalendarClock, ClipboardCheck, ConciergeBell, KeyRound, LayoutDashboard, type LucideIcon, Menu, ScrollText, Settings, UserRound } from 'lucide-react'
 import { Fragment, type ReactNode } from 'react'
 import { NavLink, useLocation } from 'react-router'
 import { StatusDot } from '@/components/status-dot'
@@ -34,6 +34,7 @@ const CONSOLE: NavItem[] = [
   { to: '/connections', label: 'Connections', icon: Cable },
   { to: '/accounts', label: 'Accounts', icon: KeyRound },
   { to: '/errands', label: 'Errands', icon: ClipboardCheck },
+  { to: '/agent', label: 'Agent', icon: Bot },
   { to: '/appointments', label: 'Appointments', icon: CalendarClock },
   { to: '/logs', label: 'Logs', icon: ScrollText },
 ]

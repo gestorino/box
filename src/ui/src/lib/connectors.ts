@@ -9,6 +9,8 @@ export type ConnectorName = 'email' | 'voice' | 'sms' | 'whatsapp' | 'telegram'
 export type ConnectorState = 'not_added' | 'setting_up' | 'added'
 export interface Connector { name: ConnectorName; state: ConnectorState; needs_sim: boolean }
 export interface Connectors { sim: boolean; connectors: Connector[] }
+/** hostd lists channels and agents (Claude, Codex) together; `kind` tells them apart. */
+type Row = Omit<Connector, 'name'> & { name: string; kind: 'channel' | 'agent' }
 
 /** requires: a connector that must be added first (WhatsApp's and Telegram's sign-up code arrives by SMS). */
 export const CONNECTORS: Record<
@@ -30,8 +32,12 @@ export const SECTIONS: ConnectorName[][] = [['email'], ['voice', 'sms'], ['whats
 
 export const CONNECTORS_POLL_MS = 10_000
 
-export const getConnectors = (signal?: AbortSignal) => request<Connectors>('GET', '/api/v1/connectors', undefined, signal)
-export const addConnector = (name: ConnectorName) => request<void>('POST', `/api/v1/connectors/${name}`)
+/** The channels only: the agents are the Agent page's and the AI tab's, never a card, a poll or a sidebar row here. */
+export const getConnectors = async (signal?: AbortSignal): Promise<Connectors> => {
+  const all = await request<{ sim: boolean; connectors: Row[] }>('GET', '/api/v1/connectors', undefined, signal)
+  return { sim: all.sim, connectors: all.connectors.filter((c) => c.kind === 'channel') as Connector[] }
+}
+export const addConnector = (name: string) => request<void>('POST', `/api/v1/connectors/${name}`)
 
 /** The first half of a remove: the connector's daemon logs out (where there is a login) and keeps or
  *  wipes its data. A logout that cannot reach the service answers 424 before anything changed (the
@@ -42,7 +48,7 @@ export const removeData = (name: ConnectorName, deleteData: boolean, force: bool
   request<void>('POST', `/api/v1/${CONNECTORS[name].api}/remove`, { delete_data: deleteData, force })
 
 /** The second half: hostd stops the connector and forgets it. */
-export const stopConnector = (name: ConnectorName) => request<void>('DELETE', `/api/v1/connectors/${name}`)
+export const stopConnector = (name: string) => request<void>('DELETE', `/api/v1/connectors/${name}`)
 
 /** A connector's setup check (src/engine/internal/verify): the daemon sends "Concierge check: what
  *  is A + B?" over its channel, and the check passes when the owner's reply carries the sum. Voice
@@ -68,4 +74,4 @@ export const CHECK_LANGUAGES = [
   { code: 'es', name: 'Español' },
 ]
 /** The engine asks the daemon whether its check passed, and only then has hostd mark it added. */
-export const confirmConnector = (name: ConnectorName) => request<void>('POST', `/api/v1/connectors/${name}/confirm`)
+export const confirmConnector = (name: string) => request<void>('POST', `/api/v1/connectors/${name}/confirm`)

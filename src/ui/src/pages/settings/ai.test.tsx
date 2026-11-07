@@ -1,6 +1,7 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
+import { ConnectorsProvider } from '@/hooks/use-connectors'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AiSettings } from '@/pages/settings/ai'
 import { stubFetch } from '@/test/fetch'
@@ -14,7 +15,7 @@ const CHECK = 'POST /api/v1/ai/check'
 const UNSET = { body: { set: false, masked: '' } }
 const SET = { body: { set: true, masked: 'sk-or-…a1b2' } }
 
-const show = () => render(<MemoryRouter><AiSettings /></MemoryRouter>)
+const show = () => render(<MemoryRouter><ConnectorsProvider><AiSettings /></ConnectorsProvider></MemoryRouter>)
 
 describe('AI settings', () => {
   it('says what the key is for', async () => {
@@ -124,5 +125,156 @@ describe('AI settings', () => {
     expect(await screen.findByLabelText('OpenRouter key')).toBeInTheDocument()
     expect(calls.some((c) => c.key === DEL)).toBe(true)
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+})
+
+const AGENTS = 'GET /api/v1/agents'
+const SETTINGS = 'GET /api/v1/settings/agent'
+const PUT_SETTINGS = 'PUT /api/v1/settings/agent'
+const agent = (name: string, o: object = {}) => ({ name, signed_in: false, account: '', cli_version: '', model: '', reachable: true, ...o })
+const IN = { signed_in: true, account: 'owner@example.test', cli_version: '2.1.0' }
+const row = (name: string) => screen.getByRole('heading', { level: 3, name }).closest('[data-slot="card"]') as HTMLElement
+const connectorList = (whatsapp: string) => ({ body: { sim: true, connectors: [{ name: 'whatsapp', kind: 'channel', state: whatsapp, needs_sim: false }, { name: 'claude', kind: 'agent', state: 'added', needs_sim: false }] } })
+
+describe('the agent', () => {
+  it('shows each agent with its status as icon and word, the account and the CLI version', async () => {
+    stubFetch({ [G]: SET, [AGENTS]: { body: [agent('claude', IN), agent('codex', { reachable: false })] }, [SETTINGS]: { body: { agent: '', answer: { whatsapp: false } } } })
+    show()
+    await screen.findByRole('heading', { level: 3, name: 'Claude' })
+    const claude = within(row('Claude'))
+    expect(claude.getByText('Signed in')).toBeInTheDocument()
+    expect(claude.getByText('owner@example.test')).toBeInTheDocument()
+    expect(claude.getByText('2.1.0')).toBeInTheDocument()
+    expect(claude.getByRole('button', { name: 'Sign out' })).toBeInTheDocument()
+    expect(within(row('Codex')).getByText('Unreachable')).toBeInTheDocument()
+    expect(within(row('Codex')).getByText('Unreachable').closest('p')?.querySelector('svg')).not.toBeNull()
+  })
+
+  it('TestSignInClaudeAsksForTheCode', async () => {
+    const { calls } = stubFetch({
+      [G]: SET,
+      [AGENTS]: [{ body: [agent('claude'), agent('codex')] }, { body: [agent('claude', IN), agent('codex')] }],
+      [SETTINGS]: { body: { agent: '', answer: { whatsapp: false } } },
+      'POST /api/v1/connectors/claude': { status: 204 },
+      'POST /api/v1/agents/claude/login': { body: { url: 'https://login.example.test/auth?state=x', code: '', needs_code: true } },
+      'POST /api/v1/agents/claude/login/finish': { status: 204 },
+      'POST /api/v1/connectors/claude/confirm': { status: 204 },
+    })
+    const set = vi.spyOn(Storage.prototype, 'setItem')
+    show()
+    await screen.findByRole('heading', { level: 3, name: 'Claude' })
+    await userEvent.click(within(row('Claude')).getByRole('button', { name: 'Sign in' }))
+    const dialog = within(await screen.findByRole('dialog'))
+    const link = await dialog.findByRole('link', { name: /Open the sign-in page/ })
+    expect(link).toHaveAttribute('href', 'https://login.example.test/auth?state=x')
+    expect(link).toHaveAttribute('target', '_blank')
+    await userEvent.type(dialog.getByLabelText('Code'), 'abc-123')
+    await userEvent.click(dialog.getByRole('button', { name: 'Finish' }))
+    await waitFor(() => expect(within(row('Claude')).getByText('Signed in')).toBeInTheDocument())
+    const keys = calls.map((c) => c.key)
+    expect(keys.indexOf('POST /api/v1/connectors/claude')).toBeLessThan(keys.indexOf('POST /api/v1/agents/claude/login'))
+    expect(keys.indexOf('POST /api/v1/agents/claude/login/finish')).toBeLessThan(keys.indexOf('POST /api/v1/connectors/claude/confirm'))
+    expect(calls.find((c) => c.key === 'POST /api/v1/agents/claude/login/finish')?.body).toEqual({ code: 'abc-123' })
+    expect(set).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    set.mockRestore()
+  })
+
+  it('TestSignInCodexShowsTheDeviceCode', async () => {
+    const { calls } = stubFetch({
+      [G]: SET,
+      [AGENTS]: [{ body: [agent('claude'), agent('codex')] }, { body: [agent('claude'), agent('codex', IN)] }],
+      [SETTINGS]: { body: { agent: '', answer: { whatsapp: false } } },
+      'POST /api/v1/connectors/codex': { status: 204 },
+      'POST /api/v1/agents/codex/login': { body: { url: 'https://device.example.test/', code: 'ABCD-1234', needs_code: false } },
+      'POST /api/v1/agents/codex/login/finish': { status: 204 },
+      'POST /api/v1/connectors/codex/confirm': { status: 204 },
+    })
+    // The device login takes as long as the owner does: finish answers only when released.
+    let release = () => {}
+    const stubbed = globalThis.fetch
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/codex/login/finish')) await new Promise<void>((r) => (release = r))
+      return stubbed(url, init)
+    })
+    show()
+    await screen.findByRole('heading', { level: 3, name: 'Codex' })
+    await userEvent.click(within(row('Codex')).getByRole('button', { name: 'Sign in' }))
+    const dialog = within(await screen.findByRole('dialog'))
+    expect(await dialog.findByText('ABCD-1234')).toBeInTheDocument()
+    expect(dialog.getByRole('link', { name: /Open the sign-in page/ })).toHaveAttribute('href', 'https://device.example.test/')
+    expect(dialog.getByText(/Waiting/)).toBeInTheDocument()
+    expect(dialog.queryByLabelText('Code')).not.toBeInTheDocument()
+    release()
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(calls.find((c) => c.key === 'POST /api/v1/agents/codex/login/finish')?.body).toEqual({ code: '' })
+    const keys = calls.map((c) => c.key)
+    expect(keys.indexOf('POST /api/v1/agents/codex/login/finish')).toBeLessThan(keys.indexOf('POST /api/v1/connectors/codex/confirm'))
+    await waitFor(() => expect(within(row('Codex')).getByText('Signed in')).toBeInTheDocument())
+  })
+
+  it('Sign out asks first, then logs out and removes the connector', async () => {
+    const { calls } = stubFetch({
+      [G]: SET,
+      [AGENTS]: [{ body: [agent('claude', IN), agent('codex')] }, { body: [agent('claude'), agent('codex')] }],
+      [SETTINGS]: { body: { agent: 'claude', answer: { whatsapp: false } } },
+      'POST /api/v1/agents/claude/logout': { status: 204 },
+      'DELETE /api/v1/connectors/claude': { status: 204 },
+      [PUT_SETTINGS]: { status: 204 },
+    })
+    show()
+    await screen.findByRole('heading', { level: 3, name: 'Claude' })
+    await userEvent.click(within(row('Claude')).getByRole('button', { name: 'Sign out' }))
+    const dialog = within(await screen.findByRole('dialog'))
+    await userEvent.click(dialog.getByRole('button', { name: 'Sign out' }))
+    await waitFor(() => expect(within(row('Claude')).getByText('Not signed in')).toBeInTheDocument())
+    const keys = calls.map((c) => c.key)
+    expect(keys.indexOf('POST /api/v1/agents/claude/logout')).toBeLessThan(keys.indexOf('DELETE /api/v1/connectors/claude'))
+  })
+
+  it('TestTheChoiceOffersOnlySignedInAgents', async () => {
+    const { calls } = stubFetch({
+      [G]: SET,
+      [AGENTS]: { body: [agent('claude', IN), agent('codex')] },
+      [SETTINGS]: { body: { agent: '', answer: { whatsapp: false } } },
+      [PUT_SETTINGS]: { status: 204 },
+    })
+    show()
+    const group = await screen.findByRole('group', { name: 'Agent' })
+    expect(within(group).getByRole('button', { name: 'Claude' })).toBeInTheDocument()
+    expect(within(group).queryByRole('button', { name: 'Codex' })).not.toBeInTheDocument()
+    await userEvent.click(within(group).getByRole('button', { name: 'Claude' }))
+    await waitFor(() => expect(calls.find((c) => c.key === PUT_SETTINGS)?.body).toEqual({ agent: 'claude', answer: { whatsapp: false } }))
+  })
+
+  it('with no one signed in, the choice says so', async () => {
+    stubFetch({ [G]: SET, [AGENTS]: { body: [agent('claude'), agent('codex')] }, [SETTINGS]: { body: { agent: '', answer: { whatsapp: false } } } })
+    show()
+    expect(await screen.findByText('Sign in an agent first.')).toBeInTheDocument()
+  })
+
+  it('TestAnswerMeOnWhatsAppSaysWhyItIsOff', async () => {
+    stubFetch({ [G]: SET, [AGENTS]: { body: [agent('claude', IN), agent('codex')] }, [SETTINGS]: { body: { agent: '', answer: { whatsapp: false } } }, 'GET /api/v1/connectors': connectorList('not_added') })
+    show()
+    const toggle = await screen.findByRole('switch', { name: 'Answer me on WhatsApp' })
+    expect(toggle).toBeDisabled()
+    expect(await screen.findByText('Add WhatsApp in Connectors first.')).toBeInTheDocument()
+  })
+
+  it('without an agent chosen, Answer me on WhatsApp says to choose one', async () => {
+    stubFetch({ [G]: SET, [AGENTS]: { body: [agent('claude', IN), agent('codex')] }, [SETTINGS]: { body: { agent: '', answer: { whatsapp: false } } }, 'GET /api/v1/connectors': connectorList('added') })
+    show()
+    const toggle = await screen.findByRole('switch', { name: 'Answer me on WhatsApp' })
+    expect(toggle).toBeDisabled()
+    expect(await screen.findByText('Choose an agent first.')).toBeInTheDocument()
+  })
+
+  it('with WhatsApp added and an agent chosen, the switch saves the whole settings object', async () => {
+    const { calls } = stubFetch({ [G]: SET, [AGENTS]: { body: [agent('claude', IN), agent('codex')] }, [SETTINGS]: { body: { agent: 'claude', answer: { whatsapp: false } } }, [PUT_SETTINGS]: { status: 204 }, 'GET /api/v1/connectors': connectorList('added') })
+    show()
+    const toggle = await screen.findByRole('switch', { name: 'Answer me on WhatsApp' })
+    await waitFor(() => expect(toggle).toBeEnabled())
+    await userEvent.click(toggle)
+    await waitFor(() => expect(calls.find((c) => c.key === PUT_SETTINGS)?.body).toEqual({ agent: 'claude', answer: { whatsapp: true } }))
   })
 })

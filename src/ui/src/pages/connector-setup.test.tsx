@@ -19,7 +19,7 @@ afterEach(() => vi.unstubAllGlobals())
 
 const NAMES = ['email', 'voice', 'sms', 'whatsapp', 'telegram']
 const list = (states: Record<string, string>) => ({
-  body: { sim: true, connectors: NAMES.map((name) => ({ name, state: states[name] ?? 'not_added', needs_sim: name === 'voice' || name === 'sms' })) },
+  body: { sim: true, connectors: NAMES.map((name) => ({ name, state: states[name] ?? 'not_added', kind: 'channel', needs_sim: name === 'voice' || name === 'sms' })) },
 })
 const writes = (calls: { key: string; body?: unknown }[]) => calls.filter((c) => !c.key.startsWith('GET '))
 const SLOW = { timeout: 5_000 } // the check is polled every two seconds

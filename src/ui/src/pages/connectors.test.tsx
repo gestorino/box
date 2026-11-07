@@ -9,14 +9,15 @@ import { stubFetch } from '@/test/fetch'
 afterEach(() => vi.unstubAllGlobals())
 
 const NAMES = ['email', 'voice', 'sms', 'whatsapp', 'telegram']
+const agentRows: object[] = [{ name: 'claude', kind: 'agent', state: 'added', needs_sim: false }, { name: 'codex', kind: 'agent', state: 'not_added', needs_sim: false }]
 const list = (added: string[], sim = true, settingUp: string[] = []) => ({
   body: {
     sim,
     connectors: NAMES.map((name) => ({
       name,
       state: added.includes(name) ? 'added' : settingUp.includes(name) ? 'setting_up' : 'not_added',
-      needs_sim: name === 'voice' || name === 'sms',
-    })),
+      kind: 'channel', needs_sim: name === 'voice' || name === 'sms',
+    })).concat(agentRows as never[]),
   },
 })
 
@@ -30,6 +31,14 @@ function open(table: Parameters<typeof stubFetch>[0]) {
 const card = (name: string) => screen.getByRole('heading', { level: 2, name }).closest('[data-slot="card"]') as HTMLElement
 
 describe('Connectors page', () => {
+  it('TestConnectorsShowOnlyChannels: an agent row neither shows nor gets polled', async () => {
+    const { api: { calls } } = open({ 'GET /api/v1/connectors': list(['email', 'claude']) })
+    await screen.findByRole('heading', { level: 2, name: 'Email' })
+    expect(screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)).toEqual(['Email', 'Voice', 'SMS', 'WhatsApp', 'Telegram'])
+    await new Promise((r) => setTimeout(r, 50))
+    expect(calls.filter((c) => /claude|codex/i.test(c.key) && !c.key.includes('/api/v1/connectors'))).toEqual([])
+  })
+
   it('shows every connector as a card, with its description', async () => {
     open({ 'GET /api/v1/connectors': list(['sms']) })
     await screen.findByRole('heading', { level: 2, name: 'Email' })
