@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	listenv1 "concierge/engine/internal/gen/listen/v1"
 	"concierge/engine/internal/h2c"
@@ -39,6 +40,11 @@ var _ Channel = (*WhatsAppChannel)(nil)
 
 var errNoPhone = errors.New("the owner's phone is not set in Contacts")
 
+// partRunes is the longest part one send carries: whatsappd refuses a text over 4096 runes.
+const partRunes = 4000
+
+// Send sends the text to the owner's phone, a long one in parts, in order; it fails, sending no more,
+// at the first part that fails: the text counts as sent only once every part is.
 func (c *WhatsAppChannel) Send(ctx context.Context, text string) error {
 	phone, err := c.settings.OwnerPhone(ctx)
 	if err != nil {
@@ -47,6 +53,34 @@ func (c *WhatsAppChannel) Send(ctx context.Context, text string) error {
 	if strings.TrimSpace(phone) == "" {
 		return errNoPhone
 	}
+	for _, part := range sendParts(text) {
+		if err := c.send(ctx, phone, part); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sendParts cuts text into parts of at most partRunes runes: at the last paragraph break that fits,
+// else the last line break, else the last space, else hard at the limit. The break itself is dropped.
+func sendParts(text string) []string {
+	var parts []string
+	for utf8.RuneCountInString(text) > partRunes {
+		head := string([]rune(text)[:partRunes])
+		cut, skip := len(head), 0
+		for _, sep := range []string{"\n\n", "\n", " "} {
+			if i := strings.LastIndex(head, sep); i > 0 {
+				cut, skip = i, len(sep)
+				break
+			}
+		}
+		parts = append(parts, text[:cut])
+		text = text[cut+skip:]
+	}
+	return append(parts, text)
+}
+
+func (c *WhatsAppChannel) send(ctx context.Context, phone, text string) error {
 	body, _ := json.Marshal(map[string]string{"chat": phone, "text": text})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://whatsappd/whatsapp/send", bytes.NewReader(body))
 	if err != nil {

@@ -7,9 +7,12 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -17,6 +20,7 @@ import (
 	"concierge/engine/internal/h2c"
 	"concierge/engine/internal/listen"
 	"concierge/engine/internal/listen/listentest"
+	"concierge/engine/internal/signins"
 )
 
 // phoneSettings is Settings with a phone and a switch the test moves.
@@ -248,6 +252,104 @@ func TestSendGoesToTheOwnersPhone(t *testing.T) {
 	if body["chat"] != "+351944444444" {
 		t.Fatalf("body = %v", body)
 	}
+}
+
+// sendServer is whatsappd's send that keeps each text it got, in order, and fails the nth (from 1;
+// 0 fails none) as whatsappd refuses one.
+func sendServer(t *testing.T, failing int) (socket string, got func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var texts []string
+	socket = serveH2C(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &body)
+		mu.Lock()
+		defer mu.Unlock()
+		texts = append(texts, body["text"])
+		if len(texts) == failing {
+			http.Error(w, "too long", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	return socket, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), texts...)
+	}
+}
+
+func TestALongTextIsSentInPartsInOrder(t *testing.T) {
+	para := func(r string) string { return strings.Repeat(r, 2999) + "." }
+	text := para("a") + "\n\n" + para("é") + "\n\n" + para("ç") // 9004 runes
+	socket, got := sendServer(t, 0)
+	if err := NewWhatsAppChannel(socket, &phoneSettings{phone: "+351912345678"}).Send(context.Background(), text); err != nil {
+		t.Fatal(err)
+	}
+	if parts := got(); !equal(parts, []string{para("a"), para("é"), para("ç")}) {
+		t.Fatalf("%d parts of %v runes", len(parts), runeCounts(parts))
+	}
+	for name, c := range map[string]struct {
+		text string
+		want []int
+	}{
+		"lines":  {strings.Repeat(strings.Repeat("l", 99)+"\n", 90), []int{3999, 3999, 1000}},
+		"words":  {strings.Repeat(strings.Repeat("w", 9)+" ", 900), []int{3999, 3999, 1000}},
+		"no gap": {strings.Repeat("ü", 9000), []int{4000, 4000, 1000}},
+		"short":  {"done", []int{4}},
+	} {
+		if n := runeCounts(sendParts(c.text)); !equal(intWords(n), intWords(c.want)) {
+			t.Errorf("%s: parts of %v runes, want %v", name, n, c.want)
+		}
+		if joined := strings.Join(sendParts(c.text), ""); utf8.RuneCountInString(joined) > utf8.RuneCountInString(c.text) {
+			t.Errorf("%s: the parts grew", name)
+		}
+	}
+}
+
+func TestAFailedPartFailsTheSend(t *testing.T) {
+	socket, got := sendServer(t, 2)
+	text := strings.Repeat("x", 3000) + "\n\n" + strings.Repeat("y", 3000) + "\n\n" + strings.Repeat("z", 3000)
+	if err := NewWhatsAppChannel(socket, &phoneSettings{phone: "+351912345678"}).Send(context.Background(), text); err == nil {
+		t.Fatal("a failed part was not an error")
+	}
+	if n := len(got()); n != 2 {
+		t.Fatalf("%d parts sent after the second failed", n)
+	}
+}
+
+func TestALongConfirmWithAFailedPartIsNotTold(t *testing.T) {
+	r := newRig(t, openStore(t), answeringAgent)
+	socket, got := sendServer(t, 2)
+	r.hub.cfg.Channels["whatsapp"] = NewWhatsAppChannel(socket, r.settings)
+	conv := r.linked(t, 41)
+	r.errands.wait(41, "confirm", 9)
+	r.hub.RunEvent(signins.RunEvent{Run: 41, Kind: "confirm", Text: "Confirm: " + strings.Repeat("all of it ", 900) + "?",
+		Options: []string{"Yes", "No"}, Wait: 9})
+	r.settle(t)
+	if n := len(got()); n != 2 {
+		t.Fatalf("%d parts sent", n)
+	}
+	if _, _, _, ok, err := r.store.pendingConfirm(context.Background(), conv, 41); ok || err != nil {
+		t.Fatalf("a Confirm half sent counts as told: %v %v", ok, err)
+	}
+}
+
+func runeCounts(parts []string) []int {
+	out := make([]int, len(parts))
+	for i, p := range parts {
+		out[i] = utf8.RuneCountInString(p)
+	}
+	return out
+}
+
+func intWords(ns []int) []string {
+	out := make([]string, len(ns))
+	for i, n := range ns {
+		out[i] = strconv.Itoa(n)
+	}
+	return out
 }
 
 func TestSendWithNoPhoneSendsNothing(t *testing.T) {
