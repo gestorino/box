@@ -107,6 +107,15 @@ func (t *Tools) Specs() []*agentv1.Tool {
 	return out
 }
 
+// Running is the run still running: what keeps the conversation that started it open.
+func (t *Tools) Running(ctx context.Context, run int64) (bool, error) {
+	d, found, err := t.errands.AgentRun(ctx, run)
+	if err != nil {
+		return false, err
+	}
+	return found && d.State == "running", nil
+}
+
 // refusal is a tool's own refusal, in plain words the agent reads.
 type refusal string
 
@@ -436,18 +445,18 @@ func (t *Tools) answerConfirm(ctx context.Context, conv, run, wait int64, answer
 		return nil, refuse("a Confirm takes no answer of yours: answer must be \"\" and owner_event the # of the " +
 			"owner's own message that answers it")
 	}
-	confirm, told, ok, err := t.store.pendingConfirm(ctx, conv, run)
+	confirm, toldWait, toldAt, ok, err := t.store.pendingConfirm(ctx, conv, run)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
 		return nil, refuse("run %d's Confirm was not told in this conversation, or was answered already", run)
 	}
-	if told != wait {
+	if toldWait != wait {
 		return nil, refuse("the Confirm told (#%d) is no longer the one run %d waits on: wait until its new one is told", confirm, run)
 	}
-	if ownerEvent <= confirm {
-		return nil, refuse("#%d came before the Confirm (#%d): only the owner's message after it answers it", ownerEvent, confirm)
+	if ownerEvent <= toldAt {
+		return nil, refuse("#%d came before the Confirm (#%d) was told: only the owner's message after it answers it", ownerEvent, confirm)
 	}
 	words, err := t.ownerWords(ctx, conv, ownerEvent)
 	if err != nil {

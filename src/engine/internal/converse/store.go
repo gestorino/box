@@ -51,10 +51,13 @@ type Store struct {
 
 // migrations[v] brings agent.db from version v to v+1.
 //
-// conversation_events.event is the event as protojson, its id the row's. confirm_run is the run of a
-// confirm errand event (0 for every other event), confirm_wait its wait (signins' Question.Wait), and
-// answered_by the owner's event that answered it (0 while unanswered): the Confirm gate's state
-// (tools.go).
+// conversation_events.event is the event as protojson, its id the row's. pending is 1 for an event the
+// hub took in (the owner's message, an errand's event) whose turn has not finished: it is taken again
+// after a restart, and the steps of the turns before it don't see it. confirm_run is the run of a
+// confirm errand event (0 for every other event), confirm_wait its wait (signins' Question.Wait),
+// confirm_told the conversation's last event once the owner was sent the Confirm (0 until then: an
+// untold Confirm is never answerable), and answered_by the owner's event that answered it (0 while
+// unanswered): the Confirm gate's state (tools.go).
 var migrations = []string{`
 CREATE TABLE conversations (
 	id INTEGER PRIMARY KEY, channel TEXT NOT NULL, thread TEXT NOT NULL, state TEXT NOT NULL,
@@ -64,9 +67,11 @@ CREATE TABLE conversations (
 CREATE UNIQUE INDEX conversations_open ON conversations (channel, thread) WHERE state = 'open';
 CREATE TABLE conversation_events (
 	id INTEGER PRIMARY KEY, conversation INTEGER NOT NULL REFERENCES conversations (id), at TEXT NOT NULL,
-	event TEXT NOT NULL, confirm_run INTEGER NOT NULL DEFAULT 0, confirm_wait INTEGER NOT NULL DEFAULT 0,
-	answered_by INTEGER NOT NULL DEFAULT 0);
+	event TEXT NOT NULL, pending INTEGER NOT NULL DEFAULT 0,
+	confirm_run INTEGER NOT NULL DEFAULT 0, confirm_wait INTEGER NOT NULL DEFAULT 0,
+	confirm_told INTEGER NOT NULL DEFAULT 0, answered_by INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX conversation_events_by_conversation ON conversation_events (conversation, id);
+CREATE INDEX conversation_events_pending ON conversation_events (id) WHERE pending = 1;
 CREATE INDEX conversation_events_confirms ON conversation_events (conversation, confirm_run) WHERE confirm_run <> 0;
 CREATE TABLE conversation_runs (
 	run INTEGER PRIMARY KEY, conversation INTEGER NOT NULL REFERENCES conversations (id));
@@ -144,6 +149,50 @@ func (s *Store) Open(ctx context.Context, channel, thread string, at time.Time) 
 // Append keeps the event in the conversation at at, and moves the conversation's last event there.
 // It sets the event's id to the stored one and returns it.
 func (s *Store) Append(ctx context.Context, conv int64, e *agentv1.Event, at time.Time) (int64, error) {
+	return s.append(ctx, conv, e, at, false)
+}
+
+// Intake appends an event the hub took in, pending until Taken says its turn finished.
+func (s *Store) Intake(ctx context.Context, conv int64, e *agentv1.Event, at time.Time) (int64, error) {
+	return s.append(ctx, conv, e, at, true)
+}
+
+// Taken marks the event's turn finished: it is no longer pending.
+func (s *Store) Taken(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE conversation_events SET pending = 0 WHERE id = ?`, id)
+	return err
+}
+
+// Queued is an event still pending, and its conversation.
+type Queued struct {
+	Conversation int64
+	Event        *agentv1.Event
+}
+
+// Pending is every event still pending, oldest first: the turns a restart cut short or never ran.
+func (s *Store) Pending(ctx context.Context) ([]Queued, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, conversation, event FROM conversation_events WHERE pending = 1 ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Queued{}
+	for rows.Next() {
+		var id, conv int64
+		var raw string
+		if err := rows.Scan(&id, &conv, &raw); err != nil {
+			return nil, err
+		}
+		e, err := decodeEvent(id, raw)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, Queued{conv, e})
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) append(ctx context.Context, conv int64, e *agentv1.Event, at time.Time, pending bool) (int64, error) {
 	stored := proto.Clone(e).(*agentv1.Event)
 	stored.Id = 0 // the row's id is the event's
 	raw, err := protojson.Marshal(stored)
@@ -168,8 +217,8 @@ func (s *Store) Append(ctx context.Context, conv int64, e *agentv1.Event, at tim
 	} else if n == 0 {
 		return 0, ErrNoConversation
 	}
-	res, err = tx.ExecContext(ctx, `INSERT INTO conversation_events (conversation, at, event, confirm_run, confirm_wait)
-		VALUES (?, ?, ?, ?, ?)`, conv, ts(at), string(raw), confirmRun, confirmWait)
+	res, err = tx.ExecContext(ctx, `INSERT INTO conversation_events (conversation, at, event, pending, confirm_run, confirm_wait)
+		VALUES (?, ?, ?, ?, ?, ?)`, conv, ts(at), string(raw), pending, confirmRun, confirmWait)
 	if err != nil {
 		return 0, err
 	}
@@ -195,12 +244,25 @@ func decodeEvent(id int64, raw string) (*agentv1.Event, error) {
 
 // Events is the conversation's last events, oldest first, each with its id; last <= 0 is all of them.
 func (s *Store) Events(ctx context.Context, conv int64, last int) ([]*agentv1.Event, error) {
+	return s.events(ctx, conv, last, -1)
+}
+
+// Window is what a turn taking the event #taking shows its agent: the conversation's last events but
+// those still pending after it, which their own turns take later.
+func (s *Store) Window(ctx context.Context, conv int64, last int, taking int64) ([]*agentv1.Event, error) {
+	return s.events(ctx, conv, last, taking)
+}
+
+// events is the conversation's last events, leaving out those pending after #upTo (none left out
+// when upTo < 0).
+func (s *Store) events(ctx context.Context, conv int64, last int, upTo int64) ([]*agentv1.Event, error) {
 	limit := -1 // SQLite: no limit
 	if last > 0 {
 		limit = last
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id, event FROM (SELECT id, event FROM conversation_events
-		WHERE conversation = ? ORDER BY id DESC LIMIT ?) ORDER BY id`, conv, limit)
+		WHERE conversation = ? AND (? < 0 OR pending = 0 OR id <= ?) ORDER BY id DESC LIMIT ?) ORDER BY id`,
+		conv, upTo, upTo, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -389,15 +451,32 @@ func (s *Store) One(ctx context.Context, id int64) (Conversation, []*agentv1.Eve
 	return c, events, runs, nil
 }
 
-// pendingConfirm is the newest unanswered confirm the conversation was told for the run, and its
-// wait; false when there is none.
-func (s *Store) pendingConfirm(ctx context.Context, conv, run int64) (id, wait int64, ok bool, err error) {
-	err = s.db.QueryRowContext(ctx, `SELECT id, confirm_wait FROM conversation_events WHERE conversation = ?
-		AND confirm_run = ? AND answered_by = 0 ORDER BY id DESC LIMIT 1`, conv, run).Scan(&id, &wait)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, 0, false, nil
+// tellConfirm marks the confirm event #id told: the owner was sent it, after the conversation's last
+// event now. Only an owner's message after that mark answers it.
+func (s *Store) tellConfirm(ctx context.Context, conv, id int64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE conversation_events SET confirm_told =
+		(SELECT max(id) FROM conversation_events WHERE conversation = ?)
+		WHERE id = ? AND conversation = ? AND confirm_run <> 0`, conv, id, conv)
+	if err != nil {
+		return err
 	}
-	return id, wait, err == nil, err
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n != 1 {
+		return fmt.Errorf("event %d is no confirm of conversation %d", id, conv)
+	}
+	return nil
+}
+
+// pendingConfirm is the newest unanswered confirm the conversation was told for the run, its wait and
+// the conversation's last event when it was told; false when there is none.
+func (s *Store) pendingConfirm(ctx context.Context, conv, run int64) (id, wait, told int64, ok bool, err error) {
+	err = s.db.QueryRowContext(ctx, `SELECT id, confirm_wait, confirm_told FROM conversation_events WHERE conversation = ?
+		AND confirm_run = ? AND confirm_told <> 0 AND answered_by = 0 ORDER BY id DESC LIMIT 1`, conv, run).Scan(&id, &wait, &told)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, 0, false, nil
+	}
+	return id, wait, told, err == nil, err
 }
 
 // The refusals of a claim on a Confirm.

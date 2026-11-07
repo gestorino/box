@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -162,6 +163,8 @@ type rig struct {
 	settings *fakeSettings
 	errands  *fakeErrands
 	clock    *clock
+	// stop ends the hub's Run and waits for it, as the engine's stop does.
+	stop func()
 }
 
 func newRig(t *testing.T, store *Store, step func(n int, req *agentv1.StepRequest) (*agentv1.StepResponse, error)) *rig {
@@ -175,8 +178,32 @@ func newRig(t *testing.T, store *Store, step func(n int, req *agentv1.StepReques
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { r.hub.Run(ctx); close(done) }()
-	t.Cleanup(func() { cancel(); <-done })
+	r.stop = sync.OnceFunc(func() { cancel(); <-done })
+	t.Cleanup(r.stop)
 	return r
+}
+
+// track counts a step in flight and keeps the most ever at once.
+func track(inFlight, most *atomic.Int32) {
+	n := inFlight.Add(1)
+	for {
+		m := most.Load()
+		if n <= m || most.CompareAndSwap(m, n) {
+			return
+		}
+	}
+}
+
+// lastOwner is the newest owner's message a step saw, and its id.
+func lastOwner(req *agentv1.StepRequest) (string, int64) {
+	var text string
+	var id int64
+	for _, e := range req.GetEvents() {
+		if o, ok := e.GetKind().(*agentv1.Event_Owner); ok {
+			text, id = o.Owner, e.GetId()
+		}
+	}
+	return text, id
 }
 
 func toolCall(name, args string) *agentv1.StepResponse {
@@ -330,24 +357,26 @@ func TestAnUnreachableAgentSaysSo(t *testing.T) {
 
 func TestTurnsOnOneConversationQueue(t *testing.T) {
 	var inFlight, most atomic.Int32
-	r := newRig(t, openStore(t), func(_ int, req *agentv1.StepRequest) (*agentv1.StepResponse, error) {
-		n := inFlight.Add(1)
+	stored := make(chan struct{})
+	r := newRig(t, openStore(t), func(n int, req *agentv1.StepRequest) (*agentv1.StepResponse, error) {
+		track(&inFlight, &most)
 		defer inFlight.Add(-1)
-		if n > most.Load() {
-			most.Store(n)
-		}
-		time.Sleep(50 * time.Millisecond)
-		var last string
-		for _, e := range req.GetEvents() {
-			if o, ok := e.GetKind().(*agentv1.Event_Owner); ok {
-				last = o.Owner
+		events := req.GetEvents()
+		if events[len(events)-1].GetToolResult() == nil {
+			if n == 1 {
+				<-stored // "one"'s turn steps again only once "two" is stored
 			}
+			time.Sleep(20 * time.Millisecond)
+			return toolCall("list_appointments", `{}`), nil
 		}
+		last, _ := lastOwner(req)
 		return say("re: " + last), nil
 	})
-	// Owner returns once the message is queued: "two" comes while "one"'s turn runs.
+	// Owner returns once the message is stored and queued: "two" comes while "one"'s turn runs, and
+	// that turn never sees it.
 	r.hub.Owner(context.Background(), "whatsapp", "chat", "one")
 	r.hub.Owner(context.Background(), "whatsapp", "chat", "two")
+	close(stored)
 	if a, b := r.channel.next(t), r.channel.next(t); a != "re: one" || b != "re: two" {
 		t.Fatalf("answered %q then %q", a, b)
 	}
@@ -356,20 +385,20 @@ func TestTurnsOnOneConversationQueue(t *testing.T) {
 		t.Fatalf("%d steps at once on one conversation", most.Load())
 	}
 	_, events := r.only(t)
-	if want := []string{"owner", "agent", "owner", "agent"}; !equal(kinds(events), want) ||
-		events[0].GetOwner() != "one" || events[2].GetOwner() != "two" {
-		t.Fatalf("events: %v", events)
+	want := []string{"owner", "owner", "tool_call", "tool_result", "agent", "tool_call", "tool_result", "agent"}
+	if !equal(kinds(events), want) || events[0].GetOwner() != "one" || events[1].GetOwner() != "two" {
+		t.Fatalf("events: %v", kinds(events))
+	}
+	if pending, err := r.store.Pending(context.Background()); err != nil || len(pending) != 0 {
+		t.Fatalf("still pending: %v %v", pending, err)
 	}
 }
 
 func TestTurnsOnOneConversationNeverOverlap(t *testing.T) {
 	var inFlight, most atomic.Int32
 	r := newRig(t, openStore(t), func(int, *agentv1.StepRequest) (*agentv1.StepResponse, error) {
-		n := inFlight.Add(1)
+		track(&inFlight, &most)
 		defer inFlight.Add(-1)
-		if n > most.Load() {
-			most.Store(n)
-		}
 		time.Sleep(30 * time.Millisecond)
 		return say("ok"), nil
 	})
@@ -383,6 +412,48 @@ func TestTurnsOnOneConversationNeverOverlap(t *testing.T) {
 	r.channel.next(t)
 	if most.Load() != 1 {
 		t.Fatalf("%d steps at once on one conversation", most.Load())
+	}
+}
+
+func TestQueuedMessagesOutliveARestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.db")
+	first, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepping, release := make(chan struct{}), make(chan struct{})
+	defer close(release)
+	r := newRig(t, first, func(n int, _ *agentv1.StepRequest) (*agentv1.StepResponse, error) {
+		if n == 1 {
+			close(stepping)
+		}
+		<-release // the engine stops during the first turn's step
+		return say("too late"), nil
+	})
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "one")
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "two")
+	<-stepping
+	r.stop()
+	r.channel.none(t)
+	if _, events := r.only(t); !equal(kinds(events), []string{"owner", "owner"}) {
+		t.Fatalf("kept %v", kinds(events))
+	}
+	first.Close()
+
+	second := openStoreAt(t, path)
+	r2 := newRig(t, second, func(_ int, req *agentv1.StepRequest) (*agentv1.StepResponse, error) {
+		last, _ := lastOwner(req)
+		return say("re: " + last), nil
+	})
+	if a, b := r2.channel.next(t), r2.channel.next(t); a != "re: one" || b != "re: two" {
+		t.Fatalf("after the restart answered %q then %q", a, b)
+	}
+	r2.settle(t)
+	if _, events := r2.only(t); !equal(kinds(events), []string{"owner", "owner", "agent", "agent"}) {
+		t.Fatalf("events: %v", kinds(events))
+	}
+	if pending, err := second.Pending(context.Background()); err != nil || len(pending) != 0 {
+		t.Fatalf("still pending: %v %v", pending, err)
 	}
 }
 
@@ -423,16 +494,87 @@ func TestAnErrandsQuestionBecomesATurn(t *testing.T) {
 	}
 }
 
-func TestAConfirmIsKeptWithItsWait(t *testing.T) {
-	r := newRig(t, openStore(t), func(int, *agentv1.StepRequest) (*agentv1.StepResponse, error) {
-		return say("Shall I?"), nil
-	})
+// answeringAgent answers the owner's newest message by passing it to run 41's wait, then says "Done".
+func answeringAgent(_ int, req *agentv1.StepRequest) (*agentv1.StepResponse, error) {
+	events := req.GetEvents()
+	if events[len(events)-1].GetToolResult() != nil {
+		return say("Done"), nil
+	}
+	_, id := lastOwner(req)
+	return toolCall("answer_errand", fmt.Sprintf(`{"run":41,"answer":"","owner_event":%d}`, id)), nil
+}
+
+// lastResult is the newest tool result kept in the conversation.
+func (r *rig) lastResult(t *testing.T) string {
+	t.Helper()
+	_, events := r.only(t)
+	for i := len(events) - 1; i >= 0; i-- {
+		if res := events[i].GetToolResult(); res != nil {
+			return res.GetResultJson()
+		}
+	}
+	t.Fatalf("no tool ran: %v", kinds(events))
+	return ""
+}
+
+func TestAConfirmIsRelayedAsTheSiteSaidIt(t *testing.T) {
+	r := newRig(t, openStore(t), answeringAgent)
 	conv := r.linked(t, 41)
-	r.hub.RunEvent(signins.RunEvent{Run: 41, Kind: "confirm", Text: "Confirm: go?", Wait: 9})
-	r.channel.next(t)
-	_, wait, ok, err := r.store.pendingConfirm(context.Background(), conv, 41)
-	if err != nil || !ok || wait != 9 {
+	r.errands.wait(41, "confirm", 9)
+	r.hub.RunEvent(signins.RunEvent{Run: 41, Kind: "confirm", Text: "Confirm: Fri 21:00 for 4?", Options: []string{"Yes", "No"}, Wait: 9})
+	if got := r.channel.next(t); got != "Confirm: Fri 21:00 for 4?\nYes\nNo" {
+		t.Fatalf("sent %q", got)
+	}
+	r.settle(t)
+	if steps := r.agent.requests(); len(steps) != 0 {
+		t.Fatalf("the agent was stepped for a Confirm: %d", len(steps))
+	}
+	if _, wait, _, ok, err := r.store.pendingConfirm(context.Background(), conv, 41); err != nil || !ok || wait != 9 {
 		t.Fatalf("pending confirm: wait %d %v %v", wait, ok, err)
+	}
+
+	// The owner's next message answers it, through the agent's answer_errand.
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "yes, do it")
+	if got := r.channel.next(t); got != "Done" {
+		t.Fatalf("sent %q", got)
+	}
+	if got := r.errands.answered(41); !equal(got, []string{"yes, do it"}) {
+		t.Fatalf("answered %q, result %s", got, r.lastResult(t))
+	}
+	if _, events := r.only(t); !equal(kinds(events), []string{"errand:confirm", "agent", "owner", "tool_call", "tool_result", "agent"}) {
+		t.Fatalf("events: %v", kinds(events))
+	}
+}
+
+func TestAConfirmNotSentIsNeverAnswerable(t *testing.T) {
+	r := newRig(t, openStore(t), answeringAgent)
+	r.linked(t, 41)
+	r.errands.wait(41, "confirm", 9)
+	r.channel.err = errors.New("whatsappd away")
+	r.hub.RunEvent(signins.RunEvent{Run: 41, Kind: "confirm", Text: "Confirm: go?", Wait: 9})
+	r.settle(t)
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "yes") // "try again", say, on something else
+	r.settle(t)
+	if got := r.errands.answered(41); len(got) != 0 {
+		t.Fatalf("an untold Confirm was answered %q", got)
+	}
+	if res := r.lastResult(t); !strings.Contains(res, "not told") {
+		t.Fatalf("answer_errand gave %s", res)
+	}
+}
+
+func TestAConfirmWithTheChannelOffIsNeverAnswerable(t *testing.T) {
+	r := newRig(t, openStore(t), answeringAgent)
+	conv := r.linked(t, 41)
+	r.errands.wait(41, "confirm", 9)
+	r.settings.set("claude", false)
+	r.hub.RunEvent(signins.RunEvent{Run: 41, Kind: "confirm", Text: "Confirm: go?", Wait: 9})
+	r.settle(t)
+	r.channel.none(t)
+	yes := appendEvent(t, r.store, conv, owner("yes"))
+	refusedSaying(t, `not told`, call(t, r.hub.cfg.Tools, conv, "answer_errand", `{"run":41,"answer":"","owner_event":`+itoa(yes)+`}`))
+	if got := r.errands.answered(41); len(got) != 0 {
+		t.Fatalf("answered %q", got)
 	}
 }
 
@@ -479,8 +621,14 @@ func TestAnEventOfNoConversationIsDropped(t *testing.T) {
 		return say("no"), nil
 	})
 	r.hub.linkWait = 200 * time.Millisecond
+	start := time.Now()
+	r.hub.RunEvent(signins.RunEvent{Run: 99, Kind: "question", Wait: 1})
+	r.hub.RunEvent(signins.RunEvent{Run: 99, Kind: "question", Wait: 2})
 	r.hub.RunEvent(signins.RunEvent{Run: 99, Kind: "done"})
 	r.settle(t)
+	if took := time.Since(start); took > 500*time.Millisecond { // one wait for the run, not one per event
+		t.Fatalf("dropping three events took %v", took)
+	}
 	r.channel.none(t)
 	if list, _ := r.store.List(context.Background()); len(list) != 0 {
 		t.Fatalf("conversations: %v", list)

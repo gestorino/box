@@ -227,9 +227,53 @@ func TestAFailureIsSaidInPlainWords(t *testing.T) {
 	}
 }
 
-// confirmEvent is the errand's Confirm told, its wait wait.
+// confirmEvent is the errand's Confirm, its wait wait.
 func confirmEvent(run, wait int64, text string) *agentv1.Event {
 	return &agentv1.Event{Kind: &agentv1.Event_Errand{Errand: &agentv1.ErrandEvent{Run: run, Kind: "confirm", Text: text, Wait: wait}}}
+}
+
+// told appends the confirm and marks it told, as the hub does once the owner was sent it.
+func told(t *testing.T, s *Store, conv int64, e *agentv1.Event) int64 {
+	t.Helper()
+	id := appendEvent(t, s, conv, e)
+	if err := s.tellConfirm(context.Background(), conv, id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func TestAnUntoldConfirmIsNeverAnswerable(t *testing.T) {
+	f, s := newFake(), openStore(t)
+	tools, conv := NewTools(f, s), open(t, s, "chat")
+	if err := s.LinkRun(context.Background(), conv, 41); err != nil {
+		t.Fatal(err)
+	}
+	appendEvent(t, s, conv, confirmEvent(41, 1, "Confirm: go?")) // kept, but the owner was never sent it
+	f.wait(41, "confirm", 1)
+	yes := appendEvent(t, s, conv, owner("yes"))
+	refusedSaying(t, `not told`, call(t, tools, conv, "answer_errand", `{"run":41,"answer":"","owner_event":`+itoa(yes)+`}`))
+	if len(f.answers[41]) != 0 {
+		t.Fatalf("answered %v", f.answers)
+	}
+}
+
+func TestOnlyAMessageAfterTheTellingAnswersAConfirm(t *testing.T) {
+	f, s := newFake(), openStore(t)
+	tools, conv := NewTools(f, s), open(t, s, "chat")
+	if err := s.LinkRun(context.Background(), conv, 41); err != nil {
+		t.Fatal(err)
+	}
+	confirm := appendEvent(t, s, conv, confirmEvent(41, 1, "Confirm: go?"))
+	early := appendEvent(t, s, conv, owner("yes")) // came while the Confirm was being sent
+	if err := s.tellConfirm(context.Background(), conv, confirm); err != nil {
+		t.Fatal(err)
+	}
+	f.wait(41, "confirm", 1)
+	refusedSaying(t, `before the Confirm`, call(t, tools, conv, "answer_errand", `{"run":41,"answer":"","owner_event":`+itoa(early)+`}`))
+	later := appendEvent(t, s, conv, owner("yes, go"))
+	if m := call(t, tools, conv, "answer_errand", `{"run":41,"answer":"","owner_event":`+itoa(later)+`}`); m["error"] != nil {
+		t.Fatalf("refused: %v", m)
+	}
 }
 
 // confirmAt fills a conversation up to a confirm for run 41 at event #10 (wait 1), the run waiting on it.
@@ -241,7 +285,7 @@ func confirmAt(t *testing.T, f *fakeErrands, s *Store, conv int64) {
 	if err := s.LinkRun(context.Background(), conv, 41); err != nil {
 		t.Fatal(err)
 	}
-	if id := appendEvent(t, s, conv, confirmEvent(41, 1, "Confirm: Fri 21:00 for 4?")); id != 10 {
+	if id := told(t, s, conv, confirmEvent(41, 1, "Confirm: Fri 21:00 for 4?")); id != 10 {
 		t.Fatalf("the confirm is #%d", id)
 	}
 	f.wait(41, "confirm", 1)
@@ -286,8 +330,8 @@ func TestConfirmIsAnsweredOnce(t *testing.T) {
 func TestAnAnsweredConfirmAnswersTheOnesItStoodFor(t *testing.T) {
 	f, s := newFake(), openStore(t)
 	tools, conv := NewTools(f, s), open(t, s, "chat")
-	confirmAt(t, f, s, conv)                                        // #10, never answered
-	appendEvent(t, s, conv, confirmEvent(41, 2, "Confirm: again?")) // #11, the newest
+	confirmAt(t, f, s, conv)                                 // #10, never answered
+	told(t, s, conv, confirmEvent(41, 2, "Confirm: again?")) // #11, the newest
 	f.wait(41, "confirm", 2)
 	yes := appendEvent(t, s, conv, owner("yes"))
 	call(t, tools, conv, "answer_errand", `{"run":41,"answer":"","owner_event":`+itoa(yes)+`}`)
@@ -335,7 +379,7 @@ func TestOneOwnerMessageAnswersOneConfirm(t *testing.T) {
 	if err := s.LinkRun(context.Background(), conv, 42); err != nil {
 		t.Fatal(err)
 	}
-	appendEvent(t, s, conv, confirmEvent(42, 2, "Confirm: Sat?"))
+	told(t, s, conv, confirmEvent(42, 2, "Confirm: Sat?"))
 	f.wait(42, "confirm", 2)
 	yes := appendEvent(t, s, conv, owner("yes"))
 	call(t, tools, conv, "answer_errand", `{"run":41,"answer":"","owner_event":`+itoa(yes)+`}`)
