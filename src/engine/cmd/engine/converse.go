@@ -64,26 +64,27 @@ type converseConfig struct {
 
 // startConverse opens the conversations' store, builds the hub over svc, hands it to events and runs
 // it and the WhatsApp listener under ctx. The returned func waits for both to stop and closes the
-// store; call it after ctx ends. Without -agent-db it does nothing.
-func startConverse(ctx context.Context, c converseConfig, svc *signins.Service, events *eventForwarder) (wait func(), err error) {
-	if c.DB == "" {
-		return func() {}, nil
-	}
-	if _, err := time.LoadLocation(c.TimeZone); err != nil {
-		return nil, fmt.Errorf("-time-zone %q: %w", c.TimeZone, err)
-	}
-	if svc == nil || c.HostdSocket == "" || c.WhatsAppSocket == "" {
-		return nil, errors.New("-agent-db needs -signins-db, -hostd-socket and -whatsapp-socket")
-	}
-	store, err := converse.OpenStore(c.DB)
-	if err != nil {
-		return nil, err
-	}
+// store; call it after ctx ends. The handler is the console's agents and conversations API: with no
+// -agent-db the agents' sign-in still answers and the conversations answer 503.
+func startConverse(ctx context.Context, c converseConfig, svc *signins.Service, events *eventForwarder) (api http.Handler, wait func(), err error) {
 	agents := map[string]agentv1connect.AgentServiceClient{}
 	for name, socket := range map[string]string{"claude": c.ClaudeSocket, "codex": c.CodexSocket} {
 		if socket != "" {
 			agents[name] = agentv1connect.NewAgentServiceClient(&http.Client{Transport: h2c.Transport(socket)}, "http://agent")
 		}
+	}
+	if c.DB == "" {
+		return converse.NewHandler(nil, agents), func() {}, nil
+	}
+	if _, err := time.LoadLocation(c.TimeZone); err != nil {
+		return nil, nil, fmt.Errorf("-time-zone %q: %w", c.TimeZone, err)
+	}
+	if svc == nil || c.HostdSocket == "" || c.WhatsAppSocket == "" {
+		return nil, nil, errors.New("-agent-db needs -signins-db, -hostd-socket and -whatsapp-socket")
+	}
+	store, err := converse.OpenStore(c.DB)
+	if err != nil {
+		return nil, nil, err
 	}
 	settings := ownerSettings{hostd: signins.NewHostdClient(c.HostdSocket)}
 	hub := converse.NewHub(converse.Config{
@@ -103,7 +104,7 @@ func startConverse(ctx context.Context, c converseConfig, svc *signins.Service, 
 		defer wg.Done()
 		converse.ListenWhatsApp(ctx, listen.NewClient(c.WhatsAppSocket), hub, settings)
 	}()
-	return sync.OnceFunc(func() {
+	return converse.NewHandler(store, agents), sync.OnceFunc(func() {
 		wg.Wait()
 		store.Close()
 	}), nil

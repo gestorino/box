@@ -58,6 +58,7 @@ type Config struct {
 	Runs     http.Handler // the engine's agent runs: /api/v1/runs, POST /api/v1/errands to start one, /api/v1/appointments
 	Health   http.Handler // the box's health history: /api/v1/health/{now,panels,events}; nil answers 503
 	AI       http.Handler // the OpenRouter key (aikey): /api/v1/ai, /api/v1/ai/key and /api/v1/ai/check
+	Agents   http.Handler // the owner's agent (converse): /api/v1/agents, their sign-in, /api/v1/conversations; its GET /api/v1/agents/{name}/check is the agents' connector check, asked in-process
 }
 
 // New builds the handler: everything but /healthz requires the console login, and every write under
@@ -88,6 +89,11 @@ func New(c Config) http.Handler {
 			"sms":      {orUnconfigured(c.SMS, "SMS service"), "/api/v1/sms/check"},
 			"whatsapp": {orUnconfigured(c.WhatsApp, "WhatsApp service"), "/api/v1/whatsapp/check"},
 			"telegram": {orUnconfigured(c.Telegram, "Telegram service"), "/api/v1/telegram/check"},
+		}
+		if c.Agents != nil {
+			// The agents' check is the engine's own: signed in is passed. The route is not in the mux.
+			checks["claude"] = daemonCheck{c.Agents, "/api/v1/agents/claude/check"}
+			checks["codex"] = daemonCheck{c.Agents, "/api/v1/agents/codex/check"}
 		}
 		// Exactly add and remove of the five: hostd's /connectors/{name}/verified is the engine's to
 		// call (confirm), so nothing else — an encoded slash in {name} included — reaches hostd.
@@ -135,6 +141,14 @@ func New(c Config) http.Handler {
 		mux.Handle("GET /api/v1/appointments", c.Runs)
 		mux.Handle("POST /api/v1/appointments/", c.Runs)
 		mux.Handle("DELETE /api/v1/appointments/", c.Runs)
+	}
+	if c.Agents != nil {
+		mux.Handle("GET /api/v1/agents", c.Agents)
+		mux.Handle("POST /api/v1/agents/{name}/login", c.Agents)
+		mux.Handle("POST /api/v1/agents/{name}/login/finish", c.Agents)
+		mux.Handle("POST /api/v1/agents/{name}/logout", c.Agents)
+		mux.Handle("GET /api/v1/conversations", c.Agents)
+		mux.Handle("GET /api/v1/conversations/{id}", c.Agents)
 	}
 	if c.AI != nil {
 		mux.Handle("GET /api/v1/ai", c.AI)

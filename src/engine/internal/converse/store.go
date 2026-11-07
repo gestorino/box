@@ -526,3 +526,47 @@ func (s *Store) unclaimConfirm(ctx context.Context, conv, run, ownerEvent int64)
 		AND confirm_run = ? AND answered_by = ?`, conv, run, ownerEvent)
 	return err
 }
+
+// FirstWords is each conversation's first owner event's text, by conversation id; a conversation
+// the owner never wrote in has none.
+func (s *Store) FirstWords(ctx context.Context) (map[int64]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT conversation, json_extract(event, '$.owner') FROM conversation_events
+		WHERE id IN (SELECT min(id) FROM conversation_events WHERE json_extract(event, '$.owner') IS NOT NULL GROUP BY conversation)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]string{}
+	for rows.Next() {
+		var conv int64
+		var text string
+		if err := rows.Scan(&conv, &text); err != nil {
+			return nil, err
+		}
+		out[conv] = text
+	}
+	return out, rows.Err()
+}
+
+// EventTimes is when each of the conversation's events was kept, by event id.
+func (s *Store) EventTimes(ctx context.Context, conv int64) (map[int64]time.Time, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, at FROM conversation_events WHERE conversation = ?`, conv)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]time.Time{}
+	for rows.Next() {
+		var id int64
+		var at string
+		if err := rows.Scan(&id, &at); err != nil {
+			return nil, err
+		}
+		t, err := parseTS(at)
+		if err != nil {
+			return nil, err
+		}
+		out[id] = t
+	}
+	return out, rows.Err()
+}

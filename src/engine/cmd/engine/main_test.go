@@ -19,15 +19,18 @@ import (
 // A run's event before the hub is set is dropped, not a crash; -agent-db needs what the hub reads.
 func TestTheForwarderDropsEventsBeforeTheHub(t *testing.T) {
 	(&eventForwarder{}).Event(signins.RunEvent{Run: 1, Kind: "done"})
-	if _, err := startConverse(context.Background(), converseConfig{DB: "x.db"}, nil, &eventForwarder{}); err == nil {
+	if _, _, err := startConverse(context.Background(), converseConfig{DB: "x.db"}, nil, &eventForwarder{}); err == nil {
 		t.Fatal("-agent-db without its sockets started")
 	}
-	if _, err := startConverse(context.Background(), converseConfig{DB: "x.db", TimeZone: "Bad/Zone"}, nil, &eventForwarder{}); err == nil || !strings.Contains(err.Error(), "-time-zone") {
+	if _, _, err := startConverse(context.Background(), converseConfig{DB: "x.db", TimeZone: "Bad/Zone"}, nil, &eventForwarder{}); err == nil || !strings.Contains(err.Error(), "-time-zone") {
 		t.Fatalf("a bad time zone: %v", err)
 	}
-	wait, err := startConverse(context.Background(), converseConfig{}, nil, &eventForwarder{})
+	h, wait, err := startConverse(context.Background(), converseConfig{}, nil, &eventForwarder{})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if h == nil {
+		t.Fatal("no agents handler without -agent-db: the agents' sign-in still answers")
 	}
 	wait()
 }

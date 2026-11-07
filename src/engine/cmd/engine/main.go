@@ -121,7 +121,7 @@ func run() error {
 	}
 
 	// The hub exists, and the forwarder has it, before the server or any run can start.
-	waitConverse, err := startConverse(ctx, converseConfig{DB: *agentDB, ClaudeSocket: *claudeSocket, CodexSocket: *codexSocket,
+	agentsHandler, waitConverse, err := startConverse(ctx, converseConfig{DB: *agentDB, ClaudeSocket: *claudeSocket, CodexSocket: *codexSocket,
 		TimeZone: *timeZone, ConsoleURL: *consoleURL, WhatsAppSocket: *whatsappSocket, HostdSocket: *hostdSocket}, signInsSvc, events)
 	if err != nil {
 		return fmt.Errorf("-agent-db: %w", err)
@@ -144,6 +144,7 @@ func run() error {
 		Runs:     runsHandler,
 		Health:   healthHandler,
 		AI:       aikey.NewHandler(sc, aikey.NewChecker()),
+		Agents:   agentsHandler,
 	}))
 	// The activity endpoint is a second listener, so the console's login stays on every request of the
 	// first. Without a sign-ins database there are no runs to report, so it serves none.
