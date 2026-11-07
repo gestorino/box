@@ -139,7 +139,9 @@ codex", as two daemons, "so it can be configured separately and user can choose 
 ### 2. The engine: the hub
 
 - **It hears the owner** through each channel daemon. A request counts only when it comes from:
-  - **WhatsApp:** a private chat whose JID is the owner's Contacts phone.
+  - **WhatsApp:** a private chat whose JID is the owner's Contacts phone, a message sent within the
+    last 10 minutes. The listener resumes after the last message the hub took in (kept in agent.db),
+    so one sent while the engine was down still counts, once: each is taken in by its id.
   - **Telegram:** a private chat with the user whose phone is the owner's Contacts phone. *The
     builder resolves the user from the phone with gotd (`contacts.resolvePhone` or importing the
     contact), and keeps the user ID, re-resolving when Contacts change.*

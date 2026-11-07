@@ -294,7 +294,7 @@ func TestATurnLoopsThroughToolsToASay(t *testing.T) {
 		}
 		return say("On it"), nil
 	})
-	r.hub.Owner(context.Background(), "whatsapp", "chat", "book something")
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "book something", Source{})
 	if got := r.channel.next(t); got != "On it" {
 		t.Fatalf("sent %q", got)
 	}
@@ -329,7 +329,7 @@ func TestATurnStopsAfterEightTools(t *testing.T) {
 	r := newRig(t, openStore(t), func(int, *agentv1.StepRequest) (*agentv1.StepResponse, error) {
 		return toolCall("list_appointments", `{}`), nil
 	})
-	r.hub.Owner(context.Background(), "whatsapp", "chat", "go")
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "go", Source{})
 	if got := r.channel.next(t); got != couldNotFinish {
 		t.Fatalf("sent %q", got)
 	}
@@ -356,7 +356,7 @@ func TestAnAgentErrorSaysSo(t *testing.T) {
 	r := newRig(t, openStore(t), func(int, *agentv1.StepRequest) (*agentv1.StepResponse, error) {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("the reply was not a valid action"))
 	})
-	r.hub.Owner(context.Background(), "whatsapp", "chat", "go")
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "go", Source{})
 	if got := r.channel.next(t); got != couldNotFinish {
 		t.Fatalf("sent %q", got)
 	}
@@ -367,7 +367,7 @@ func TestAnUnreachableAgentSaysSo(t *testing.T) {
 	r.hub.cfg.Agents["codex"] = client(filepath.Join(sockDir(t), "nobody.sock"))
 	for _, name := range []string{"codex", "unknown"} {
 		r.settings.set(name, true)
-		r.hub.Owner(context.Background(), "whatsapp", "chat", "go")
+		r.hub.Owner(context.Background(), "whatsapp", "chat", "go", Source{})
 		if got := r.channel.next(t); got != couldNotFinish {
 			t.Fatalf("%s: sent %q", name, got)
 		}
@@ -398,7 +398,7 @@ func TestAFailedTurnOnAnErrandsQuestionOrEndRelaysItAsTheSiteSaidIt(t *testing.T
 		}
 	}
 	// An owner's message is still told the agent couldn't finish.
-	r.hub.Owner(context.Background(), "whatsapp", "chat", "go")
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "go", Source{})
 	if got := r.channel.next(t); got != couldNotFinish {
 		t.Fatalf("sent %q", got)
 	}
@@ -423,8 +423,8 @@ func TestTurnsOnOneConversationQueue(t *testing.T) {
 	})
 	// Owner returns once the message is stored and queued: "two" comes while "one"'s turn runs, and
 	// that turn never sees it.
-	r.hub.Owner(context.Background(), "whatsapp", "chat", "one")
-	r.hub.Owner(context.Background(), "whatsapp", "chat", "two")
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "one", Source{})
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "two", Source{})
 	close(stored)
 	if a, b := r.channel.next(t), r.channel.next(t); a != "re: one" || b != "re: two" {
 		t.Fatalf("answered %q then %q", a, b)
@@ -454,7 +454,7 @@ func TestTurnsOnOneConversationNeverOverlap(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 2 {
 		wg.Add(1)
-		go func() { defer wg.Done(); r.hub.Owner(context.Background(), "whatsapp", "chat", "hi") }()
+		go func() { defer wg.Done(); r.hub.Owner(context.Background(), "whatsapp", "chat", "hi", Source{}) }()
 	}
 	wg.Wait()
 	r.channel.next(t)
@@ -479,8 +479,8 @@ func TestQueuedMessagesOutliveARestart(t *testing.T) {
 		<-release // the engine stops during the first turn's step
 		return say("too late"), nil
 	})
-	r.hub.Owner(context.Background(), "whatsapp", "chat", "one")
-	r.hub.Owner(context.Background(), "whatsapp", "chat", "two")
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "one", Source{})
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "two", Source{})
 	<-stepping
 	r.stop()
 	r.channel.none(t)
@@ -584,7 +584,7 @@ func TestAConfirmIsRelayedAsTheSiteSaidIt(t *testing.T) {
 	}
 
 	// The owner's next message answers it, through the agent's answer_errand.
-	r.hub.Owner(context.Background(), "whatsapp", "chat", "yes, do it")
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "yes, do it", Source{})
 	if got := r.channel.next(t); got != "Done" {
 		t.Fatalf("sent %q", got)
 	}
@@ -603,7 +603,7 @@ func TestAConfirmNotSentIsNeverAnswerable(t *testing.T) {
 	r.channel.err = errors.New("whatsappd away")
 	r.hub.RunEvent(signins.RunEvent{Run: 41, Kind: "confirm", Text: "Confirm: go?", Wait: 9})
 	r.settle(t)
-	r.hub.Owner(context.Background(), "whatsapp", "chat", "yes") // "try again", say, on something else
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "yes", Source{}) // "try again", say, on something else
 	r.settle(t)
 	if got := r.errands.answered(41); len(got) != 0 {
 		t.Fatalf("an untold Confirm was answered %q", got)
@@ -692,10 +692,10 @@ func TestNoChosenAgentNoTurn(t *testing.T) {
 		return say("no"), nil
 	})
 	r.settings.set("", true)
-	r.hub.Owner(context.Background(), "whatsapp", "chat", "hello")
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "hello", Source{})
 	r.settle(t)
 	r.settings.set("claude", false)
-	r.hub.Owner(context.Background(), "whatsapp", "chat", "again")
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "again", Source{})
 	r.hub.RunEvent(signins.RunEvent{Run: 41, Kind: "human_check"})
 	r.linked(t, 41)
 	r.settle(t)
@@ -716,7 +716,7 @@ func TestSettingsThatCantBeReadAreRetriedTheEventKeptPending(t *testing.T) {
 	r.hub.retryFirst, r.hub.retryMax = 20*time.Millisecond, 40*time.Millisecond
 	// An owner's message: kept at once, pending while hostd is away, answered once it is back.
 	r.settings.fail(3)
-	r.hub.Owner(context.Background(), "whatsapp", "chat", "hello")
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "hello", Source{})
 	if pending, err := r.store.Pending(context.Background()); err != nil || len(pending) != 1 {
 		t.Fatalf("pending: %v %v", pending, err)
 	}
@@ -745,7 +745,7 @@ func TestAStopWhileSettingsCantBeReadLeavesTheEventPending(t *testing.T) {
 	r := newRig(t, openStore(t), func(int, *agentv1.StepRequest) (*agentv1.StepResponse, error) { return say("ok"), nil })
 	r.hub.retryFirst, r.hub.retryMax = 10*time.Millisecond, 10*time.Millisecond
 	r.settings.fail(1 << 30)
-	r.hub.Owner(context.Background(), "whatsapp", "chat", "hello")
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "hello", Source{})
 	deadline := time.Now().Add(5 * time.Second)
 	for r.settings.readCount() < 3 {
 		if time.Now().After(deadline) {
@@ -764,11 +764,11 @@ func TestAnIdleConversationIsNotReused(t *testing.T) {
 	r := newRig(t, openStore(t), func(int, *agentv1.StepRequest) (*agentv1.StepResponse, error) {
 		return say("ok"), nil
 	})
-	r.hub.Owner(context.Background(), "whatsapp", "chat", "first")
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "first", Source{})
 	r.channel.next(t)
 	r.settle(t)
 	r.clock.set(t0.Add(IdleAfter + time.Minute))
-	r.hub.Owner(context.Background(), "whatsapp", "chat", "later")
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "later", Source{})
 	r.channel.next(t)
 	r.settle(t)
 	list, err := r.store.List(context.Background())
@@ -787,7 +787,7 @@ func TestAnEndClosesTheConversation(t *testing.T) {
 	r := newRig(t, openStore(t), func(int, *agentv1.StepRequest) (*agentv1.StepResponse, error) {
 		return &agentv1.StepResponse{Action: &agentv1.StepResponse_End{End: "Bye"}}, nil
 	})
-	r.hub.Owner(context.Background(), "whatsapp", "chat", "that's all")
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "that's all", Source{})
 	if got := r.channel.next(t); got != "Bye" {
 		t.Fatalf("sent %q", got)
 	}
@@ -803,7 +803,7 @@ func TestAnEndKeepsAConversationWithARunningErrand(t *testing.T) {
 	})
 	r.linked(t, 41)
 	r.errands.runs[41] = signins.AgentRunDetail{AgentRunView: signins.AgentRunView{Run: signins.Run{ID: 41, State: "running"}}}
-	r.hub.Owner(context.Background(), "whatsapp", "chat", "let me know")
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "let me know", Source{})
 	r.channel.next(t)
 	r.settle(t)
 	if c, _ := r.only(t); c.State != "open" {
@@ -818,7 +818,7 @@ func TestTheAgentSeesTheLast60Events(t *testing.T) {
 		appendEvent(t, store, conv, owner(fmt.Sprint("old ", i)))
 	}
 	r := newRig(t, store, func(int, *agentv1.StepRequest) (*agentv1.StepResponse, error) { return say("ok"), nil })
-	r.hub.Owner(context.Background(), "whatsapp", "chat", "now")
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "now", Source{})
 	r.channel.next(t)
 	events := r.agent.requests()[0].GetEvents()
 	if len(events) != 60 || events[59].GetOwner() != "now" || events[0].GetOwner() != "old 11" {
@@ -834,14 +834,14 @@ func TestAConversationOutlivesTheEngine(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := newRig(t, first, step)
-	r.hub.Owner(context.Background(), "whatsapp", "chat", "hello")
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "hello", Source{})
 	r.channel.next(t)
 	r.settle(t)
 	first.Close()
 
 	second := openStoreAt(t, path)
 	r2 := newRig(t, second, step)
-	r2.hub.Owner(context.Background(), "whatsapp", "chat", "still there?")
+	r2.hub.Owner(context.Background(), "whatsapp", "chat", "still there?", Source{})
 	r2.channel.next(t)
 	events := r2.agent.requests()[0].GetEvents()
 	if !equal(kinds(events), []string{"owner", "agent", "owner"}) || events[0].GetOwner() != "hello" ||
@@ -863,7 +863,7 @@ func openStoreAt(t *testing.T, path string) *Store {
 func TestASendThatFailsIsStillKept(t *testing.T) {
 	r := newRig(t, openStore(t), func(int, *agentv1.StepRequest) (*agentv1.StepResponse, error) { return say("ok"), nil })
 	r.channel.err = errors.New("whatsappd away")
-	r.hub.Owner(context.Background(), "whatsapp", "chat", "hi")
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "hi", Source{})
 	r.settle(t)
 	if _, events := r.only(t); !equal(kinds(events), []string{"owner", "agent"}) {
 		t.Fatalf("events: %v", kinds(events))
@@ -873,7 +873,7 @@ func TestASendThatFailsIsStillKept(t *testing.T) {
 // pendingIn stores the event in the conversation as the hub takes it in, pending, as a stop left it.
 func pendingIn(t *testing.T, s *Store, conv int64, e *agentv1.Event) int64 {
 	t.Helper()
-	id, err := s.Intake(context.Background(), conv, e, t0)
+	id, err := s.Intake(context.Background(), conv, e, t0, Source{})
 	if err != nil {
 		t.Fatal(err)
 	}

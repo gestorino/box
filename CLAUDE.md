@@ -238,11 +238,13 @@ docs/superpowers/  current design docs (specs/); implementation plans (plans/) a
   The hub keeps a conversation per owner chat (the store is the engine's `-agent-db`; empty runs no agent and no
   WhatsApp listener; with `-claude-socket`, `-codex-socket`, `-time-zone` (IANA, derived from the box when unset) and `-console-url`, the link in a human-check message), steps the chosen agent with the last 60 events and runs its tools (at most 8 a turn: the box's
   accounts and the card actions as errands), and closes a conversation 2 h after its last event with no errand
-  running. **The front door is the Contacts phone only**: a request counts only from a live message in a private WhatsApp
-  chat whose JID is the owner's Contacts phone (the engine's own sender check, never the model's; groups and
-  replayed messages never count), and the engine fills every recipient, the agent never names one. An errand's
+  running. **The front door is the Contacts phone only**: a request counts only from a fresh message (sent within 10 min) in a private WhatsApp
+  chat whose JID is the owner's Contacts phone (the engine's own sender check, never the model's; groups never
+  count; the listener resumes after the last message it took in, kept in agent.db, and takes each message in once,
+  by its id), and the engine fills every recipient, the agent never names one. An errand's
   Confirm reaches the owner verbatim, relayed by the hub, and only the owner's later message for that exact wait
-  (the question's `wait`) answers it, never the agent's words. The console's `/agent` lists the conversations and
+  (the question's `wait`) answers it, never the agent's words; a question takes only one of its own options or the
+  owner's message, never the agent's words either. The console's `/agent` lists the conversations and
   their events; **usage is shown per conversation**, a cost labelled "plan equivalent" (the subscription's, not a
   bill), "unknown" when the CLI gave none. Design: `docs/superpowers/specs/2026-11-07-agent-design.md`.
 - **`internal/listen/`** — listeners: the engine waits for an email or an SMS and the connector

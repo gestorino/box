@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"concierge/engine/internal/dbmigrate"
@@ -76,6 +77,13 @@ CREATE INDEX conversation_events_confirms ON conversation_events (conversation, 
 CREATE TABLE conversation_runs (
 	run INTEGER PRIMARY KEY, conversation INTEGER NOT NULL REFERENCES conversations (id));
 CREATE INDEX conversation_runs_by_conversation ON conversation_runs (conversation, run);`,
+	// source is the connector's message an owner's event came from ("<channel>:<its id>", '' for
+	// any other event): each is taken in once. heard is, per channel, the newest message taken in: its
+	// id and when the connector stored it (Unix nanoseconds), where a listener resumes.
+	`
+ALTER TABLE conversation_events ADD COLUMN source TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX conversation_events_source ON conversation_events (source) WHERE source <> '';
+CREATE TABLE heard (channel TEXT PRIMARY KEY, stored_at INTEGER NOT NULL, message INTEGER NOT NULL);`,
 }
 
 // OpenStore opens (creating if needed) the store at path: WAL, and synchronous=FULL so a stored event
@@ -146,15 +154,58 @@ func (s *Store) Open(ctx context.Context, channel, thread string, at time.Time) 
 		CostKnown: true}, nil
 }
 
+// Source is the connector's message an owner's event came from: its channel, its id there and when
+// the connector stored it. The zero Source is none (an errand's event).
+type Source struct {
+	Channel  string
+	ID       int64
+	StoredAt time.Time
+}
+
+func (src Source) key() string {
+	if src.ID == 0 {
+		return ""
+	}
+	return src.Channel + ":" + strconv.FormatInt(src.ID, 10)
+}
+
+// ErrHeard is a connector's message taken in already.
+var ErrHeard = errors.New("that message was taken in already")
+
 // Append keeps the event in the conversation at at, and moves the conversation's last event there.
 // It sets the event's id to the stored one and returns it.
 func (s *Store) Append(ctx context.Context, conv int64, e *agentv1.Event, at time.Time) (int64, error) {
-	return s.append(ctx, conv, e, at, false)
+	return s.append(ctx, conv, e, at, false, Source{})
 }
 
-// Intake appends an event the hub took in, pending until Taken says its turn finished.
-func (s *Store) Intake(ctx context.Context, conv int64, e *agentv1.Event, at time.Time) (int64, error) {
-	return s.append(ctx, conv, e, at, true)
+// Intake appends an event the hub took in, from src, pending until Taken says its turn finished. A
+// src taken in before is ErrHeard and changes nothing; otherwise it becomes its channel's newest
+// heard message when it is newer.
+func (s *Store) Intake(ctx context.Context, conv int64, e *agentv1.Event, at time.Time, src Source) (int64, error) {
+	return s.append(ctx, conv, e, at, true, src)
+}
+
+// Heard is src taken in already.
+func (s *Store) Heard(ctx context.Context, src Source) (bool, error) {
+	if src.key() == "" {
+		return false, nil
+	}
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM conversation_events WHERE source = ?`, src.key()).Scan(&n)
+	return n > 0, err
+}
+
+// LastHeard is when the connector stored the channel's newest message taken in; false when none was.
+func (s *Store) LastHeard(ctx context.Context, channel string) (time.Time, bool, error) {
+	var nanos int64
+	err := s.db.QueryRowContext(ctx, `SELECT stored_at FROM heard WHERE channel = ?`, channel).Scan(&nanos)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	return time.Unix(0, nanos).UTC(), true, nil
 }
 
 // Taken marks the event's turn finished: it is no longer pending.
@@ -192,7 +243,7 @@ func (s *Store) Pending(ctx context.Context) ([]Queued, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) append(ctx context.Context, conv int64, e *agentv1.Event, at time.Time, pending bool) (int64, error) {
+func (s *Store) append(ctx context.Context, conv int64, e *agentv1.Event, at time.Time, pending bool, src Source) (int64, error) {
 	stored := proto.Clone(e).(*agentv1.Event)
 	stored.Id = 0 // the row's id is the event's
 	raw, err := protojson.Marshal(stored)
@@ -208,6 +259,15 @@ func (s *Store) append(ctx context.Context, conv int64, e *agentv1.Event, at tim
 		return 0, err
 	}
 	defer tx.Rollback()
+	if key := src.key(); key != "" {
+		var n int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM conversation_events WHERE source = ?`, key).Scan(&n); err != nil {
+			return 0, err
+		}
+		if n > 0 {
+			return 0, ErrHeard
+		}
+	}
 	res, err := tx.ExecContext(ctx, `UPDATE conversations SET last = ? WHERE id = ?`, ts(at), conv)
 	if err != nil {
 		return 0, err
@@ -217,14 +277,21 @@ func (s *Store) append(ctx context.Context, conv int64, e *agentv1.Event, at tim
 	} else if n == 0 {
 		return 0, ErrNoConversation
 	}
-	res, err = tx.ExecContext(ctx, `INSERT INTO conversation_events (conversation, at, event, pending, confirm_run, confirm_wait)
-		VALUES (?, ?, ?, ?, ?, ?)`, conv, ts(at), string(raw), pending, confirmRun, confirmWait)
+	res, err = tx.ExecContext(ctx, `INSERT INTO conversation_events (conversation, at, event, pending, confirm_run, confirm_wait, source)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, conv, ts(at), string(raw), pending, confirmRun, confirmWait, src.key())
 	if err != nil {
 		return 0, err
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
 		return 0, err
+	}
+	if src.key() != "" {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO heard (channel, stored_at, message) VALUES (?, ?, ?)
+			ON CONFLICT (channel) DO UPDATE SET stored_at = excluded.stored_at, message = excluded.message
+			WHERE excluded.stored_at >= heard.stored_at`, src.Channel, src.StoredAt.UnixNano(), src.ID); err != nil {
+			return 0, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err

@@ -16,6 +16,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	agentv1 "concierge/engine/internal/gen/agent/v1"
 	listenv1 "concierge/engine/internal/gen/listen/v1"
 	"concierge/engine/internal/h2c"
 	"concierge/engine/internal/listen"
@@ -50,8 +51,12 @@ type ownerMsg struct{ channel, thread, text string }
 
 type fakeOwners struct{ got chan ownerMsg }
 
-func (f *fakeOwners) Owner(_ context.Context, channel, thread, text string) {
+func (f *fakeOwners) Owner(_ context.Context, channel, thread, text string, _ Source) {
 	f.got <- ownerMsg{channel, thread, text}
+}
+
+func (f *fakeOwners) LastHeard(context.Context, string) (time.Time, bool, error) {
+	return time.Time{}, false, nil
 }
 
 type waRig struct {
@@ -188,11 +193,94 @@ func TestDeliverChecksTheMessageItself(t *testing.T) {
 		"a little ahead":    {context.Background(), wa("351912345678", "x", now.Add(30*time.Second)), true},
 	} {
 		o := &fakeOwners{got: make(chan ownerMsg, 1)}
-		deliver(c.ctx, o, s, clock, "351912345678", c.m.GetWhatsapp())
+		deliver(c.ctx, o, s, clock, "351912345678", c.m)
 		if got := len(o.got) == 1; got != c.ok {
 			t.Errorf("%s: delivered = %v, want %v", name, got, c.ok)
 		}
 	}
+}
+
+func TestMessagesWhileTheEngineWasDownReachTheHubOnceAfterItRestarts(t *testing.T) {
+	fake := listentest.NewFake(listen.MatchWhatsApp)
+	srv := listentest.Serve(t, fake)
+	path := filepath.Join(t.TempDir(), "agent.db")
+	switchOn := &phoneSettings{phone: "+351912345678", whatsapp: true}
+	step := func(_ int, req *agentv1.StepRequest) (*agentv1.StepResponse, error) {
+		last, _ := lastOwner(req)
+		return say("re: " + last), nil
+	}
+	// engine runs a hub over agent.db and its WhatsApp listener, as the engine does, until stopped.
+	engine := func() (*rig, func()) {
+		store, err := OpenStore(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := newRig(t, store, step)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			listenWhatsApp(ctx, listen.NewClient(srv.Socket), r.hub, switchOn, time.Now, 20*time.Millisecond)
+			close(done)
+		}()
+		return r, sync.OnceFunc(func() { cancel(); <-done; r.stop(); store.Close() })
+	}
+
+	fake.Add(wa("351912345678", "one", time.Now().Add(-2*time.Minute))) // the engine is not running yet
+	first, stop := engine()
+	if got := first.channel.next(t); got != "re: one" {
+		t.Fatalf("sent %q", got)
+	}
+	first.settle(t)
+	stop()
+
+	fake.Add(wa("351912345678", "two", time.Now())) // the engine is down
+	second, stop := engine()
+	defer stop()
+	if got := second.channel.next(t); got != "re: two" {
+		t.Fatalf("after the restart sent %q", got)
+	}
+	second.settle(t)
+	time.Sleep(100 * time.Millisecond) // a replay of "one" would be answered by now
+	second.settle(t)
+	second.channel.none(t)
+	var said []string
+	_, events := second.only(t)
+	for _, e := range events {
+		if o, ok := e.GetKind().(*agentv1.Event_Owner); ok {
+			said = append(said, o.Owner)
+		}
+	}
+	if !equal(said, []string{"one", "two"}) {
+		t.Fatalf("the owner's messages kept: %q", said)
+	}
+}
+
+func TestAListenerResumesWhereTheHubLeftOffButNoEarlierThanMaxAge(t *testing.T) {
+	now := t0.Add(time.Hour)
+	for name, c := range map[string]struct {
+		last time.Time
+		ok   bool
+		want time.Time
+	}{
+		"none heard":     {time.Time{}, false, now.Add(-maxAge)},
+		"heard lately":   {now.Add(-3 * time.Minute), true, now.Add(-3 * time.Minute)},
+		"heard long ago": {now.Add(-time.Hour), true, now.Add(-maxAge)},
+	} {
+		if got := resumeAt(context.Background(), lastHeard{c.last, c.ok}, "whatsapp", now); !got.Equal(c.want) {
+			t.Errorf("%s: since %v, want %v", name, got, c.want)
+		}
+	}
+}
+
+// lastHeard is owners whose newest message taken in is fixed.
+type lastHeard struct {
+	at time.Time
+	ok bool
+}
+
+func (lastHeard) Owner(context.Context, string, string, string, Source) {}
+func (l lastHeard) LastHeard(context.Context, string) (time.Time, bool, error) {
+	return l.at, l.ok, nil
 }
 
 func TestASwitchThatCantBeReadStillKeepsTheMessage(t *testing.T) {
@@ -200,12 +288,12 @@ func TestASwitchThatCantBeReadStillKeepsTheMessage(t *testing.T) {
 	s := &fakeSettings{agent: "claude", whatsapp: true}
 	s.fail(1)
 	o := &fakeOwners{got: make(chan ownerMsg, 1)}
-	deliver(context.Background(), o, s, func() time.Time { return now }, "351912345678", wa("351912345678", "x", now).GetWhatsapp())
+	deliver(context.Background(), o, s, func() time.Time { return now }, "351912345678", wa("351912345678", "x", now))
 	if len(o.got) != 1 {
 		t.Fatal("hostd away dropped the owner's message: the hub keeps it and decides once it can read the switch")
 	}
 	s.set("claude", false)
-	deliver(context.Background(), o, s, func() time.Time { return now }, "351912345678", wa("351912345678", "y", now).GetWhatsapp())
+	deliver(context.Background(), o, s, func() time.Time { return now }, "351912345678", wa("351912345678", "y", now))
 	if len(o.got) != 1 {
 		t.Fatal("a message reached the hub with the switch off")
 	}

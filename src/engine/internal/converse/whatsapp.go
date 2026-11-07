@@ -15,6 +15,8 @@ import (
 	listenv1 "concierge/engine/internal/gen/listen/v1"
 	"concierge/engine/internal/h2c"
 	"concierge/engine/internal/listen"
+
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -100,15 +102,32 @@ func (c *WhatsAppChannel) send(ctx context.Context, phone, text string) error {
 
 // owners is the hub, as the listener uses it.
 type owners interface {
-	Owner(ctx context.Context, channel, thread, text string)
+	Owner(ctx context.Context, channel, thread, text string, src Source)
+	LastHeard(ctx context.Context, channel string) (time.Time, bool, error)
 }
 
 // ListenWhatsApp gives the hub the owner's WhatsApp messages until ctx ends: it reads the owner's
-// Contacts phone every 30 s and keeps one live listener of whatsappd open for that phone's digits,
-// re-opening it when the phone changes and closing it with no phone. A message reaches the hub only
-// while the WhatsApp switch is on, and only when fresh. Message text is never logged.
+// Contacts phone every 30 s and keeps one listener of whatsappd open for that phone's digits,
+// re-opening it when the phone changes and closing it with no phone. Each listener resumes after the
+// newest message the hub took in, so what came while the engine was down is taken in once (the hub
+// takes in a replayed one nothing more), but never from before maxAge ago. A message reaches the hub
+// only while the WhatsApp switch is on, and only when fresh. Message text is never logged.
 func ListenWhatsApp(ctx context.Context, l listen.Listener, h *Hub, s Settings) {
 	listenWhatsApp(ctx, l, h, s, time.Now, phonePoll)
+}
+
+// resumeAt is where a listener of the channel replays from: the newest message the hub took in, or
+// maxAge ago when that is later (or none was, or it can't be read).
+func resumeAt(ctx context.Context, h owners, channel string, now time.Time) time.Time {
+	since := now.Add(-maxAge)
+	last, ok, err := h.LastHeard(ctx, channel)
+	if err != nil {
+		slog.Warn("converse: reading where the listener left off", "channel", channel, "err", err)
+	}
+	if ok && last.After(since) {
+		return last
+	}
+	return since
 }
 
 func listenWhatsApp(ctx context.Context, l listen.Listener, h owners, s Settings, now func() time.Time, every time.Duration) {
@@ -138,11 +157,12 @@ func listenWhatsApp(ctx context.Context, l listen.Listener, h owners, s Settings
 				lctx, cancel := context.WithCancel(ctx)
 				fin := make(chan struct{})
 				stop, done = cancel, fin
+				since := timestamppb.New(resumeAt(ctx, h, "whatsapp", now()))
 				go func() {
 					defer close(fin)
-					for e := range l.Listen(lctx, &listenv1.ListenRequest{From: d}) {
+					for e := range l.Listen(lctx, &listenv1.ListenRequest{From: d, Since: since}) {
 						if m := e.GetMessage(); m != nil {
-							deliver(lctx, h, s, now, d, m.GetWhatsapp())
+							deliver(lctx, h, s, now, d, m)
 						}
 					}
 				}()
@@ -161,7 +181,8 @@ const maxAhead = time.Minute
 
 // deliver gives the hub one message of the listener opened for the owner's digits: only the owner's
 // own, fresh, with a sent_at, while the listener is still the current one and the switch is on.
-func deliver(ctx context.Context, h owners, s Settings, now func() time.Time, owner string, w *listenv1.WhatsApp) {
+func deliver(ctx context.Context, h owners, s Settings, now func() time.Time, owner string, m *listenv1.Message) {
+	w := m.GetWhatsapp()
 	if w == nil || ctx.Err() != nil {
 		return
 	}
@@ -189,7 +210,7 @@ func deliver(ctx context.Context, h owners, s Settings, now func() time.Time, ow
 	if ctx.Err() != nil {
 		return
 	}
-	h.Owner(ctx, "whatsapp", w.GetChat(), w.GetText())
+	h.Owner(ctx, "whatsapp", w.GetChat(), w.GetText(), Source{Channel: "whatsapp", ID: m.GetId(), StoredAt: m.GetStoredAt().AsTime()})
 }
 
 func digits(s string) string {

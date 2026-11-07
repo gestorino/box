@@ -676,11 +676,11 @@ func TestAnOwnerMessageNotShownYetAnswersNothing(t *testing.T) {
 	f, s := newFake(), openStore(t)
 	tools, conv := NewTools(f, s), open(t, s, "chat")
 	confirmAt(t, f, s, conv)
-	taking, err := s.Intake(context.Background(), conv, owner("what is it?"), t0) // #11, this turn's
+	taking, err := s.Intake(context.Background(), conv, owner("what is it?"), t0, Source{}) // #11, this turn's
 	if err != nil {
 		t.Fatal(err)
 	}
-	later, err := s.Intake(context.Background(), conv, owner("yes"), t0) // #12, queued for its own turn
+	later, err := s.Intake(context.Background(), conv, owner("yes"), t0, Source{}) // #12, queued for its own turn
 	if err != nil {
 		t.Fatal(err)
 	}

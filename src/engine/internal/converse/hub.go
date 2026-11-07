@@ -188,17 +188,30 @@ func (h *Hub) Run(ctx context.Context) {
 // Owner takes in a message of the owner's, already gated as theirs, on the channel's thread: it
 // closes the idle conversations first, so one idle too long is never reused, opens the thread's
 // conversation, stores the message there and queues it. It returns once the message is stored and
-// queued; the turn runs on the conversation's own goroutine.
-func (h *Hub) Owner(ctx context.Context, channel, thread, text string) {
+// queued; the turn runs on the conversation's own goroutine. src is the connector's message it came
+// from: one taken in before (a listener's replay) is taken in nothing more.
+func (h *Hub) Owner(ctx context.Context, channel, thread, text string, src Source) {
 	h.intake.Lock()
 	defer h.intake.Unlock()
+	if heard, err := h.cfg.Store.Heard(ctx, src); err != nil || heard {
+		if err != nil {
+			slog.Error("converse: looking for a message taken in", "channel", channel, "err", err)
+		}
+		return
+	}
 	h.closeIdle(ctx)
 	c, err := h.cfg.Store.Open(ctx, channel, thread, h.cfg.Now())
 	if err != nil {
 		slog.Error("converse: opening a conversation", "channel", channel, "err", err)
 		return
 	}
-	h.takeIn(ctx, c.ID, &agentv1.Event{Kind: &agentv1.Event_Owner{Owner: text}})
+	h.takeIn(ctx, c.ID, &agentv1.Event{Kind: &agentv1.Event_Owner{Owner: text}}, src)
+}
+
+// LastHeard is when the connector stored the channel's newest message the hub took in; false when
+// none was.
+func (h *Hub) LastHeard(ctx context.Context, channel string) (time.Time, bool, error) {
+	return h.cfg.Store.LastHeard(ctx, channel)
 }
 
 // RunEvent is signins' Config.Events: it queues what an errand tells and returns at once. The event
@@ -220,9 +233,10 @@ func (h *Hub) RunEvent(e signins.RunEvent) {
 	}
 }
 
-// takeIn stores the event in the conversation, pending, and queues it there. Called with h.intake held.
-func (h *Hub) takeIn(ctx context.Context, conv int64, e *agentv1.Event) {
-	if _, err := h.cfg.Store.Intake(ctx, conv, e, h.cfg.Now()); err != nil {
+// takeIn stores the event from src in the conversation, pending, and queues it there. Called with
+// h.intake held.
+func (h *Hub) takeIn(ctx context.Context, conv int64, e *agentv1.Event, src Source) {
+	if _, err := h.cfg.Store.Intake(ctx, conv, e, h.cfg.Now(), src); err != nil {
 		slog.Error("converse: keeping an event", "conversation", conv, "err", err)
 		return
 	}
@@ -313,7 +327,7 @@ func (h *Hub) routeRun(run int64) {
 			continue
 		}
 		h.intake.Lock()
-		h.takeIn(h.base, conv, e)
+		h.takeIn(h.base, conv, e, Source{})
 		h.intake.Unlock()
 	}
 }

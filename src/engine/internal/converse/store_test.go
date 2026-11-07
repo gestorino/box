@@ -53,6 +53,40 @@ func appendEvent(t *testing.T, s *Store, conv int64, e *agentv1.Event) int64 {
 	return id
 }
 
+func TestAConnectorsMessageIsTakenInOnce(t *testing.T) {
+	s, ctx := openStore(t), context.Background()
+	conv := open(t, s, "chat")
+	if _, ok, err := s.LastHeard(ctx, "whatsapp"); ok || err != nil {
+		t.Fatalf("heard before anything: %v %v", ok, err)
+	}
+	later := Source{Channel: "whatsapp", ID: 8, StoredAt: t0.Add(time.Minute + 500*time.Millisecond)}
+	if _, err := s.Intake(ctx, conv, owner("later"), t0, later); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Intake(ctx, conv, owner("later, again"), t0, later); err != ErrHeard {
+		t.Fatalf("a replayed message: %v", err)
+	}
+	if heard, err := s.Heard(ctx, later); !heard || err != nil {
+		t.Fatalf("heard: %v %v", heard, err)
+	}
+	// An older message heard after it (a replay's order) never moves the mark back.
+	if _, err := s.Intake(ctx, conv, owner("earlier"), t0, Source{Channel: "whatsapp", ID: 7, StoredAt: t0.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if at, ok, err := s.LastHeard(ctx, "whatsapp"); !ok || err != nil || !at.Equal(later.StoredAt) {
+		t.Fatalf("last heard %v %v %v, want %v", at, ok, err, later.StoredAt)
+	}
+	// Events from no connector's message are never one.
+	for range 2 {
+		if _, err := s.Intake(ctx, conv, errandEvent(41, "done", "made it"), t0, Source{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if events, _ := s.Events(ctx, conv, 0); len(events) != 4 {
+		t.Fatalf("%d events", len(events))
+	}
+}
+
 func TestOpenReusesTheOpenConversation(t *testing.T) {
 	s, ctx := openStore(t), context.Background()
 	a, err := s.Open(ctx, "whatsapp", "chat", t0)
