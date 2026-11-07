@@ -361,3 +361,54 @@ func TestExecKillsTheCLIAndItsChildOnTimeout(t *testing.T) {
 	waitGone(t, got[0])
 	waitGone(t, got[1])
 }
+
+// A Start or a Logout while a Finish waits ends that login, and the Finish with it, promptly.
+func TestAStartOrLogoutDuringFinishEndsTheWait(t *testing.T) {
+	for name, interrupt := range map[string]func(*Login){
+		"start":  func(l *Login) { l.Start(context.Background()) },
+		"logout": func(l *Login) { l.Logout(context.Background()) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, bin := fakeCLI(t, "")
+			pids := filepath.Join(dir, "pids")
+			os.WriteFile(bin, []byte("#!/bin/sh\n[ \"$1\" = login ] || exit 0\necho $$ >> "+pids+"\necho https://x.example/y\necho ABCD-12345\nsleep 30\n"), 0o755)
+			l := NewLogin(bin, filepath.Join(newHome(t, false), "agent"))
+			t.Cleanup(func() { l.Logout(context.Background()) })
+			if _, err := l.Start(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			res := make(chan error, 1)
+			go func() { res <- l.Finish(context.Background(), "") }()
+			time.Sleep(300 * time.Millisecond)
+			begun := time.Now()
+			interrupt(l)
+			select {
+			case err := <-res:
+				if err == nil {
+					t.Error("Finish succeeded")
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("Finish still waits")
+			}
+			if time.Since(begun) > 2*time.Second {
+				t.Errorf("took %v", time.Since(begun))
+			}
+			waitGone(t, pidsOf(t, pids)[0])
+		})
+	}
+}
+
+// A second Finish while one waits finds nothing to finish.
+func TestASecondFinishFindsNothingPending(t *testing.T) {
+	_, bin := fakeCLI(t, "[ \"$1\" = login ] || exit 0\necho https://x.example/y\necho ABCD-12345\nsleep 30\n")
+	l := NewLogin(bin, filepath.Join(newHome(t, false), "agent"))
+	t.Cleanup(func() { l.Logout(context.Background()) })
+	if _, err := l.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	go l.Finish(context.Background(), "")
+	time.Sleep(300 * time.Millisecond)
+	if err := l.Finish(context.Background(), ""); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Errorf("second finish: %v", err)
+	}
+}

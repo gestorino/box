@@ -367,7 +367,7 @@ func TestACancelledStartAndAWaitTimeoutKillTheSetupToken(t *testing.T) {
 func TestRunKillsTheCLIOnTimeoutEvenWithAGrandchildHoldingItsPipes(t *testing.T) {
 	dir, bin := fakeCLI(t, "")
 	pids := filepath.Join(dir, "pids")
-	os.WriteFile(bin, []byte("#!/bin/sh\necho $$ > "+pids+"\nsleep 5 &\nsleep 5\n"), 0o755)
+	os.WriteFile(bin, []byte("#!/bin/sh\necho $$ > "+pids+"\nsleep 30 &\necho $! >> "+pids+"\nsleep 30\n"), 0o755)
 	shorten(t, &runTimeout, 1000*time.Millisecond)
 	shorten(t, &waitDelay, 300*time.Millisecond)
 	start := time.Now()
@@ -378,5 +378,46 @@ func TestRunKillsTheCLIOnTimeoutEvenWithAGrandchildHoldingItsPipes(t *testing.T)
 	if time.Since(start) > 3*time.Second {
 		t.Errorf("Run took %v", time.Since(start))
 	}
-	waitGone(t, pidsOf(t, pids)[0])
+	got := pidsOf(t, pids)
+	if len(got) != 2 {
+		t.Fatalf("pids = %v", got)
+	}
+	waitGone(t, got[0])
+	waitGone(t, got[1]) // the grandchild dies with the CLI's group
+}
+
+// A Start or a Logout while a Finish waits ends that sign-in, and the Finish with it, promptly.
+func TestAStartOrLogoutDuringFinishEndsTheWait(t *testing.T) {
+	for name, interrupt := range map[string]func(*Login){
+		"start":  func(l *Login) { l.Start(context.Background()) },
+		"logout": func(l *Login) { l.Logout(context.Background()) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, bin := fakeCLI(t, "")
+			pids := filepath.Join(dir, "pids")
+			os.WriteFile(bin, []byte("#!/bin/sh\necho $$ >> "+pids+"\necho 'https://x.example/y'\nread code\nsleep 30\n"), 0o755)
+			l := NewLogin(bin, filepath.Join(homeWithToken(t, ""), "agent"))
+			t.Cleanup(func() { l.Logout(context.Background()) })
+			if _, err := l.Start(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			res := make(chan error, 1)
+			go func() { res <- l.Finish(context.Background(), "abc") }()
+			time.Sleep(300 * time.Millisecond)
+			begun := time.Now()
+			interrupt(l)
+			select {
+			case err := <-res:
+				if err == nil {
+					t.Error("Finish succeeded")
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("Finish still waits")
+			}
+			if time.Since(begun) > 2*time.Second {
+				t.Errorf("took %v", time.Since(begun))
+			}
+			waitGone(t, pidsOf(t, pids)[0])
+		})
+	}
 }

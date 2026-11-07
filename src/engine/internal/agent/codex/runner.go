@@ -9,16 +9,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"connectrpc.com/connect"
 
+	"concierge/engine/internal/agent/cliproc"
 	agentv1 "concierge/engine/internal/gen/agent/v1"
 )
 
@@ -94,11 +93,11 @@ func (r *Runner) Run(ctx context.Context, system, input string, schema []byte) (
 	cmd.Dir = work
 	cmd.Env = cliEnv(r.home)
 	cmd.Stdin = strings.NewReader(system + "\n\n" + input)
-	killGroup(cmd, waitDelay)
+	cliproc.KillOnCancel(cmd, waitDelay)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, nil, fail("codex failed", stderr.String(), err)
+		return nil, nil, cliproc.Fail("codex failed", stderr.String(), err)
 	}
 
 	var raw string
@@ -113,7 +112,7 @@ func (r *Runner) Run(ctx context.Context, system, input string, schema []byte) (
 		}
 		switch {
 		case ev.Type == "turn.failed" || ev.Type == "error":
-			return nil, nil, fail("codex reported an error", stderr.String(), nil)
+			return nil, nil, cliproc.Fail("codex reported an error", stderr.String(), nil)
 		case ev.Type == "item.completed" && ev.Item.Type == "agent_message":
 			raw = ev.Item.Text
 		case ev.Type == "turn.completed":
@@ -122,38 +121,9 @@ func (r *Runner) Run(ctx context.Context, system, input string, schema []byte) (
 		}
 	}
 	if strings.TrimSpace(raw) == "" {
-		return nil, nil, fail("codex gave no final message", stderr.String(), nil)
+		return nil, nil, cliproc.Fail("codex gave no final message", stderr.String(), nil)
 	}
 	return []byte(raw), &u, nil
-}
-
-// ownGroup puts cmd in its own process group, so a kill reaches its children too.
-func ownGroup(cmd *exec.Cmd, delay time.Duration) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.WaitDelay = delay // a grandchild holding the pipes must not hang a cancelled run
-}
-
-// killGroup is ownGroup for a command made with a context: its end kills the whole group.
-func killGroup(cmd *exec.Cmd, delay time.Duration) {
-	ownGroup(cmd, delay)
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-}
-
-// fail is an Internal error naming what went wrong and stderr's first line, never the input.
-func fail(what, stderr string, err error) error {
-	line, _, _ := strings.Cut(strings.TrimSpace(stderr), "\n")
-	line = strings.TrimSpace(line)
-	msg := what
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		msg += fmt.Sprintf(" (%s)", ee.ProcessState)
-	} else if err != nil {
-		msg += " (" + err.Error() + ")"
-	}
-	if line != "" {
-		msg += ": " + line
-	}
-	return connect.NewError(connect.CodeInternal, errors.New(msg))
 }
 
 func codexHome(home string) string { return filepath.Join(home, ".codex") }
@@ -161,12 +131,5 @@ func codexHome(home string) string { return filepath.Join(home, ".codex") }
 // cliEnv is this process's environment without any OPENAI_ or CODEX_ setting (another credential,
 // endpoint or home the CLI would prefer), with CODEX_HOME and HOME set to the daemon's.
 func cliEnv(home string) []string {
-	var env []string
-	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "OPENAI_") || strings.HasPrefix(kv, "CODEX_") || strings.HasPrefix(kv, "HOME=") {
-			continue
-		}
-		env = append(env, kv)
-	}
-	return append(env, "CODEX_HOME="+codexHome(home), "HOME="+home)
+	return cliproc.Env([]string{"OPENAI_", "CODEX_"}, "CODEX_HOME="+codexHome(home), "HOME="+home)
 }

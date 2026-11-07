@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +16,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"concierge/engine/internal/agent/cliproc"
 	agentv1 "concierge/engine/internal/gen/agent/v1"
 )
 
@@ -75,23 +75,23 @@ func (r *Runner) Run(ctx context.Context, system, input string, schema []byte) (
 		"--disable-slash-commands",
 	)
 	cmd.Dir = work
-	cmd.WaitDelay = waitDelay // a grandchild holding the pipes must not hang a cancelled run
-	cmd.Env = append(cliEnv(), "CLAUDE_CODE_OAUTH_TOKEN="+token, "DISABLE_AUTOUPDATER=1", "HOME="+r.home)
+	cliproc.KillOnCancel(cmd, waitDelay) // a timeout kills the CLI's whole group
+	cmd.Env = cliEnv("CLAUDE_CODE_OAUTH_TOKEN="+token, "HOME="+r.home)
 	cmd.Stdin = strings.NewReader(input)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, nil, fail("claude failed", stderr.String(), token, err)
+		return nil, nil, cliproc.Fail("claude failed", stderr.String(), err, token)
 	}
 	var rep cliReply
 	if err := json.Unmarshal(stdout.Bytes(), &rep); err != nil {
-		return nil, nil, fail("claude's reply is not JSON", stderr.String(), token, nil)
+		return nil, nil, cliproc.Fail("claude's reply is not JSON", stderr.String(), nil, token)
 	}
 	if rep.IsError {
-		return nil, nil, fail("claude reported an error", stderr.String(), token, nil)
+		return nil, nil, cliproc.Fail("claude reported an error", stderr.String(), nil, token)
 	}
 	if len(rep.StructuredOutput) == 0 || string(rep.StructuredOutput) == "null" {
-		return nil, nil, fail("claude gave no structured output", stderr.String(), token, nil)
+		return nil, nil, cliproc.Fail("claude gave no structured output", stderr.String(), nil, token)
 	}
 	u := &agentv1.Usage{
 		Model:        r.model,
@@ -108,34 +108,10 @@ func (r *Runner) Run(ctx context.Context, system, input string, schema []byte) (
 	return rep.StructuredOutput, u, nil
 }
 
-// fail is an Internal error naming what went wrong and stderr's first line, never the input or the token.
-func fail(what, stderr, token string, err error) error {
-	line, _, _ := strings.Cut(strings.TrimSpace(stderr), "\n")
-	line = strings.ReplaceAll(strings.TrimSpace(line), token, "[token]")
-	msg := what
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		msg += fmt.Sprintf(" (%s)", ee.ProcessState)
-	} else if err != nil {
-		msg += " (" + err.Error() + ")"
-	}
-	if line != "" {
-		msg += ": " + line
-	}
-	return connect.NewError(connect.CodeInternal, errors.New(msg))
-}
-
 // cliEnv is this process's environment without any ANTHROPIC_ or CLAUDE_CODE_ setting (another
-// credential, endpoint or provider the CLI would prefer to the owner's token).
-func cliEnv() []string {
-	var env []string
-	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "ANTHROPIC_") || strings.HasPrefix(kv, "CLAUDE_CODE_") || strings.HasPrefix(kv, "HOME=") || strings.HasPrefix(kv, "DISABLE_AUTOUPDATER=") {
-			continue
-		}
-		env = append(env, kv)
-	}
-	return env
+// credential, endpoint or provider the CLI would prefer to the owner's token), then set.
+func cliEnv(set ...string) []string {
+	return cliproc.Env([]string{"ANTHROPIC_", "CLAUDE_CODE_"}, append(set, "DISABLE_AUTOUPDATER=1")...)
 }
 
 func readToken(home string) (string, error) {
