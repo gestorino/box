@@ -157,6 +157,8 @@ func TestRestoreSameBox(t *testing.T) {
 	if got := withoutActive(sys.calls); !reflect.DeepEqual(got, want) {
 		t.Fatalf("calls = %q, want %q", got, want)
 	}
+	// The signals are held from the stop until the start has returned, not through the wait.
+	assertHeld(t, sys, "Stop "+stops(), "Start "+starts())
 	// Only the core's services: hostd starts the added connectors itself, and stops the rest.
 	for _, u := range Units {
 		core := slices.Contains(CoreUnits, u) && strings.HasSuffix(u, ".service")
@@ -242,6 +244,47 @@ func TestRestoreRefusesStaleWithoutForce(t *testing.T) {
 			assertNoLeftovers(t, root)
 		})
 	}
+}
+
+// The marker, with the backup's ID, is on the box before anything stops: a reboot after a restore
+// that was cut short or failed starts nothing on half its state. It goes only once the swap is
+// through, before the start.
+func TestRestoreMarksTheStopFirst(t *testing.T) {
+	root := stoppedBox(t)
+	os.Remove(filepath.Join(root, Marker)) // forced, onto a box not stopped for it
+	sys := &fakeSystem{key: masterKey()}
+	sys.onStop = func() {
+		if got, err := os.ReadFile(filepath.Join(root, Marker)); err != nil || string(got) != testID {
+			t.Errorf("at the stop, the marker = %q, %v; want the backup's ID", got, err)
+		}
+	}
+	markerGoneAtStart(t, sys, root)
+	if _, err := Restore(sys, root, backupFile(t, nil), RestoreOptions{Force: true, sleep: noSleep(new(int))}); err != nil {
+		t.Fatal(err)
+	}
+	assertState(t, root, restored)
+	if _, err := os.Stat(filepath.Join(root, Marker)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("marker still there: %v", err)
+	}
+}
+
+func TestRestoreKeepsTheMarkerWhenTheSwapFails(t *testing.T) {
+	root := stoppedBox(t)
+	os.Remove(filepath.Join(root, Marker))
+	put(t, root, "var/lib/concierge.old-"+testID+"/x", "an earlier run's", 0o600) // the swap refuses
+	sys := &fakeSystem{key: masterKey()}
+	_, err := Restore(sys, root, backupFile(t, nil), RestoreOptions{Force: true, sleep: noSleep(new(int))})
+	if err == nil || !strings.Contains(err.Error(), "make backup-resume") {
+		t.Fatalf("err = %v", err)
+	}
+	if got := readFile(t, filepath.Join(root, Marker)); got != testID {
+		t.Fatalf("marker = %q, want the backup's ID: nothing may start on this state", got)
+	}
+	if want := []string{"Calls", "Decrypt " + staged(root, credentialFile), "Calls", "Stop " + stops()}; !reflect.DeepEqual(sys.calls, want) {
+		t.Fatalf("calls = %q, want %q", sys.calls, want)
+	}
+	assertHeld(t, sys, "Stop "+stops())
+	assertState(t, root, untouched)
 }
 
 func TestRestoreNewBox(t *testing.T) {
@@ -754,6 +797,7 @@ func TestInstallBuild(t *testing.T) {
 	if want := []string{"Calls", "Calls", "Stop " + stops(), "SyncVenv " + filepath.Join(opt, "browser")}; !reflect.DeepEqual(sys.calls, want) {
 		t.Fatalf("calls = %q, want %q", sys.calls, want)
 	}
+	assertHeld(t, sys, "Stop "+stops(), "SyncVenv "+filepath.Join(opt, "browser"))
 	for p, f := range oldBuild() {
 		path := filepath.Join(opt, p)
 		if got := readFile(t, path); got != f.body {

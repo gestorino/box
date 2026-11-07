@@ -22,14 +22,32 @@ type fakeSystem struct {
 	startErr      error
 	syncErr       error
 	onStart       func() // called on Start, before it answers
+	onStop        func() // called on Stop, before it answers
+
+	holds   int      // Hold calls
+	holding bool     // between a Hold and its release
+	held    []string // the calls made while holding
 }
 
 func (f *fakeSystem) record(method string, args ...string) {
-	f.calls = append(f.calls, strings.TrimSpace(method+" "+strings.Join(args, " ")))
+	c := strings.TrimSpace(method + " " + strings.Join(args, " "))
+	f.calls = append(f.calls, c)
+	if f.holding {
+		f.held = append(f.held, c)
+	}
+}
+
+func (f *fakeSystem) Hold() (release func()) {
+	f.holds++
+	f.holding = true
+	return func() { f.holding = false }
 }
 
 func (f *fakeSystem) Stop(units []string) error {
 	f.record("Stop", units...)
+	if f.onStop != nil {
+		f.onStop()
+	}
 	return f.stopErr
 }
 

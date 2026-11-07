@@ -123,6 +123,9 @@ export FAKE_ARCHIVE=/nonexistent
 rm -rf "$dir"
 run box-backup.sh
 [ $code -ne 0 ] && [ -z "$(ls "$dir" 2>/dev/null)" ] && ok "backup: a failed create leaves nothing" || fail "backup: a failed create leaves nothing" "code $code: $(ls "$dir")"
+case $out in *"check the box: make backup-resume starts its services if they're down"*) ok "backup: a failed create says how to start the box's services" ;; *) fail "backup: a failed create says backup-resume" "$out" ;; esac
+FAKE_VERSION=garbage run box-backup.sh
+[ $code -ne 0 ] && case $out in *backup-resume*) false ;; *) true ;; esac && ok "backup: a failure before the create says nothing of the services" || fail "backup: no backup-resume note before the create" "code $code: $out"
 
 # --- restore: same revision ---
 archive "$work/same.tar.gz" 0.4.1 aaa1111 true

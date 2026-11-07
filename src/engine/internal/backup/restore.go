@@ -39,10 +39,11 @@ const startWait = 60 * time.Second
 
 // Restore puts the backup at from back on the box under root, replacing the state the backup
 // holds: it extracts to a staging directory, opens the master key (the box's TPM, else the
-// recovery code, then sealed to this TPM), stops the services, swaps the backup's paths in and
-// starts the core again. Until the swap nothing on the box changes; the staging directory is gone
-// afterwards, whatever happened. A core service that is not running a minute later is an error
-// that names it, though the state stays restored.
+// recovery code, then sealed to this TPM), stops the services, swaps the backup's paths in (and
+// out, those the backup lacks) and starts the core again. Until the stop nothing on the box changes
+// but the stop marker, which stays when the restore fails before the swap is through; the staging
+// directory is gone afterwards, whatever happened. A core service that is not running a minute
+// later is an error that names it, though the state stays restored.
 func Restore(sys System, root, from string, o RestoreOptions) (Report, error) {
 	if err := idle(sys, root); err != nil {
 		return Report{}, err
@@ -109,22 +110,9 @@ func Restore(sys System, root, from string, o RestoreOptions) (Report, error) {
 	if err := idle(sys, root); err != nil {
 		return Report{}, err
 	}
-	if err := sys.Stop(Units); err != nil {
-		return Report{}, err
-	}
-	// What the backup lacks goes too: a restore replaces the box's state, it never merges into it.
-	absent := slices.DeleteFunc(slices.Clone(Paths), func(p string) bool { return slices.Contains(staged.Paths, p) })
-	left, err := Swap(root, staging, h.ID, staged.Paths, absent)
-	if err != nil {
-		return Report{}, fmt.Errorf("%w (the services are stopped: make backup-resume starts them)", err)
-	}
-	rep := Report{SameBox: same, Header: staged, Leftovers: left}
-	// The marker first: while it exists the units' condition keeps them from starting.
-	if err := removeMarker(root); err != nil {
-		return rep, restoredBut("removing the stop marker", err)
-	}
-	if err := sys.Start(CoreUnits); err != nil {
-		return rep, restoredBut("starting the services", err)
+	rep := Report{SameBox: same, Header: staged}
+	if rep.Leftovers, err = swapIn(sys, root, staging, staged); err != nil {
+		return rep, err
 	}
 	if err := os.RemoveAll(staging); err != nil {
 		return rep, restoredBut("removing the staging directory", err)
@@ -134,6 +122,35 @@ func Restore(sys System, root, from string, o RestoreOptions) (Report, error) {
 		sleep = time.Sleep
 	}
 	return rep, waitActive(sys, sleep)
+}
+
+// swapIn stops the services, swaps the staged backup h in and starts the core again, no signal
+// ending the command from the stop until the start has returned. The marker, with h's ID, is
+// written before anything stops: while it exists no unit starts, so a reboot after a restore cut
+// short or failed starts nothing on half its state. It goes once the swap is through.
+func swapIn(sys System, root, staging string, h Header) (leftovers []string, err error) {
+	release := sys.Hold()
+	defer release()
+	if err := writeMarker(root, h.ID); err != nil {
+		return nil, fmt.Errorf("recording the stop: %w; nothing changed", err)
+	}
+	if err := sys.Stop(Units); err != nil {
+		return nil, fmt.Errorf("stopping the services: %w (nothing restored: make backup-resume starts them)", err)
+	}
+	// What the backup lacks goes too: a restore replaces the box's state, it never merges into it.
+	absent := slices.DeleteFunc(slices.Clone(Paths), func(p string) bool { return slices.Contains(h.Paths, p) })
+	left, err := Swap(root, staging, h.ID, h.Paths, absent)
+	if err != nil {
+		return nil, fmt.Errorf("%w (the services are stopped: make backup-resume starts them)", err)
+	}
+	// The marker first: while it exists the units' condition keeps them from starting.
+	if err := removeMarker(root); err != nil {
+		return left, restoredBut("removing the stop marker", err)
+	}
+	if err := sys.Start(CoreUnits); err != nil {
+		return left, restoredBut("starting the services", err)
+	}
+	return left, nil
 }
 
 func restoredBut(what string, err error) error {
@@ -390,6 +407,9 @@ func InstallBuild(sys System, root, archive string) (leftovers []string, err err
 	if err := idle(sys, root); err != nil {
 		return nil, err
 	}
+	// From the stop until it returns (the restore that follows starts them), no signal ends it.
+	release := sys.Hold()
+	defer release()
 	if err := sys.Stop(Units); err != nil {
 		return nil, err
 	}

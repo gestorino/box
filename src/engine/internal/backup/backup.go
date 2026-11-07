@@ -52,12 +52,16 @@ func Create(sys System, root string, out io.Writer, stop bool) (Header, error) {
 		Format: 1, ID: id, Version: version, Revision: revision, Box: box,
 		TakenAt: time.Now().UTC(), Recovery: recovery,
 	}
+	// From the stop until the services are started again (or the marker keeps them stopped), no
+	// signal ends the command: it would leave them all stopped.
+	release := sys.Hold()
+	defer release()
 	if err := sys.Stop(Units); err != nil {
 		return Header{}, err
 	}
 	if err := Write(out, h, root); err != nil {
 		// A failed backup leaves the box running, whatever was asked.
-		return Header{}, errors.Join(fmt.Errorf("writing the backup: %w", err), sys.Start(CoreUnits))
+		return Header{}, errors.Join(fmt.Errorf("the backup failed: %w", err), sys.Start(CoreUnits))
 	}
 	if !stop {
 		if err := sys.Start(CoreUnits); err != nil {

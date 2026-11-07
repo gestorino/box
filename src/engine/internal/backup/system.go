@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"syscall"
 )
@@ -13,6 +14,10 @@ import (
 // System is every command the backup runs on the box. Create and Restore
 // reach the box only through it, so their tests run on a fake.
 type System interface {
+	// Hold keeps SIGINT, SIGHUP and SIGTERM from ending the command until release is called: from
+	// just before the services stop until they are started again, an interrupt would leave them
+	// all stopped.
+	Hold() (release func())
 	Stop(units []string) error
 	Start(units []string) error
 	Active(unit string) (bool, error)
@@ -75,6 +80,18 @@ const credName = "--name=concierge-secrets-master"
 type Exec struct{}
 
 var _ System = Exec{}
+
+// held are the signals Hold keeps off: the owner's interrupt, the ssh session's hangup, a stop.
+var held = []os.Signal{syscall.SIGINT, syscall.SIGHUP, syscall.SIGTERM}
+
+// Hold catches the signals on a channel nobody reads, and release stops that, which gives them
+// back their default. Not signal.Ignore: the runtime cannot undo it (signal.Reset leaves SIGINT
+// and SIGHUP ignored for good).
+func (Exec) Hold() (release func()) {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, held...)
+	return func() { signal.Stop(c) }
+}
 
 func (Exec) Stop(units []string) error  { return systemctl("stop", units) }
 func (Exec) Start(units []string) error { return systemctl("start", units) }

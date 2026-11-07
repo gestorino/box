@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # `make backup [STOP=1]`: a backup of the box, taken over SSH and kept here, in ~/Backups/concierge
 # (0700; the file 0600, named <stamp>-<version>.tar.gz, written as .part and renamed when whole).
-# STOP=1 holds the services down while it is taken (the box keeps them down with a marker file and a
-# start condition until `make backup-resume`). The box is $CONCIERGE_BOX, an ssh target.
+# Every backup stops the box's services while it is taken; STOP=1 keeps them stopped afterwards (the
+# box keeps them down with a marker file and a start condition until `make backup-resume`). The box
+# is $CONCIERGE_BOX, an ssh target.
 set -euo pipefail
 
 box=${CONCIERGE_BOX:?"set CONCIERGE_BOX to the box's ssh target (see CLAUDE.local.md)"}
@@ -16,12 +17,22 @@ umask 077
 mkdir -p "$dir"
 chmod 700 "$dir"
 file=$dir/$(date -u +%Y%m%dT%H%M%SZ)-$version.tar.gz
-trap 'rm -f "$file.part"' EXIT
+creating=
+cleanup() {
+	local status=$?
+	rm -f "$file.part"
+	if [ -n "$creating" ] && [ $status -ne 0 ]; then
+		echo "The backup failed; check the box: make backup-resume starts its services if they're down." >&2
+	fi
+}
+trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 
 stop=
 [ -n "${STOP:-}" ] && stop=" -stop"
+creating=1
 ssh "$box" "sudo -n $backup create$stop" >"$file.part"
+creating=
 mv "$file.part" "$file"
 echo "$file"
 

@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"golang.org/x/term"
 
@@ -36,10 +38,14 @@ const usage = `usage: backup <command>
   -version                                print the build`
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Getuid(), backup.Exec{}, os.Stdout, os.Stderr))
+	// A reader that goes away (the Mac's ssh) makes a write fail with EPIPE instead of killing the
+	// command with every service stopped: create's error path starts them again.
+	signal.Ignore(syscall.SIGPIPE)
+	os.Exit(run(os.Args[1:], os.Getuid(), backup.Exec{}, os.Stdout, os.Stderr, term.IsTerminal(int(os.Stdout.Fd()))))
 }
 
-func run(args []string, uid int, sys backup.System, stdout, stderr io.Writer) int {
+// run is the command: stdoutTTY says whether stdout is a terminal.
+func run(args []string, uid int, sys backup.System, stdout, stderr io.Writer, stdoutTTY bool) int {
 	if len(args) == 1 && args[0] == "-version" {
 		fmt.Fprintf(stdout, "backup %s %s\n", version, revision)
 		return 0
@@ -52,14 +58,14 @@ func run(args []string, uid int, sys backup.System, stdout, stderr io.Writer) in
 		fmt.Fprintln(stderr, usage)
 		return 1
 	}
-	if err := dispatch(args[0], args[1:], sys, stdout, stderr); err != nil {
+	if err := dispatch(args[0], args[1:], sys, stdout, stderr, stdoutTTY); err != nil {
 		fmt.Fprintln(stderr, "backup:", err)
 		return 1
 	}
 	return 0
 }
 
-func dispatch(cmd string, args []string, sys backup.System, stdout, stderr io.Writer) error {
+func dispatch(cmd string, args []string, sys backup.System, stdout, stderr io.Writer, stdoutTTY bool) error {
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	switch cmd {
@@ -93,6 +99,10 @@ func dispatch(cmd string, args []string, sys backup.System, stdout, stderr io.Wr
 	case "recovery-code":
 		if err := fs.Parse(args); err != nil {
 			return err
+		}
+		// The code is shown once, on the owner's terminal: never into a file, a pipe or a log.
+		if !stdoutTTY {
+			return errors.New("the recovery code is shown only on a terminal: run make recovery-code from one")
 		}
 		code, replaced, err := backup.RecoveryCode(sys, root)
 		if err != nil {

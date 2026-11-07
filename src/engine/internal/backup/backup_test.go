@@ -75,6 +75,7 @@ func TestCreateStopsWritesStarts(t *testing.T) {
 	if want := []string{"Calls", "Stop " + stops(), "Start " + starts()}; !reflect.DeepEqual(sys.calls, want) {
 		t.Fatalf("calls = %q, want %q", sys.calls, want)
 	}
+	assertHeld(t, sys, "Stop "+stops(), "Start "+starts())
 	got, err := ReadHeader(&out.Buffer)
 	if err != nil {
 		t.Fatal(err)
@@ -95,6 +96,39 @@ func TestCreateStopsWritesStarts(t *testing.T) {
 	h2, err := Create(&fakeSystem{}, root, &bytes.Buffer{}, false)
 	if err != nil || h2.ID == h.ID {
 		t.Fatalf("second backup's ID %q, first %q, %v", h2.ID, h.ID, err)
+	}
+}
+
+// assertHeld fails t unless the signals were held exactly once, over exactly the calls want, and
+// released by the end.
+func assertHeld(t *testing.T, sys *fakeSystem, want ...string) {
+	t.Helper()
+	if sys.holds != 1 || sys.holding || !reflect.DeepEqual(sys.held, want) {
+		t.Fatalf("held %d times (still holding %v) over %q, want once, over %q", sys.holds, sys.holding, sys.held, want)
+	}
+}
+
+// errWriter refuses every write: the Mac's ssh gone, say.
+type errWriter struct{}
+
+func (errWriter) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
+
+// A backup that fails to write leaves the box running, whatever was asked, and says it failed.
+func TestCreateWriteFailureStartsTheServices(t *testing.T) {
+	for _, stop := range []bool{false, true} {
+		root := box(t)
+		sys := &fakeSystem{}
+		_, err := Create(sys, root, errWriter{}, stop)
+		if err == nil || !strings.Contains(err.Error(), "the backup failed") || !strings.Contains(err.Error(), "broken pipe") {
+			t.Fatalf("stop %v: err = %v", stop, err)
+		}
+		if want := []string{"Calls", "Stop " + stops(), "Start " + starts()}; !reflect.DeepEqual(sys.calls, want) {
+			t.Fatalf("stop %v: calls = %q, want %q", stop, sys.calls, want)
+		}
+		assertHeld(t, sys, "Stop "+stops(), "Start "+starts())
+		if _, err := os.Stat(filepath.Join(root, Marker)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stop %v: a failed backup left the marker: %v", stop, err)
+		}
 	}
 }
 
@@ -125,6 +159,7 @@ func TestCreateStopLeavesStopped(t *testing.T) {
 	if want := []string{"Calls", "Stop " + stops()}; !reflect.DeepEqual(sys.calls, want) {
 		t.Fatalf("calls = %q, want %q", sys.calls, want)
 	}
+	assertHeld(t, sys, "Stop "+stops())
 	m := filepath.Join(root, Marker)
 	if got := readFile(t, m); got != h.ID {
 		t.Fatalf("marker = %q, want %q", got, h.ID)
