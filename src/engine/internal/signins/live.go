@@ -67,10 +67,13 @@ func (s *Service) closeWait(site string, w *ownerWait) bool {
 // deadline, and the worker has the run's screen open to the owner. An answer the owner was told was
 // taken counts, even one that landed as the wait ended. The run log says that it waited and how it
 // ended, never what the owner did in the page.
-func (s *Service) waitForOwner(ctx context.Context, site string, log *runLog) (solved bool) {
+func (s *Service) waitForOwner(ctx context.Context, site string, log *runLog, begun func()) (solved bool) {
 	w := &ownerWait{until: s.cfg.Now().Add(captchaWait), answer: make(chan bool, 1), kind: waitCaptcha}
 	defer s.openWait(site, w, phaseWaiting)()
 	log.box("Waiting for you to solve a captcha")
+	if begun != nil {
+		begun()
+	}
 	var done bool
 	select {
 	case done = <-w.answer:
@@ -137,9 +140,9 @@ func (s *Service) waitOf(site string, run int64) (wait string, until time.Time) 
 }
 
 // humanCheck answers the worker's human_check: the owner solves it on the run's screen, Done or Give
-// up. ok is false when they gave up, nobody came, or ctx ended.
-func (s *Service) humanCheck(ctx context.Context, site string, log *runLog) (string, bool) {
-	if s.waitForOwner(ctx, site, log) {
+// up (begun, when set, is called once the wait is open). ok is false when they gave up, nobody came, or ctx ended.
+func (s *Service) humanCheck(ctx context.Context, site string, log *runLog, begun func()) (string, bool) {
+	if s.waitForOwner(ctx, site, log, begun) {
 		return "done", true
 	}
 	return "", false

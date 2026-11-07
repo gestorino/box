@@ -273,7 +273,7 @@ func TestDoneAsTheWaitEndsStillCounts(t *testing.T) {
 				fired <- testNow
 				return fired
 			}
-			solved := f.svc.waitForOwner(ctx, shopKey, log)
+			solved := f.svc.waitForOwner(ctx, shopKey, log, nil)
 			cancel()
 			if doneErr != nil || !solved {
 				t.Fatalf("%s, toss %d: Done = %v, solved = %v", ending, i, doneErr, solved)

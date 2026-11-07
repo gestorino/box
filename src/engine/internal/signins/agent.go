@@ -248,7 +248,9 @@ func (s *Service) agentAsk(e *agentRun, log *runLog) browser.Ask {
 		case "email":
 			return s.nextEmail(ctx, e, log)
 		case "human_check":
-			done, ok := s.humanCheck(ctx, e.site, log)
+			done, ok := s.humanCheck(ctx, e.site, log, func() {
+				s.emit(RunEvent{Run: log.id, Kind: "human_check", Text: q.Why})
+			})
 			if !ok && ctx.Err() == nil {
 				// Given up or timed out: the run ends.
 				s.mu.Lock()
@@ -271,6 +273,7 @@ func (s *Service) agentAsk(e *agentRun, log *runLog) browser.Ask {
 			s.mu.Unlock()
 		}()
 		log.line("question", q.Why) // its choices are the question's own, shown with it while it waits
+		s.emit(RunEvent{Run: log.id, Kind: questionKind(q.Why), Text: q.Why, Options: q.Options})
 		select {
 		case a := <-answer:
 			log.line("reply", a)
