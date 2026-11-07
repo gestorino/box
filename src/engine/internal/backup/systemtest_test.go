@@ -1,6 +1,9 @@
 package backup
 
-import "strings"
+import (
+	"bytes"
+	"strings"
+)
 
 // fakeSystem is a System that runs nothing: it records every call in order
 // ("Method arg ...") and answers with what a test set.
@@ -53,15 +56,16 @@ func (f *fakeSystem) Active(unit string) (bool, error) {
 	return true, nil
 }
 
+// Decrypt hands out a copy, fresh memory as the real one's is: callers wipe the key they get.
 func (f *fakeSystem) Decrypt(credPath string) ([]byte, error) {
 	f.record("Decrypt", credPath)
-	return f.key, f.decryptErr
+	return bytes.Clone(f.key), f.decryptErr
 }
 
-// Encrypt records the path only, never the key.
+// Encrypt records the path only, never the key; it keeps a copy (callers wipe theirs).
 func (f *fakeSystem) Encrypt(key []byte, credPath string) error {
 	f.record("Encrypt", credPath)
-	f.lastEncrypted = key
+	f.lastEncrypted = bytes.Clone(key)
 	return f.encryptErr
 }
 
