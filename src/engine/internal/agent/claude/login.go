@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"connectrpc.com/connect"
@@ -18,12 +19,13 @@ import (
 	agentv1 "concierge/engine/internal/gen/agent/v1"
 )
 
-const loginWait = 60 * time.Second
+var loginWait = 60 * time.Second
 
 var (
-	ansi     = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07`)
-	urlRe    = regexp.MustCompile(`https://\S+\s`)
-	tokenRe  = regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]+`)
+	ansi  = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07`)
+	urlRe = regexp.MustCompile(`https://\S+\s`)
+	// The token counts only once its line is complete: a read may split it.
+	tokenRe  = regexp.MustCompile(`(sk-ant-\S+)\n`)
 	errNoJob = connect.NewError(connect.CodeFailedPrecondition, errors.New("no sign-in in progress"))
 )
 
@@ -92,7 +94,7 @@ func (s *session) wait(ctx context.Context, find func(string) string) (string, b
 }
 
 func (s *session) kill() {
-	s.cmd.Process.Kill()
+	syscall.Kill(-s.cmd.Process.Pid, syscall.SIGKILL) // the session leader's whole group
 	s.pty.Close()
 	s.cmd.Wait()
 }
@@ -137,7 +139,12 @@ func (l *Login) Finish(ctx context.Context, code string) error {
 	if _, err := s.pty.WriteString(strings.TrimSpace(code) + "\r"); err != nil {
 		return connect.NewError(connect.CodeInternal, errors.New("the sign-in ended before the code"))
 	}
-	token, ok := s.wait(ctx, func(out string) string { return tokenRe.FindString(out) })
+	token, ok := s.wait(ctx, func(out string) string {
+		if m := tokenRe.FindStringSubmatch(out); m != nil {
+			return m[1]
+		}
+		return ""
+	})
 	if !ok {
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("the code was not accepted, start again"))
 	}
@@ -164,7 +171,7 @@ func (l *Login) Status(ctx context.Context) (*agentv1.StatusResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, l.bin, "--version")
-	cmd.Env = append(cliEnv(), "DISABLE_AUTOUPDATER=1")
+	cmd.Env = append(cliEnv(), "DISABLE_AUTOUPDATER=1", "HOME="+l.home)
 	out, verr := cmd.Output()
 	if verr != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("claude --version failed"))

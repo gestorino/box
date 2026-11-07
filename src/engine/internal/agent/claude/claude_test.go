@@ -6,8 +6,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -63,6 +66,8 @@ func TestRunPassesTheSchemaAndNoTools(t *testing.T) {
 	os.WriteFile(bin, []byte("#!/bin/sh\n"+strings.Replace(recordingScript(dir), "testdata", wd+"/testdata", 1)), 0o755)
 	home := homeWithToken(t, "sk-ant-oat01-secret\n")
 	t.Setenv("ANTHROPIC_API_KEY", "must-not-pass")
+	t.Setenv("ANTHROPIC_BASE_URL", "http://elsewhere")
+	t.Setenv("CLAUDE_CODE_USE_BEDROCK", "1")
 
 	schema := []byte(`{"type":"object"}`)
 	if _, _, err := NewRunner(bin, home, "sonnet").Run(context.Background(), agent.Rules, "the owner's words", schema); err != nil {
@@ -81,8 +86,13 @@ func TestRunPassesTheSchemaAndNoTools(t *testing.T) {
 			t.Errorf("record lacks %q:\n%s", want, rec)
 		}
 	}
-	if strings.Contains(rec, "ANTHROPIC_API_KEY") {
-		t.Error("ANTHROPIC_API_KEY reached the CLI")
+	for _, bad := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK"} {
+		if strings.Contains(rec, bad) {
+			t.Errorf("%s reached the CLI", bad)
+		}
+	}
+	if !strings.Contains(rec, "ENV:HOME="+home+"\n") {
+		t.Error("HOME is not the daemon's home")
 	}
 	args := rec[:strings.Index(rec, "ENV:")]
 	if strings.Contains(args, "the owner's words") || strings.Contains(args, "sk-ant") {
@@ -120,7 +130,7 @@ func TestRunFailures(t *testing.T) {
 			if err == nil {
 				t.Fatal("no error")
 			}
-			if connect.CodeOf(err) == connect.CodeFailedPrecondition {
+			if connect.CodeOf(err) != connect.CodeInternal {
 				t.Errorf("code = %v", connect.CodeOf(err))
 			}
 			if strings.Contains(err.Error(), "private words") || strings.Contains(err.Error(), "sk-ant") {
@@ -235,4 +245,138 @@ func TestStatusReadsVersion(t *testing.T) {
 	if s, _ = l.Status(context.Background()); !s.SignedIn {
 		t.Error("not signed in with a token")
 	}
+}
+
+func TestTheTokenIsKeptWholeWhenItsLineArrivesInTwoReads(t *testing.T) {
+	_, bin := fakeCLI(t, `[ "$1" = "setup-token" ] || exit 9
+echo "https://claude.ai/oauth/authorize?x=1"
+read code
+printf "sk-ant-oat01-ab"
+sleep 0.4
+echo "cdef"
+`)
+	home := filepath.Join(homeWithToken(t, ""), "agent")
+	l := NewLogin(bin, home)
+	if _, err := l.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Finish(context.Background(), "abc"); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, filepath.Join(home, "token")); got != "sk-ant-oat01-abcdef" {
+		t.Errorf("token = %q", got)
+	}
+}
+
+// pidsOf reads the pids a fake wrote, one per line.
+func pidsOf(t *testing.T, p string) []int {
+	t.Helper()
+	var pids []int
+	for _, f := range strings.Fields(read(t, p)) {
+		n, err := strconv.Atoi(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pids = append(pids, n)
+	}
+	return pids
+}
+
+func waitGone(t *testing.T, pid int) {
+	t.Helper()
+	for i := 0; i < 100; i++ {
+		if syscall.Kill(pid, 0) != nil {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Errorf("process %d is still running", pid)
+}
+
+func waitFile(t *testing.T, p string) {
+	t.Helper()
+	for i := 0; i < 100; i++ {
+		if b, err := os.ReadFile(p); err == nil && len(b) > 0 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("%s never written", p)
+}
+
+func shorten(t *testing.T, v *time.Duration, d time.Duration) {
+	old := *v
+	*v = d
+	t.Cleanup(func() { *v = old })
+}
+
+func TestASecondStartKillsThePendingSetupToken(t *testing.T) {
+	dir, bin := fakeCLI(t, "")
+	pids := filepath.Join(dir, "pids")
+	os.WriteFile(bin, []byte("#!/bin/sh\necho $$ >> "+pids+"\necho 'https://x.example/y'\nsleep 30\n"), 0o755)
+	l := NewLogin(bin, filepath.Join(homeWithToken(t, ""), "agent"))
+	t.Cleanup(func() { l.Logout(context.Background()) })
+	if _, err := l.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := pidsOf(t, pids)
+	if len(got) != 2 {
+		t.Fatalf("pids = %v", got)
+	}
+	waitGone(t, got[0])
+	if syscall.Kill(got[1], 0) != nil {
+		t.Error("the new sign-in is not running")
+	}
+	l.Logout(context.Background())
+	waitGone(t, got[1])
+}
+
+func TestACancelledStartAndAWaitTimeoutKillTheSetupToken(t *testing.T) {
+	dir, bin := fakeCLI(t, "")
+	pids := filepath.Join(dir, "pids")
+	os.WriteFile(bin, []byte("#!/bin/sh\necho $$ >> "+pids+"\nsleep 30\n"), 0o755)
+	l := NewLogin(bin, filepath.Join(homeWithToken(t, ""), "agent"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(300*time.Millisecond, cancel)
+	if _, err := l.Start(ctx); err == nil {
+		t.Fatal("Start without a link succeeded")
+	}
+	waitFile(t, pids)
+	waitGone(t, pidsOf(t, pids)[0])
+
+	// A wait that times out: the link comes, the token never.
+	os.WriteFile(bin, []byte("#!/bin/sh\necho $$ >> "+pids+"\necho 'https://x.example/y'\nread code\nsleep 30\n"), 0o755)
+	if _, err := l.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	shorten(t, &loginWait, 300*time.Millisecond)
+	if err := l.Finish(context.Background(), "abc"); err == nil {
+		t.Fatal("Finish without a token succeeded")
+	}
+	got := pidsOf(t, pids)
+	if len(got) != 2 {
+		t.Fatalf("pids = %v", got)
+	}
+	waitGone(t, got[1])
+}
+
+func TestRunKillsTheCLIOnTimeoutEvenWithAGrandchildHoldingItsPipes(t *testing.T) {
+	dir, bin := fakeCLI(t, "")
+	pids := filepath.Join(dir, "pids")
+	os.WriteFile(bin, []byte("#!/bin/sh\necho $$ > "+pids+"\nsleep 5 &\nsleep 5\n"), 0o755)
+	shorten(t, &runTimeout, 1000*time.Millisecond)
+	shorten(t, &waitDelay, 300*time.Millisecond)
+	start := time.Now()
+	_, _, err := NewRunner(bin, homeWithToken(t, "sk-ant-oat01-x"), "m").Run(context.Background(), "s", "i", []byte(`{}`))
+	if err == nil || connect.CodeOf(err) != connect.CodeInternal {
+		t.Fatalf("err = %v", err)
+	}
+	if time.Since(start) > 3*time.Second {
+		t.Errorf("Run took %v", time.Since(start))
+	}
+	waitGone(t, pidsOf(t, pids)[0])
 }

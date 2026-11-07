@@ -20,7 +20,11 @@ import (
 	agentv1 "concierge/engine/internal/gen/agent/v1"
 )
 
-const runTimeout = 120 * time.Second
+// Variables so tests can shorten them.
+var (
+	runTimeout = 120 * time.Second
+	waitDelay  = 3 * time.Second
+)
 
 // Runner runs one model step through the claude CLI.
 type Runner struct{ bin, home, model string }
@@ -71,6 +75,7 @@ func (r *Runner) Run(ctx context.Context, system, input string, schema []byte) (
 		"--disable-slash-commands",
 	)
 	cmd.Dir = work
+	cmd.WaitDelay = waitDelay // a grandchild holding the pipes must not hang a cancelled run
 	cmd.Env = append(cliEnv(), "CLAUDE_CODE_OAUTH_TOKEN="+token, "DISABLE_AUTOUPDATER=1", "HOME="+r.home)
 	cmd.Stdin = strings.NewReader(input)
 	var stdout, stderr bytes.Buffer
@@ -120,13 +125,12 @@ func fail(what, stderr, token string, err error) error {
 	return connect.NewError(connect.CodeInternal, errors.New(msg))
 }
 
-// cliEnv is this process's environment without any other credential the CLI would prefer to the
-// owner's token.
+// cliEnv is this process's environment without any ANTHROPIC_ or CLAUDE_CODE_ setting (another
+// credential, endpoint or provider the CLI would prefer to the owner's token).
 func cliEnv() []string {
 	var env []string
 	for _, kv := range os.Environ() {
-		k, _, _ := strings.Cut(kv, "=")
-		if k == "ANTHROPIC_API_KEY" || k == "ANTHROPIC_AUTH_TOKEN" || k == "CLAUDE_CODE_OAUTH_TOKEN" || k == "HOME" {
+		if strings.HasPrefix(kv, "ANTHROPIC_") || strings.HasPrefix(kv, "CLAUDE_CODE_") || strings.HasPrefix(kv, "HOME=") || strings.HasPrefix(kv, "DISABLE_AUTOUPDATER=") {
 			continue
 		}
 		env = append(env, kv)
