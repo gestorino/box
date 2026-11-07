@@ -283,19 +283,20 @@ func (s *Store) events(ctx context.Context, conv int64, last int, upTo int64) ([
 	return out, rows.Err()
 }
 
-// event is one of the conversation's events; false when the conversation has none of that id.
-func (s *Store) event(ctx context.Context, conv, id int64) (*agentv1.Event, bool, error) {
+// event is one of the conversation's events and whether it is still pending; found is false when the
+// conversation has none of that id.
+func (s *Store) event(ctx context.Context, conv, id int64) (e *agentv1.Event, pending, found bool, err error) {
 	var raw string
-	err := s.db.QueryRowContext(ctx, `SELECT event FROM conversation_events WHERE id = ? AND conversation = ?`,
-		id, conv).Scan(&raw)
+	err = s.db.QueryRowContext(ctx, `SELECT event, pending FROM conversation_events WHERE id = ? AND conversation = ?`,
+		id, conv).Scan(&raw, &pending)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, false, nil
+		return nil, false, false, nil
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
-	e, err := decodeEvent(id, raw)
-	return e, err == nil, err
+	e, err = decodeEvent(id, raw)
+	return e, pending, err == nil, err
 }
 
 // AddUsage adds a step's usage to the conversation's totals; its model becomes the conversation's.

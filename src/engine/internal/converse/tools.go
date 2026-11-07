@@ -42,7 +42,7 @@ type Tools struct {
 
 type tool struct {
 	spec *agentv1.Tool
-	run  func(t *Tools, ctx context.Context, conv int64, args string) (any, error)
+	run  func(t *Tools, ctx context.Context, conv, taking int64, args string) (any, error)
 }
 
 func NewTools(e Errands, s *Store) *Tools {
@@ -107,6 +107,17 @@ func (t *Tools) Specs() []*agentv1.Tool {
 	return out
 }
 
+// Waits is the run still waiting on what an errand's event told: a wait of that kind and, for a
+// question or a Confirm, that wait itself. An event whose wait ended (answered in the console, or the
+// run gone with a restart) asks nothing any more.
+func (t *Tools) Waits(run int64, kind string, wait int64) bool {
+	now, q := t.errands.Waiting(run)
+	if now != kind {
+		return false
+	}
+	return kind == "human_check" || (q != nil && q.Wait == wait)
+}
+
 // Running is the run still running: what keeps the conversation that started it open.
 func (t *Tools) Running(ctx context.Context, run int64) (bool, error) {
 	d, found, err := t.errands.AgentRun(ctx, run)
@@ -160,10 +171,11 @@ func plainWords(name string, err error) string {
 	return "something went wrong"
 }
 
-// Call runs one tool call of the conversation's agent and returns its result: compact JSON, an error
-// a result of its own, {"error": "<plain words>"}.
-func (t *Tools) Call(ctx context.Context, conv int64, call *agentv1.ToolCall) string {
-	result, err := t.call(ctx, conv, call)
+// Call runs one tool call of the conversation's agent, in the turn taking the event #taking, and
+// returns its result: compact JSON, an error a result of its own, {"error": "<plain words>"}. The
+// turn's agent was shown no event still pending after #taking.
+func (t *Tools) Call(ctx context.Context, conv, taking int64, call *agentv1.ToolCall) string {
+	result, err := t.call(ctx, conv, taking, call)
 	if err != nil {
 		result = struct {
 			Error string `json:"error"`
@@ -176,13 +188,13 @@ func (t *Tools) Call(ctx context.Context, conv int64, call *agentv1.ToolCall) st
 	return string(raw)
 }
 
-func (t *Tools) call(ctx context.Context, conv int64, call *agentv1.ToolCall) (any, error) {
+func (t *Tools) call(ctx context.Context, conv, taking int64, call *agentv1.ToolCall) (any, error) {
 	if call == nil {
 		return nil, refuse("no tool was called")
 	}
 	for _, tl := range t.tools {
 		if tl.spec.GetName() == call.GetName() {
-			return tl.run(t, ctx, conv, call.GetArgumentsJson())
+			return tl.run(t, ctx, conv, taking, call.GetArgumentsJson())
 		}
 	}
 	return nil, refuse("there is no tool %q", call.GetName())
@@ -282,7 +294,7 @@ func (t *Tools) accounts(ctx context.Context) ([]signins.Card, error) {
 	return out, nil
 }
 
-func (t *Tools) listAccounts(ctx context.Context, _ int64, args string) (any, error) {
+func (t *Tools) listAccounts(ctx context.Context, _, _ int64, args string) (any, error) {
 	if err := parseArgs(args); err != nil {
 		return nil, err
 	}
@@ -328,7 +340,7 @@ func withDetails(a signins.Action, values map[string]string) string {
 	return a.Text + " (" + strings.Join(said, "; ") + ")"
 }
 
-func (t *Tools) startErrand(ctx context.Context, conv int64, args string) (any, error) {
+func (t *Tools) startErrand(ctx context.Context, conv, _ int64, args string) (any, error) {
 	var site, action string
 	var details []json.RawMessage
 	var appointment int64
@@ -391,7 +403,7 @@ var answered = struct {
 	Answered bool `json:"answered"`
 }{true}
 
-func (t *Tools) answerErrand(ctx context.Context, conv int64, args string) (any, error) {
+func (t *Tools) answerErrand(ctx context.Context, conv, taking int64, args string) (any, error) {
 	var answer string
 	var ownerEvent int64
 	run, err := t.runArg(ctx, conv, args, text("answer", &answer), integer("owner_event", &ownerEvent))
@@ -404,13 +416,13 @@ func (t *Tools) answerErrand(ctx context.Context, conv int64, args string) (any,
 	}
 	switch kind {
 	case "confirm":
-		return t.answerConfirm(ctx, conv, run, q.Wait, answer, ownerEvent)
+		return t.answerConfirm(ctx, conv, taking, run, q.Wait, answer, ownerEvent)
 	case "question":
 		if (answer == "") == (ownerEvent == 0) {
 			return nil, refuse("a question takes either answer or owner_event, not both and not neither")
 		}
 		if ownerEvent != 0 {
-			if answer, err = t.ownerWords(ctx, conv, ownerEvent); err != nil {
+			if answer, err = t.ownerWords(ctx, conv, taking, ownerEvent); err != nil {
 				return nil, err
 			}
 		}
@@ -424,9 +436,10 @@ func (t *Tools) answerErrand(ctx context.Context, conv int64, args string) (any,
 	return nil, refuse("run %d is not waiting for an answer", run)
 }
 
-// ownerWords is the text of the owner's message #id in this conversation.
-func (t *Tools) ownerWords(ctx context.Context, conv, id int64) (string, error) {
-	e, found, err := t.store.event(ctx, conv, id)
+// ownerWords is the text of the owner's message #id in this conversation, one the turn taking the
+// event #taking was shown: a message still pending after it is its own turn's, not yet shown.
+func (t *Tools) ownerWords(ctx context.Context, conv, taking, id int64) (string, error) {
+	e, pending, found, err := t.store.event(ctx, conv, id)
 	if err != nil {
 		return "", err
 	}
@@ -434,13 +447,16 @@ func (t *Tools) ownerWords(ctx context.Context, conv, id int64) (string, error) 
 	if !found || !ok {
 		return "", refuse("#%d is not a message of the owner's in this conversation", id)
 	}
+	if pending && id > taking {
+		return "", refuse("#%d is a message of the owner's you were not shown yet: it gets its own turn", id)
+	}
 	return o.Owner, nil
 }
 
 // answerConfirm is the Confirm gate: only the owner's own message, sent after the Confirm was told in
 // this conversation, answers it, verbatim and once, and only while that Confirm (its wait) is the one
 // the errand waits on.
-func (t *Tools) answerConfirm(ctx context.Context, conv, run, wait int64, answer string, ownerEvent int64) (any, error) {
+func (t *Tools) answerConfirm(ctx context.Context, conv, taking, run, wait int64, answer string, ownerEvent int64) (any, error) {
 	if answer != "" || ownerEvent <= 0 {
 		return nil, refuse("a Confirm takes no answer of yours: answer must be \"\" and owner_event the # of the " +
 			"owner's own message that answers it")
@@ -458,7 +474,7 @@ func (t *Tools) answerConfirm(ctx context.Context, conv, run, wait int64, answer
 	if ownerEvent <= toldAt {
 		return nil, refuse("#%d came before the Confirm (#%d) was told: only the owner's message after it answers it", ownerEvent, confirm)
 	}
-	words, err := t.ownerWords(ctx, conv, ownerEvent)
+	words, err := t.ownerWords(ctx, conv, taking, ownerEvent)
 	if err != nil {
 		return nil, err
 	}
@@ -474,7 +490,7 @@ func (t *Tools) answerConfirm(ctx context.Context, conv, run, wait int64, answer
 	return answered, nil
 }
 
-func (t *Tools) stopErrand(ctx context.Context, conv int64, args string) (any, error) {
+func (t *Tools) stopErrand(ctx context.Context, conv, _ int64, args string) (any, error) {
 	run, err := t.runArg(ctx, conv, args)
 	if err != nil {
 		return nil, err
@@ -495,7 +511,7 @@ type statusOut struct {
 	Report   string   `json:"report"`
 }
 
-func (t *Tools) errandStatus(ctx context.Context, conv int64, args string) (any, error) {
+func (t *Tools) errandStatus(ctx context.Context, conv, _ int64, args string) (any, error) {
 	run, err := t.runArg(ctx, conv, args)
 	if err != nil {
 		return nil, err
@@ -526,7 +542,7 @@ type appointmentOut struct {
 	Status string `json:"status"`
 }
 
-func (t *Tools) listAppointments(ctx context.Context, _ int64, args string) (any, error) {
+func (t *Tools) listAppointments(ctx context.Context, _, _ int64, args string) (any, error) {
 	if err := parseArgs(args); err != nil {
 		return nil, err
 	}
@@ -557,7 +573,7 @@ func boolOrder(a, b bool) int {
 	return 1
 }
 
-func (t *Tools) checkAppointment(ctx context.Context, conv int64, args string) (any, error) {
+func (t *Tools) checkAppointment(ctx context.Context, conv, _ int64, args string) (any, error) {
 	var id int64
 	if err := parseArgs(args, integer("id", &id)); err != nil {
 		return nil, err

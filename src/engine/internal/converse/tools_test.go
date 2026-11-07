@@ -130,7 +130,7 @@ func (f *fakeErrands) CheckAppointment(_ context.Context, id int64) (int64, erro
 
 func call(t *testing.T, tools *Tools, conv int64, name, args string) map[string]any {
 	t.Helper()
-	out := tools.Call(context.Background(), conv, &agentv1.ToolCall{CallId: "c", Name: name, ArgumentsJson: args})
+	out := tools.Call(context.Background(), conv, 0, &agentv1.ToolCall{CallId: "c", Name: name, ArgumentsJson: args})
 	var m map[string]any
 	if err := json.Unmarshal([]byte(out), &m); err != nil {
 		t.Fatalf("%s: not JSON: %s", name, out)
@@ -158,7 +158,7 @@ func refusedSaying(t *testing.T, words string, m map[string]any) {
 func TestListAccountsIsOnlyTheBoxsAccounts(t *testing.T) {
 	f := newFake()
 	tools := NewTools(f, openStore(t))
-	out := tools.Call(context.Background(), 1, &agentv1.ToolCall{Name: "list_accounts", ArgumentsJson: "{}"})
+	out := tools.Call(context.Background(), 1, 0, &agentv1.ToolCall{Name: "list_accounts", ArgumentsJson: "{}"})
 	want := `{"accounts":[{"site":"example.com","name":"Example","link":"https://www.example.com/start","actions":[` +
 		`{"text":"Book a table","details":["When","Who","Note"]},{"text":"Cancel a visit","details":[]}]}]}`
 	if out != want {
@@ -442,7 +442,7 @@ func TestTwoAnswersRacingOnAConfirmAnswerItOnce(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				results[i] = tools.Call(context.Background(), conv, &agentv1.ToolCall{Name: "answer_errand",
+				results[i] = tools.Call(context.Background(), conv, 0, &agentv1.ToolCall{Name: "answer_errand",
 					ArgumentsJson: `{"run":41,"answer":"","owner_event":` + itoa(id) + `}`})
 			}()
 		}
@@ -520,7 +520,7 @@ func TestStopAndStatusOfAnErrand(t *testing.T) {
 	f.runs[41] = d
 	f.waiting[41] = "question"
 	f.questions[41] = &signins.Question{Text: "Which day?", Options: []string{"Fri", "Sat"}}
-	out := tools.Call(context.Background(), conv, &agentv1.ToolCall{Name: "errand_status", ArgumentsJson: `{"run":41}`})
+	out := tools.Call(context.Background(), conv, 0, &agentv1.ToolCall{Name: "errand_status", ArgumentsJson: `{"run":41}`})
 	if want := `{"state":"running","waiting":"question","question":"Which day?","options":["Fri","Sat"],"report":"nothing yet"}`; out != want {
 		t.Fatalf("status %s", out)
 	}
@@ -536,7 +536,7 @@ func TestAppointmentTools(t *testing.T) {
 		{ID: 3, Site: "example.com", Title: "Visit", Date: "2026-11-10", Time: "15:00", Place: "Main St 1", Status: "upcoming"},
 		{ID: 2, Site: "example.com", Title: "Old visit", Status: "cancelled"},
 	}
-	out := tools.Call(context.Background(), conv, &agentv1.ToolCall{Name: "list_appointments", ArgumentsJson: `{}`})
+	out := tools.Call(context.Background(), conv, 0, &agentv1.ToolCall{Name: "list_appointments", ArgumentsJson: `{}`})
 	want := `{"appointments":[{"id":3,"site":"example.com","title":"Visit","date":"2026-11-10","time":"15:00","place":"Main St 1","status":"upcoming"},` +
 		`{"id":2,"site":"example.com","title":"Old visit","date":"","time":"","place":"","status":"cancelled"}]}`
 	if out != want {
@@ -577,7 +577,7 @@ func TestArgumentsAreParsedStrictly(t *testing.T) {
 	if len(f.stopped) != 0 || len(f.started) != 0 {
 		t.Fatalf("acted on a bad call: %v %v", f.stopped, f.started)
 	}
-	if out := tools.Call(context.Background(), conv, nil); !strings.Contains(out, "error") {
+	if out := tools.Call(context.Background(), conv, 0, nil); !strings.Contains(out, "error") {
 		t.Fatalf("a nil call: %s", out)
 	}
 }
@@ -636,4 +636,37 @@ func strict(t *testing.T, at string, schema map[string]any) {
 func itoa(n int64) string {
 	b, _ := json.Marshal(n)
 	return string(b)
+}
+
+func TestAnOwnerMessageNotShownYetAnswersNothing(t *testing.T) {
+	f, s := newFake(), openStore(t)
+	tools, conv := NewTools(f, s), open(t, s, "chat")
+	confirmAt(t, f, s, conv)
+	taking, err := s.Intake(context.Background(), conv, owner("what is it?"), t0) // #11, this turn's
+	if err != nil {
+		t.Fatal(err)
+	}
+	later, err := s.Intake(context.Background(), conv, owner("yes"), t0) // #12, queued for its own turn
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := func(owner int64) map[string]any {
+		out := tools.Call(context.Background(), conv, taking, &agentv1.ToolCall{Name: "answer_errand",
+			ArgumentsJson: `{"run":41,"answer":"","owner_event":` + itoa(owner) + `}`})
+		var m map[string]any
+		if err := json.Unmarshal([]byte(out), &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	refusedSaying(t, `not shown`, answer(later))
+	f.wait(41, "question", 2)
+	refusedSaying(t, `not shown`, answer(later))
+	if len(f.answers[41]) != 0 {
+		t.Fatalf("answered %v", f.answers)
+	}
+	// The turn's own message was shown.
+	if m := answer(taking); m["error"] != nil {
+		t.Fatalf("refused the turn's own message: %v", m)
+	}
 }

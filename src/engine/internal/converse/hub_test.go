@@ -475,6 +475,7 @@ func TestAnErrandsQuestionBecomesATurn(t *testing.T) {
 		return say("Which time?"), nil
 	})
 	conv := r.linked(t, 41)
+	r.errands.wait(41, "question", 7)
 	r.hub.RunEvent(signins.RunEvent{Run: 41, Kind: "question", Text: "Pick a time", Options: []string{"10:00", "11:00"}, Wait: 7})
 	if got := r.channel.next(t); got != "Which time?" {
 		t.Fatalf("sent %q", got)
@@ -584,6 +585,7 @@ func TestAHumanCheckSendsTheConsoleLink(t *testing.T) {
 		return say("no"), nil
 	})
 	conv := r.linked(t, 41)
+	r.errands.wait(41, "human_check", 0)
 	r.hub.RunEvent(signins.RunEvent{Run: 41, Kind: "human_check", Text: "a captcha"})
 	if got, want := r.channel.next(t), "The site wants a human check. Open the errand in the console: http://box.local/errands/runs/41"; got != want {
 		t.Fatalf("sent %q, want %q", got, want)
@@ -761,5 +763,90 @@ func TestASendThatFailsIsStillKept(t *testing.T) {
 	r.settle(t)
 	if _, events := r.only(t); !equal(kinds(events), []string{"owner", "agent"}) {
 		t.Fatalf("events: %v", kinds(events))
+	}
+}
+
+// pendingIn stores the event in the conversation as the hub takes it in, pending, as a stop left it.
+func pendingIn(t *testing.T, s *Store, conv int64, e *agentv1.Event) int64 {
+	t.Helper()
+	id, err := s.Intake(context.Background(), conv, e, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func TestAWaitThatEndedIsToldNothing(t *testing.T) {
+	store := openStore(t)
+	conv := open(t, store, "chat")
+	if err := store.LinkRun(context.Background(), conv, 41); err != nil {
+		t.Fatal(err)
+	}
+	// Left pending by a stop; the restart ended the run, which waits on nothing now.
+	pendingIn(t, store, conv, &agentv1.Event{Kind: &agentv1.Event_Errand{Errand: &agentv1.ErrandEvent{
+		Run: 41, Kind: "confirm", Text: "Confirm: go?", Options: []string{"Yes"}, Wait: 9}}})
+	pendingIn(t, store, conv, &agentv1.Event{Kind: &agentv1.Event_Errand{Errand: &agentv1.ErrandEvent{
+		Run: 41, Kind: "question", Text: "Which?", Wait: 8}}})
+	r := newRig(t, store, func(int, *agentv1.StepRequest) (*agentv1.StepResponse, error) {
+		t.Error("stepped for a wait that ended")
+		return say("no"), nil
+	})
+	r.settle(t)
+	// Live: a human check solved, and a question answered in the console, before their turns.
+	r.errands.wait(41, "question", 10)
+	r.hub.RunEvent(signins.RunEvent{Run: 41, Kind: "human_check"})
+	r.hub.RunEvent(signins.RunEvent{Run: 41, Kind: "question", Text: "Which time?", Wait: 7})
+	r.settle(t)
+	r.channel.none(t)
+	if _, _, _, ok, err := store.pendingConfirm(context.Background(), conv, 41); ok || err != nil {
+		t.Fatalf("the ended Confirm counts as told: %v %v", ok, err)
+	}
+	if pending, err := store.Pending(context.Background()); err != nil || len(pending) != 0 {
+		t.Fatalf("not taken: %v %v", pending, err)
+	}
+}
+
+func TestAnOrphanRunIsLookedForOnce(t *testing.T) {
+	r := newRig(t, openStore(t), func(int, *agentv1.StepRequest) (*agentv1.StepResponse, error) {
+		t.Error("stepped for a run no conversation started")
+		return say("no"), nil
+	})
+	r.hub.linkWait = 200 * time.Millisecond
+	r.hub.RunEvent(signins.RunEvent{Run: 99, Kind: "question", Wait: 1})
+	r.settle(t) // its routing goroutine ends: the next event starts another
+	start := time.Now()
+	r.hub.RunEvent(signins.RunEvent{Run: 99, Kind: "question", Wait: 2})
+	r.settle(t)
+	if took := time.Since(start); took > 100*time.Millisecond {
+		t.Fatalf("a later event of an orphan run waited %v", took)
+	}
+	r.hub.RunEvent(signins.RunEvent{Run: 99, Kind: "done"})
+	r.settle(t)
+	r.hub.mu.Lock()
+	left := len(r.hub.orphans)
+	r.hub.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("the ended run is still remembered: %d", left)
+	}
+}
+
+func TestAResumedTurnSeesItsCutToolCallEnded(t *testing.T) {
+	store := openStore(t)
+	conv := open(t, store, "chat")
+	pendingIn(t, store, conv, owner("start it"))
+	appendEvent(t, store, conv, &agentv1.Event{Kind: &agentv1.Event_ToolCall{ToolCall: &agentv1.ToolCall{
+		CallId: "c7", Name: "start_errand", ArgumentsJson: `{}`}}}) // the stop came before its result
+	appendEvent(t, store, conv, &agentv1.Event{Kind: &agentv1.Event_ToolCall{ToolCall: &agentv1.ToolCall{
+		CallId: "c6", Name: "list_accounts", ArgumentsJson: `{}`}}})
+	appendEvent(t, store, conv, &agentv1.Event{Kind: &agentv1.Event_ToolResult{ToolResult: &agentv1.ToolResult{
+		CallId: "c6", ResultJson: `{"accounts":[]}`}}})
+	r := newRig(t, store, func(int, *agentv1.StepRequest) (*agentv1.StepResponse, error) { return say("ok"), nil })
+	r.channel.next(t)
+	events := r.agent.requests()[0].GetEvents()
+	if want := []string{"owner", "tool_call", "tool_call", "tool_result", "tool_result"}; !equal(kinds(events), want) {
+		t.Fatalf("the resumed turn saw %v", kinds(events))
+	}
+	if res := events[4].GetToolResult(); res.GetCallId() != "c7" || res.GetResultJson() != restarted {
+		t.Fatalf("the cut call's result: %v", res)
 	}
 }

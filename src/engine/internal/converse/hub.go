@@ -3,6 +3,7 @@ package converse
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,7 +36,19 @@ const (
 	stepTimeout     = 5 * time.Minute
 	sendTimeout     = 30 * time.Second
 	settingsTimeout = 10 * time.Second
+
+	// noConversationCap bounds the runs remembered as no conversation's: past it they are forgotten.
+	noConversationCap = 1024
+
+	// restarted is the result of a tool call a stop cut short before its result was kept.
+	restarted = `{"error":"the box restarted before this finished"}`
 )
+
+// waits are the kinds of an errand's event that wait on the owner.
+var waits = map[string]bool{"question": true, "confirm": true, "human_check": true}
+
+// ends are the kinds of an errand's last event.
+var ends = map[string]bool{"done": true, "not_done": true, "failed": true, "stopped": true}
 
 // Channel sends to the owner on one channel; the recipient is always the owner, filled by the
 // channel itself, never named by the agent.
@@ -83,30 +96,65 @@ type Hub struct {
 	// the queues'; and no idle conversation closes between its opening and its event.
 	intake sync.Mutex
 
-	mu     sync.Mutex
-	convs  map[int64][]*agentv1.Event // a conversation's events to take, while its goroutine runs
-	runs   map[int64][]*agentv1.Event // a run's events waiting for its conversation, while its goroutine runs
-	closed bool
-	wg     sync.WaitGroup
+	mu    sync.Mutex
+	convs map[int64][]*agentv1.Event // a conversation's events to take, while its goroutine runs
+	runs  map[int64][]*agentv1.Event // a run's events waiting for its conversation, while its goroutine runs
+	// orphans are the runs a full linkWait found no conversation of (a console errand's): their later
+	// events are dropped at once, until the run's end.
+	orphans map[int64]bool
+	closed  bool
+	wg      sync.WaitGroup
 }
 
 // NewHub is the hub of cfg. It queues again every event still pending, so a turn the engine's last
-// stop cut short, or never began, runs now.
+// stop cut short, or never began, runs now; a tool call that stop left without its result gets one
+// saying so first.
 func NewHub(cfg Config) *Hub {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
 	base, cancel := context.WithCancel(context.Background())
 	h := &Hub{cfg: cfg, base: base, cancel: cancel, linkWait: linkWait,
-		convs: map[int64][]*agentv1.Event{}, runs: map[int64][]*agentv1.Event{}}
+		convs: map[int64][]*agentv1.Event{}, runs: map[int64][]*agentv1.Event{}, orphans: map[int64]bool{}}
 	pending, err := cfg.Store.Pending(base)
 	if err != nil {
 		slog.Error("converse: reading the events still pending", "err", err)
 	}
+	closed := map[int64]bool{}
 	for _, q := range pending {
+		if !closed[q.Conversation] {
+			h.closeDangling(q.Conversation)
+			closed[q.Conversation] = true
+		}
 		h.enqueue(q.Conversation, q.Event)
 	}
 	return h
+}
+
+// closeDangling gives each tool call of the conversation that has no result the result that the box
+// restarted before it finished, so a resumed turn's agent sees how it ended.
+func (h *Hub) closeDangling(conv int64) {
+	events, err := h.cfg.Store.Events(h.base, conv, 0)
+	if err != nil {
+		slog.Error("converse: reading a conversation to resume", "conversation", conv, "err", err)
+		return
+	}
+	var open []*agentv1.ToolCall
+	for _, e := range events {
+		if c := e.GetToolCall(); c != nil {
+			open = append(open, c)
+		} else if r := e.GetToolResult(); r != nil {
+			if i := slices.IndexFunc(open, func(c *agentv1.ToolCall) bool { return c.GetCallId() == r.GetCallId() }); i >= 0 {
+				open = slices.Delete(open, i, i+1)
+			}
+		}
+	}
+	for _, c := range open {
+		if _, err := h.cfg.Store.Append(h.base, conv, &agentv1.Event{Kind: &agentv1.Event_ToolResult{ToolResult: &agentv1.ToolResult{
+			CallId: c.GetCallId(), ResultJson: restarted}}}, h.cfg.Now()); err != nil {
+			slog.Error("converse: closing a tool call the restart cut short", "conversation", conv, "err", err)
+		}
+	}
 }
 
 // Run closes idle conversations every minute until ctx ends; then it cancels the turns running and
@@ -239,8 +287,8 @@ func (h *Hub) drain(conv int64) {
 	}
 }
 
-// routeRun takes in the run's events, in order, in the conversation that started the run; it looks
-// for that conversation once per goroutine, so a run none started costs one wait, not one per event.
+// routeRun takes in the run's events, in order, in the conversation that started the run. A run
+// none started costs one wait: it is remembered as an orphan until its end.
 func (h *Hub) routeRun(run int64) {
 	defer h.wg.Done()
 	var conv int64
@@ -255,6 +303,7 @@ func (h *Hub) routeRun(run int64) {
 		}
 		if conv == 0 {
 			slog.Info("converse: an errand's event of no conversation, dropped", "run", run, "kind", e.GetErrand().GetKind())
+			h.orphan(run, !ends[e.GetErrand().GetKind()])
 			continue
 		}
 		h.intake.Lock()
@@ -263,9 +312,29 @@ func (h *Hub) routeRun(run int64) {
 	}
 }
 
+// orphan remembers the run as no conversation's, or forgets it (its end).
+func (h *Hub) orphan(run int64, is bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !is {
+		delete(h.orphans, run)
+		return
+	}
+	if len(h.orphans) >= noConversationCap {
+		clear(h.orphans)
+	}
+	h.orphans[run] = true
+}
+
 // conversationOf is the conversation that started the run, looked for until linkWait passes; 0 when
-// none did.
+// none did, at once for an orphan.
 func (h *Hub) conversationOf(run int64) int64 {
+	h.mu.Lock()
+	orphan := h.orphans[run]
+	h.mu.Unlock()
+	if orphan {
+		return 0
+	}
 	deadline := time.Now().Add(h.linkWait)
 	for {
 		conv, ok, err := h.cfg.Store.ConversationOfRun(h.base, run)
@@ -305,8 +374,14 @@ func (h *Hub) take(conv int64, e *agentv1.Event) {
 	}
 }
 
-// answer answers the event; false when the hub's stop cut it short.
+// answer answers the event; false when the hub's stop cut it short. An errand's wait that ended
+// before its turn (answered in the console, or its run gone with a restart) is told nothing: it asks
+// nothing any more.
 func (h *Hub) answer(ctx context.Context, c Conversation, e *agentv1.Event) bool {
+	if x := e.GetErrand(); waits[x.GetKind()] && !h.cfg.Tools.Waits(x.GetRun(), x.GetKind(), x.GetWait()) {
+		slog.Info("converse: an errand's wait that ended, not told", "conversation", c.ID, "run", x.GetRun(), "kind", x.GetKind())
+		return true
+	}
 	name, ch, ok := h.answering(ctx, c)
 	if !ok {
 		return ctx.Err() == nil
@@ -391,7 +466,7 @@ func (h *Hub) turn(ctx context.Context, c Conversation, taking int64, name strin
 				return true
 			}
 			tools++
-			if !h.runTool(ctx, c.ID, a.ToolCall) {
+			if !h.runTool(ctx, c.ID, taking, a.ToolCall) {
 				if ctx.Err() != nil {
 					return false
 				}
@@ -438,13 +513,14 @@ func (h *Hub) step(ctx context.Context, c Conversation, taking int64, agent agen
 	return resp.Msg, true
 }
 
-// runTool appends the call, runs it and appends its result; false when either can't be kept.
-func (h *Hub) runTool(ctx context.Context, conv int64, call *agentv1.ToolCall) bool {
+// runTool appends the call, runs it in the turn taking #taking and appends its result; false when
+// either can't be kept.
+func (h *Hub) runTool(ctx context.Context, conv, taking int64, call *agentv1.ToolCall) bool {
 	if _, err := h.cfg.Store.Append(ctx, conv, &agentv1.Event{Kind: &agentv1.Event_ToolCall{ToolCall: call}}, h.cfg.Now()); err != nil {
 		slog.Error("converse: keeping a tool call", "conversation", conv, "err", err)
 		return false
 	}
-	result := h.cfg.Tools.Call(ctx, conv, call)
+	result := h.cfg.Tools.Call(ctx, conv, taking, call)
 	if _, err := h.cfg.Store.Append(ctx, conv, &agentv1.Event{Kind: &agentv1.Event_ToolResult{ToolResult: &agentv1.ToolResult{
 		CallId: call.GetCallId(), ResultJson: result}}}, h.cfg.Now()); err != nil {
 		slog.Error("converse: keeping a tool's result", "conversation", conv, "err", err)
