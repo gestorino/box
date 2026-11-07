@@ -355,6 +355,35 @@ func TestAnUnreachableAgentSaysSo(t *testing.T) {
 	}
 }
 
+func TestAFailedTurnOnAnErrandsQuestionOrEndRelaysItAsTheSiteSaidIt(t *testing.T) {
+	r := newRig(t, openStore(t), func(int, *agentv1.StepRequest) (*agentv1.StepResponse, error) {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("the reply was not a valid action"))
+	})
+	r.hub.cfg.Agents["codex"] = client(filepath.Join(sockDir(t), "nobody.sock"))
+	r.linked(t, 41)
+	for _, name := range []string{"claude", "codex"} { // a step error, an unreachable agent
+		r.settings.set(name, true)
+		r.errands.wait(41, "question", 7)
+		r.hub.RunEvent(signins.RunEvent{Run: 41, Kind: "question", Text: "Pick a time", Options: []string{"10:00", "11:00"}, Wait: 7})
+		if got := r.channel.next(t); got != "Pick a time\n10:00\n11:00" {
+			t.Fatalf("%s: sent %q", name, got)
+		}
+		r.settle(t)
+		for _, kind := range []string{"done", "not_done", "failed", "stopped"} {
+			r.hub.RunEvent(signins.RunEvent{Run: 41, Kind: kind, Text: "the errand's words: " + kind})
+			if got := r.channel.next(t); got != "the errand's words: "+kind {
+				t.Fatalf("%s %s: sent %q", name, kind, got)
+			}
+			r.settle(t)
+		}
+	}
+	// An owner's message is still told the agent couldn't finish.
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "go")
+	if got := r.channel.next(t); got != couldNotFinish {
+		t.Fatalf("sent %q", got)
+	}
+}
+
 func TestTurnsOnOneConversationQueue(t *testing.T) {
 	var inFlight, most atomic.Int32
 	stored := make(chan struct{})

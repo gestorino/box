@@ -394,7 +394,7 @@ func (h *Hub) answer(ctx context.Context, c Conversation, e *agentv1.Event) bool
 		h.relayConfirm(ctx, c, ch, e.GetId(), x)
 		return true
 	}
-	return h.turn(ctx, c, e.GetId(), name, ch)
+	return h.turn(ctx, c, e, name, ch)
 }
 
 // relayConfirm sends the owner the errand's Confirm as the site said it, its options with it, and
@@ -440,13 +440,15 @@ func (h *Hub) errandLink(run int64) string {
 	return strings.TrimRight(h.cfg.ConsoleURL, "/") + "/errands/runs/" + strconv.FormatInt(run, 10)
 }
 
-// turn steps the agent on the event #taking until it says something or ends, running each tool it
-// calls, at most MaxTools; false when the hub's stop cut it short (nothing said: it runs again).
-func (h *Hub) turn(ctx context.Context, c Conversation, taking int64, name string, ch Channel) bool {
+// turn steps the agent on the event e until it says something or ends, running each tool it calls,
+// at most MaxTools; false when the hub's stop cut it short (nothing said: it runs again). A turn that
+// fails tells the owner what it could (failed).
+func (h *Hub) turn(ctx context.Context, c Conversation, e *agentv1.Event, name string, ch Channel) bool {
+	taking := e.GetId()
 	agent, ok := h.cfg.Agents[name]
 	if !ok {
 		slog.Error("converse: the chosen agent is not configured", "conversation", c.ID, "agent", name)
-		h.say(ctx, c, ch, couldNotFinish)
+		h.failed(ctx, c, ch, e)
 		return true
 	}
 	for tools := 0; ; {
@@ -455,14 +457,14 @@ func (h *Hub) turn(ctx context.Context, c Conversation, taking int64, name strin
 			if ctx.Err() != nil {
 				return false
 			}
-			h.say(ctx, c, ch, couldNotFinish)
+			h.failed(ctx, c, ch, e)
 			return true
 		}
 		switch a := resp.GetAction().(type) {
 		case *agentv1.StepResponse_ToolCall:
 			if tools == MaxTools {
 				slog.Warn("converse: a turn ran out of tool calls", "conversation", c.ID, "tools", MaxTools)
-				h.say(ctx, c, ch, couldNotFinish)
+				h.failed(ctx, c, ch, e)
 				return true
 			}
 			tools++
@@ -470,7 +472,7 @@ func (h *Hub) turn(ctx context.Context, c Conversation, taking int64, name strin
 				if ctx.Err() != nil {
 					return false
 				}
-				h.say(ctx, c, ch, couldNotFinish)
+				h.failed(ctx, c, ch, e)
 				return true
 			}
 		case *agentv1.StepResponse_Say:
@@ -484,9 +486,25 @@ func (h *Hub) turn(ctx context.Context, c Conversation, taking int64, name strin
 			return true
 		default:
 			slog.Error("converse: a step with no action", "conversation", c.ID)
-			h.say(ctx, c, ch, couldNotFinish)
+			h.failed(ctx, c, ch, e)
 			return true
 		}
+	}
+}
+
+// failed tells the owner what a failed turn on the event could not: an errand's question still
+// waiting, as the site asked it with its options, or an errand's end in the errand's own words, as a
+// Confirm is relayed; anything else, that the agent couldn't finish. A question told this way is
+// answered, as any is, only with one of its options or the owner's own message (answer_errand).
+func (h *Hub) failed(ctx context.Context, c Conversation, ch Channel, e *agentv1.Event) {
+	x := e.GetErrand()
+	switch {
+	case x.GetKind() == "question" && h.cfg.Tools.Waits(x.GetRun(), x.GetKind(), x.GetWait()):
+		h.say(ctx, c, ch, strings.Join(append([]string{x.GetText()}, x.GetOptions()...), "\n"))
+	case ends[x.GetKind()] && strings.TrimSpace(x.GetText()) != "":
+		h.say(ctx, c, ch, x.GetText())
+	default:
+		h.say(ctx, c, ch, couldNotFinish)
 	}
 }
 

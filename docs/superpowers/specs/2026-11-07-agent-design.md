@@ -89,7 +89,9 @@ codex", as two daemons, "so it can be configured separately and user can choose 
   says "I couldn't finish that, please try again".
 - **The loop is the engine's.** It calls a step, runs the tool, appends the result, and calls again,
   until a `say` or an `end`. That gives at most 8 tool calls per turn *(my call)*; past that the turn
-  ends with "I couldn't finish that, please try again".
+  ends with "I couldn't finish that, please try again". A turn that fails on an errand's question or
+  end (done, not done, failed, stopped) instead relays it as the errand said it, as a Confirm is: the
+  question with its options, or the end in the errand's own words.
 - **Signing in** is on Settings → AI, a row per agent:
   - **Claude:** `claude setup-token`, the documented headless path, which makes a token valid for a
     year from the owner's subscription. The daemon starts it and the console shows its link; the
