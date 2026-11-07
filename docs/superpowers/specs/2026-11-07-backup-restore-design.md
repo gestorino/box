@@ -52,8 +52,9 @@ the recovery code, the same backup can also be restored onto another box, its se
 - **`make backup STOP=1`** leaves the services stopped afterwards (*my call*), for the backup taken
   right before a wipe or a restore: what arrives after it (an SMS smsd would clear from the modem,
   WhatsApp and Telegram moving their sessions ahead) waits on the service's side instead of being
-  lost. They stay stopped through a reboot (masked, not only stopped), and the box records which
-  backup they were stopped for. Only a restore, or `make backup-resume`, starts them again; a deploy
+  lost. They stay stopped through a reboot: the box records which backup they were stopped for in a
+  marker file, and every Concierge unit has a start condition that refuses while it exists (not
+  `systemctl mask`, which refuses units whose files live in `/etc/systemd/system`). Only a restore, or `make backup-resume`, starts them again; a deploy
   refuses while they are. WhatsApp and Telegram keep a linked device that is offline for a while.
 - **On the Mac**: outside the repo (*my call*: `~/Backups/concierge/<date>-<version>.tar.zst`, the
   directory 0700, the file 0600). It holds personal data in the clear (archives, the profiles'
