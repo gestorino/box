@@ -13,6 +13,7 @@ import (
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	listenv1 "concierge/engine/internal/gen/listen/v1"
 	"concierge/engine/internal/listen"
@@ -55,9 +56,8 @@ func silent(t *testing.T, evs <-chan *listenv1.Event) {
 }
 
 func TestOnlyTheOwnersPrivateChatListens(t *testing.T) {
-	s, c, a := newService(t)
+	_, c, a := newService(t)
 	c.account = me
-	_ = s
 	evs := listening(t, a, &listenv1.ListenRequest{From: ownerPhone})
 
 	lid := types.NewJID("98765432109876", types.HiddenUserServer)
@@ -105,6 +105,22 @@ func TestHistoryBackfillPublishesNothing(t *testing.T) {
 	if msgs, _ := a.Messages(ctx, me, owner.String(), 10); len(msgs) != 1 {
 		t.Fatalf("history not stored: %+v", msgs)
 	}
+	if got, err := a.Since(ctx, time.Time{}); err != nil || len(got) != 0 {
+		t.Fatalf("history replayed: %v %v", got, err)
+	}
+	// A listener (re)opening with a since, as listen.Client does after a drop, replays none of it.
+	lctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv := listentest.Serve(t, NewListen(a, listen.NewHub(listen.MatchWhatsApp)))
+	re := listen.NewClient(srv.Socket).Listen(lctx, &listenv1.ListenRequest{From: ownerPhone, Since: timestamppb.New(time.Time{})})
+	select {
+	case e := <-re:
+		if e.GetCaughtUp() == nil {
+			t.Fatalf("replayed %v", e)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no caught_up")
+	}
 }
 
 func TestWhatsAppReplaysSince(t *testing.T) {
@@ -114,6 +130,7 @@ func TestWhatsAppReplaysSince(t *testing.T) {
 	in := func(id, chat string, fromMe bool, txt string) {
 		r := row(chat, id, txt, t0)
 		r.FromMe = fromMe
+		r.Live = true
 		if _, _, err := a.Save(ctx, r); err != nil {
 			t.Fatal(err)
 		}
@@ -121,6 +138,10 @@ func TestWhatsAppReplaysSince(t *testing.T) {
 	}
 	in("1", owner.String(), false, "before")
 	in("2", owner.String(), false, "first")
+	hist := row(owner.String(), "H", "synced", t0)
+	if _, _, err := a.Save(ctx, hist); err != nil { // a history row: stored, never live
+		t.Fatal(err)
+	}
 	in("3", owner.String(), true, "mine")
 	in("4", group.String(), false, "group")
 	in("5", "98765@lid", false, "lid")

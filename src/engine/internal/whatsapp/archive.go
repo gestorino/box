@@ -23,6 +23,7 @@ type Row struct {
 	SentAt                                      time.Time
 	Kind, Text, FileName                        string
 	Unread                                      bool // an incoming private message the owner has not opened
+	Live                                        bool // received live, not from a history sync: only these reach listeners
 }
 
 type Chat struct {
@@ -70,6 +71,8 @@ CREATE INDEX messages_unread ON messages (account, chat_jid) WHERE unread = 1;`,
 	// stored_at: when the box stored the row (listeners replay by it); rows from before keep ''.
 	`ALTER TABLE messages ADD COLUMN stored_at TEXT NOT NULL DEFAULT '';
 CREATE INDEX messages_stored ON messages (stored_at) WHERE stored_at <> '';`,
+	// live: the row arrived live, never by history sync; listeners replay only these.
+	`ALTER TABLE messages ADD COLUMN live INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // OpenArchive opens (creating if needed) the archive at path: WAL, and synchronous=FULL so a stored
@@ -100,9 +103,9 @@ func (a *Archive) Save(ctx context.Context, r Row) (inserted bool, rowid int64, 
 	}
 	defer tx.Rollback()
 	res, err := tx.ExecContext(ctx, `INSERT INTO messages
-		(account, chat_jid, id, sender_jid, sender_name, from_me, sent_at, kind, text, file_name, unread, stored_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`,
-		r.Account, r.ChatJID, r.ID, r.SenderJID, r.SenderName, r.FromMe, ts(r.SentAt), r.Kind, r.Text, r.FileName, r.Unread, ts(a.now()))
+		(account, chat_jid, id, sender_jid, sender_name, from_me, sent_at, kind, text, file_name, unread, stored_at, live)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`,
+		r.Account, r.ChatJID, r.ID, r.SenderJID, r.SenderName, r.FromMe, ts(r.SentAt), r.Kind, r.Text, r.FileName, r.Unread, ts(a.now()), r.Live)
 	if err != nil {
 		return false, 0, err
 	}

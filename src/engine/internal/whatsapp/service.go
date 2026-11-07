@@ -387,6 +387,7 @@ func (s *Service) message(ctx context.Context, e *events.Message) {
 			row.Unread = private(chat, self)
 		}
 	}
+	row.Live = true
 	inserted, rowid, err := s.archive.Save(ctx, row)
 	if err != nil {
 		slog.Error("whatsapp: storing a message", "chat", row.ChatJID, "id", row.ID, "err", err)

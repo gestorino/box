@@ -3,6 +3,7 @@ package whatsapp
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
@@ -46,20 +47,22 @@ func (a *Archive) publish(ctx context.Context, r Row, rowid int64) {
 	}
 	var stored string
 	if err := a.db.QueryRowContext(ctx, `SELECT stored_at FROM messages WHERE rowid = ?`, rowid).Scan(&stored); err != nil {
+		slog.Error("whatsapp: publishing a message", "id", rowid, "err", err)
 		return
 	}
 	at, err := time.Parse(time.RFC3339, stored)
 	if err != nil {
+		slog.Error("whatsapp: publishing a message", "id", rowid, "err", err)
 		return
 	}
 	a.hub.Publish(message(rowid, r.ChatJID, phone, r.Text, r.SentAt, at))
 }
 
-// Since are the incoming private text messages stored at or after since, oldest first. Rows
-// stored before stored_at existed have none and are never replayed.
+// Since are the incoming private text messages received live and stored at or after since, oldest first. Rows
+// received before the live flag existed are never replayed, nor is anything a history sync brought.
 func (a *Archive) Since(ctx context.Context, since time.Time) ([]*listenv1.Message, error) {
 	rows, err := a.db.QueryContext(ctx, `SELECT rowid, chat_jid, text, sent_at, stored_at FROM messages
-		WHERE from_me = 0 AND text <> '' AND stored_at <> '' AND stored_at >= ?
+		WHERE from_me = 0 AND live = 1 AND text <> '' AND stored_at >= ?
 		ORDER BY stored_at ASC, rowid ASC`, ts(since))
 	if err != nil {
 		return nil, err
