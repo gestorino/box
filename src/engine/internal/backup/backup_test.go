@@ -3,6 +3,7 @@ package backup
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -174,6 +175,31 @@ func TestResume(t *testing.T) {
 	// Resuming a box that was not stopped for a backup is not an error.
 	if err := Resume(&fakeSystem{}, root); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The marker and the recovery file must survive a power cut: the directory is synced once the
+// rename has put the file in it. Not parallel: it swaps syncDir.
+func TestWriteAtomicSyncsTheDirectory(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	var synced []string
+	real := syncDir
+	t.Cleanup(func() { syncDir = real })
+	syncDir = func(d string) error {
+		b, err := os.ReadFile(path)
+		synced = append(synced, d+" "+string(b)+" "+fmt.Sprint(err))
+		return real(d)
+	}
+	if err := writeAtomic(path, []byte("body")); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{dir + " body <nil>"}; !reflect.DeepEqual(synced, want) {
+		t.Fatalf("synced %q, want %q: the directory, once the file is in it", synced, want)
+	}
+	syncDir = func(string) error { return errors.New("sync refused") }
+	if err := writeAtomic(path, []byte("again")); err == nil || !strings.Contains(err.Error(), "sync refused") {
+		t.Fatalf("err = %v, want the directory's sync failure", err)
 	}
 }
 

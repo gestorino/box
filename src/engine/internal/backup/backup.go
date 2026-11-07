@@ -182,7 +182,8 @@ func removeMarker(root string) error {
 	return nil
 }
 
-// writeAtomic writes body to path, 0600: a temp file in path's directory, renamed over it.
+// writeAtomic writes body to path, 0600: a temp file in path's directory, synced, renamed over it,
+// then the directory synced, so the file is there after a power cut.
 func writeAtomic(path string, body []byte) error {
 	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
@@ -205,5 +206,24 @@ func writeAtomic(path string, body []byte) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(path))
+}
+
+// syncDir fsyncs a directory, making the renames in it durable. A variable for writeAtomic's test.
+var syncDir = func(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = d.Sync()
+	if cerr := d.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return fmt.Errorf("syncing %s: %w", dir, err)
+	}
+	return nil
 }
