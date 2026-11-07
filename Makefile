@@ -21,7 +21,7 @@ test-browser:
 test-browser-live:
 	cd src/browser && uv run --with pytest --with-editable . pytest -q -m live
 
-# Opt-in: one real Step through claudd and codexd, with the CLIs signed in on this computer
+# Opt-in: one real Step through claudd and codexd, with each daemon's home (CLAUDD_HOME, CODEXD_HOME) already signed in through that daemon
 # (`make test-agent-live ARGS=--record` saves the raw replies over the testdata). Not part of `check`.
 test-agent-live:
 	scripts/agent-live.sh $(ARGS)

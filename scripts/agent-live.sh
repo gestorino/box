@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # The opt-in live check of the owner's agents: builds claudd and codexd, starts each on a temp socket,
 # and sends one real Step ("say hello in one short sentence") through the agent contract, printing
-# each say and its usage. Never part of `make check`: it reaches the vendors with this computer's logins.
+# each say and its usage. Never part of `make check`: it reaches the vendors with the logins the daemons' homes hold.
 #
 #   scripts/agent-live.sh [--record]
 #
-# CLAUDD_HOME / CODEXD_HOME name each daemon's home (the CLI's login lives there); unset, a temp
-# directory, which has no login, so that agent is skipped. --record saves each CLI's raw reply over
+# CLAUDD_HOME / CODEXD_HOME name each daemon's home, which must already be signed in through that daemon
+# (its LoginStart/LoginFinish: run the daemon and sign in from the console's AI tab, or keep a home from an
+# earlier sign-in); unset, a temp directory, which has no login, so that agent is skipped.
+# MODEL_CLAUDE / MODEL_CODEX override each daemon's default model. --record saves each CLI's raw reply over
 # src/engine/internal/agent/{claude,codex}/testdata/. No token is ever printed.
 set -euo pipefail
 
@@ -55,9 +57,9 @@ if [ "$record" = 1 ]; then
   codex_bin="$work/codex-shim"
 fi
 
-"$work/claudd" -home "$claude_home" -claude "$claude_bin" -listen "$work/c.sock" 2>"$work/claudd.log" &
+"$work/claudd" -home "$claude_home" ${MODEL_CLAUDE:+-model "$MODEL_CLAUDE"} -claude "$claude_bin" -listen "$work/c.sock" 2>"$work/claudd.log" &
 pids+=($!)
-"$work/codexd" -home "$codex_home" -codex "$codex_bin" -listen "$work/x.sock" 2>"$work/codexd.log" &
+"$work/codexd" -home "$codex_home" ${MODEL_CODEX:+-model "$MODEL_CODEX"} -codex "$codex_bin" -listen "$work/x.sock" 2>"$work/codexd.log" &
 pids+=($!)
 for s in c x; do
   for _ in $(seq 50); do [ -S "$work/$s.sock" ] && break; sleep 0.1; done

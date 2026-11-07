@@ -26,7 +26,7 @@ make test-browser-live     # opt-in: real Chromium against the loopback fixture;
 make check-ui              # UI: npm ci + tsc + vite build (src/ui)
 make run                   # engine on 127.0.0.1:8080 with the built UI, a dev worker (socket and profiles under $TMPDIR/concierge-dev/worker) and a dev secretd (key under $TMPDIR/concierge-dev/secretd)
 make deploy                # build + ship to the box with Ansible (ansible/, a private repo: its README.md)
-make test-agent-live       # opt-in: one real Step through claudd and codexd, the CLIs signed in on this computer (ARGS=--record saves their raw replies as testdata)
+make test-agent-live       # opt-in: one real Step through claudd and codexd, each daemon's home (CLAUDD_HOME, CODEXD_HOME) already signed in through that daemon (ARGS=--record saves their raw replies as testdata)
 make test-box              # opt-in: the per-run screen (Xvnc, openbox, tint2, websockify, Chrome) on the box, over SSH ($CONCIERGE_BOX)
 make dist V=… R=…          # the release archive (scripts/dist.sh); make test-dist tests it
 make release               # cut the next minor release locally (below); pushes nothing
@@ -207,7 +207,7 @@ docs/superpowers/  current design docs (specs/); implementation plans (plans/) a
   "secrets unavailable" when secretd can't delete it, nothing changed, never forced past), and places no call or check without it (409; secretd unreachable: 502 "secrets unavailable"). **Voice's setup check is two-way only**:
   `internal/realtime` (below) holds the call while calld streams the card both ways (`arecord`/
   `aplay`), and calld — never the model — judges each spoken answer (`calls/spoken.go`: number words
-  in en/pt/ru/es, the last number counts). calld may open internet sockets, and so may claudd and codexd, each limited to its vendor's API (the engine's own calls, OpenRouter's key check, are named beside them). What the box heard is stored
+  in en/pt/ru/es, the last number counts). calld may open internet sockets, and so may claudd and codexd, each limited to its vendor's API (they reach only their vendor's API; the engine itself also reaches OpenRouter, for the key check). What the box heard is stored
   on the call (`calls.heard`), never the audio. Retention is hostd's (`settings.db`, read-only
   socket for the daemons, `internal/hostsettings` is their client). The engine forwards
   `/api/v1/sms/*`, `/api/v1/calls` and its call, and `/api/v1/settings/*` (hostd). Design:
@@ -236,7 +236,7 @@ docs/superpowers/  current design docs (specs/); implementation plans (plans/) a
   `docs/superpowers/specs/2026-11-07-agent-design.md`.
 - **Conversations** — `internal/converse/`: the owner talks to their agent, and the agent answers, on WhatsApp.
   The hub keeps a conversation per owner chat (the store is the engine's `-agent-db`; empty runs no agent and no
-  WhatsApp listener), steps the chosen agent with the last 60 events and runs its tools (at most 8 a turn: the box's
+  WhatsApp listener; with `-claude-socket`, `-codex-socket`, `-time-zone` (IANA, derived from the box when unset) and `-console-url`, the link in a human-check message), steps the chosen agent with the last 60 events and runs its tools (at most 8 a turn: the box's
   accounts and the card actions as errands), and closes a conversation 2 h after its last event with no errand
   running. **The front door is the Contacts phone only**: a request counts only from a live message in a private WhatsApp
   chat whose JID is the owner's Contacts phone (the engine's own sender check, never the model's; groups and
