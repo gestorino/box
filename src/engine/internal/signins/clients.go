@@ -114,6 +114,28 @@ func (h *HostdClient) Owner(ctx context.Context) (Owner, error) {
 	return Owner{FirstName: out.FirstName, LastName: out.LastName, Phone: out.Phone, ContactPhone: out.Contacts.Phone}, nil
 }
 
+// AgentStates is each agent's connector state in hostd's `/connectors` (not_added, setting_up or
+// added), by name.
+func (h *HostdClient) AgentStates(ctx context.Context) (map[string]string, error) {
+	var out struct {
+		Connectors []struct {
+			Name  string `json:"name"`
+			State string `json:"state"`
+			Kind  string `json:"kind"`
+		} `json:"connectors"`
+	}
+	if err := h.c.get(ctx, "/connectors", &out); err != nil {
+		return nil, err
+	}
+	states := map[string]string{}
+	for _, c := range out.Connectors {
+		if c.Kind == "agent" {
+			states[c.Name] = c.State
+		}
+	}
+	return states, nil
+}
+
 // AgentSettings is hostd's `/settings/agent`: the chosen agent ("" for none) and whether the owner
 // answers on WhatsApp.
 func (h *HostdClient) AgentSettings(ctx context.Context) (agent string, whatsapp bool, err error) {

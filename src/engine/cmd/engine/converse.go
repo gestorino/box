@@ -75,8 +75,12 @@ func startConverse(ctx context.Context, c converseConfig, svc *signins.Service, 
 			agents[name] = agentv1connect.NewAgentServiceClient(&http.Client{Transport: h2c.Transport(socket)}, "http://agent")
 		}
 	}
+	var states converse.AgentStates // hostd's connectors: an agent not added is not signed in, not down
+	if c.HostdSocket != "" {
+		states = signins.NewHostdClient(c.HostdSocket)
+	}
 	if c.DB == "" {
-		return converse.NewHandler(nil, agents), func() {}, nil
+		return converse.NewHandler(nil, agents, states), func() {}, nil
 	}
 	if _, err := time.LoadLocation(c.TimeZone); err != nil {
 		return nil, nil, fmt.Errorf("-time-zone %q: %w", c.TimeZone, err)
@@ -106,7 +110,7 @@ func startConverse(ctx context.Context, c converseConfig, svc *signins.Service, 
 		defer wg.Done()
 		converse.ListenWhatsApp(ctx, listen.NewClient(c.WhatsAppSocket), hub, settings)
 	}()
-	return converse.NewHandler(store, agents), sync.OnceFunc(func() {
+	return converse.NewHandler(store, agents, states), sync.OnceFunc(func() {
 		wg.Wait()
 		hub.Close()
 		store.Close()

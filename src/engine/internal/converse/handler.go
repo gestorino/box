@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -23,16 +24,28 @@ var AgentNames = []string{"claude", "codex"}
 const (
 	statusTimeout = 4 * time.Second
 	loginTimeout  = 60 * time.Second // starting a login runs the CLI
+	// finishTimeout outlasts a device sign-in's own wait (the CLI's 15 min for the owner to enter the
+	// code), so the daemon ends it, not this request.
+	finishTimeout = 16 * time.Minute
 	firstWordsMax = 80
 )
+
+// AgentStates is each agent's connector state in hostd (not_added, setting_up or added).
+type AgentStates interface {
+	AgentStates(ctx context.Context) (map[string]string, error)
+}
 
 // NewHandler is the console's API for the owner's agent: the agents' sign-in under /api/v1/agents,
 // the conversations under /api/v1/conversations, and the agents' connector check (GET
 // /api/v1/agents/{name}/check, which the engine asks in-process: the console's mux does not route it).
 // agents holds the clients of the agents whose socket is set; store is nil without -agent-db, and the
-// conversations then answer 503.
-func NewHandler(store *Store, agents map[string]agentv1connect.AgentServiceClient) http.Handler {
-	h := &handler{store: store, agents: agents}
+// conversations then answer 503; states is hostd's connectors (nil: no state is said).
+func NewHandler(store *Store, agents map[string]agentv1connect.AgentServiceClient, states AgentStates) http.Handler {
+	return (&handler{store: store, agents: agents, states: states, needsCode: map[string]bool{},
+		loginTimeout: loginTimeout, finishTimeout: finishTimeout}).routes()
+}
+
+func (h *handler) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/agents", h.list)
 	mux.HandleFunc("GET /api/v1/agents/{name}/check", h.check)
@@ -47,9 +60,19 @@ func NewHandler(store *Store, agents map[string]agentv1connect.AgentServiceClien
 type handler struct {
 	store  *Store
 	agents map[string]agentv1connect.AgentServiceClient
+	states AgentStates
+
+	// needsCode is, per agent, whether the sign-in it started last takes a code the owner types; an
+	// agent with none started takes one.
+	mu        sync.Mutex
+	needsCode map[string]bool
+
+	loginTimeout, finishTimeout time.Duration
 }
 
-// AgentView is one agent as the console sees it.
+// AgentView is one agent as the console sees it. State is its connector's in hostd (not_added,
+// setting_up or added; "" when hostd can't say): an agent not added runs no daemon, so it is not
+// reachable, and that is no fault.
 type AgentView struct {
 	Name       string `json:"name"`
 	SignedIn   bool   `json:"signed_in"`
@@ -57,6 +80,7 @@ type AgentView struct {
 	CLIVersion string `json:"cli_version"`
 	Model      string `json:"model"`
 	Reachable  bool   `json:"reachable"`
+	State      string `json:"state"`
 }
 
 func (h *handler) status(ctx context.Context, name string) (*agentv1.StatusResponse, error) {
@@ -81,12 +105,24 @@ func (h *handler) list(w http.ResponseWriter, r *http.Request) {
 			defer func() { done <- struct{}{} }()
 			out[i] = AgentView{Name: name}
 			if s, err := h.status(r.Context(), name); err == nil {
-				out[i] = AgentView{name, s.GetSignedIn(), s.GetAccount(), s.GetCliVersion(), s.GetModel(), true}
+				out[i] = AgentView{name, s.GetSignedIn(), s.GetAccount(), s.GetCliVersion(), s.GetModel(), true, ""}
 			}
 		}()
 	}
+	var states map[string]string
+	if h.states != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), statusTimeout)
+		var err error
+		if states, err = h.states.AgentStates(ctx); err != nil {
+			slog.Warn("converse: reading the agents' connectors", "err", err)
+		}
+		cancel()
+	}
 	for range AgentNames {
 		<-done
+	}
+	for i := range out {
+		out[i].State = states[out[i].Name]
 	}
 	reply(w, http.StatusOK, out)
 }
@@ -114,16 +150,22 @@ func (h *handler) login(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), loginTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), h.loginTimeout)
 	defer cancel()
 	res, err := c.LoginStart(ctx, connect.NewRequest(&agentv1.LoginStartRequest{}))
 	if err != nil {
 		fail(w, name, "login", err)
 		return
 	}
+	h.mu.Lock()
+	h.needsCode[name] = res.Msg.GetNeedsCode()
+	h.mu.Unlock()
 	reply(w, http.StatusOK, map[string]any{"url": res.Msg.GetUrl(), "code": res.Msg.GetCode(), "needs_code": res.Msg.GetNeedsCode()})
 }
 
+// finish ends the sign-in the agent started: with the owner's code, or, for a sign-in that takes none
+// (a device flow, the code entered on the vendor's page), by waiting for the CLI to have the login,
+// as long as the CLI itself waits.
 func (h *handler) finish(w http.ResponseWriter, r *http.Request) {
 	c, name, ok := h.agent(w, r)
 	if !ok {
@@ -134,11 +176,14 @@ func (h *handler) finish(w http.ResponseWriter, r *http.Request) {
 	}
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
 	dec.DisallowUnknownFields()
-	if dec.Decode(&body) != nil || strings.TrimSpace(body.Code) == "" {
+	h.mu.Lock()
+	needsCode, started := h.needsCode[name]
+	h.mu.Unlock()
+	if dec.Decode(&body) != nil || ((needsCode || !started) && strings.TrimSpace(body.Code) == "") {
 		reply(w, http.StatusBadRequest, map[string]string{"error": "a code is needed"})
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), loginTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), h.finishTimeout)
 	defer cancel()
 	if _, err := c.LoginFinish(ctx, connect.NewRequest(&agentv1.LoginFinishRequest{Code: strings.TrimSpace(body.Code)})); err != nil {
 		fail(w, name, "login finish", err)
@@ -152,7 +197,7 @@ func (h *handler) logout(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), loginTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), h.loginTimeout)
 	defer cancel()
 	if _, err := c.Logout(ctx, connect.NewRequest(&agentv1.LogoutRequest{})); err != nil {
 		fail(w, name, "logout", err)

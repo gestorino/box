@@ -28,6 +28,10 @@ type loginAgent struct {
 	finished  []string
 	loggedOut bool
 	startErr  error
+	// deviceFlow is a login with no code to type (Codex's): its finish waits for the CLI, which takes
+	// finishTakes.
+	deviceFlow  bool
+	finishTakes time.Duration
 }
 
 func (a *loginAgent) Status(context.Context, *connect.Request[agentv1.StatusRequest]) (*connect.Response[agentv1.StatusResponse], error) {
@@ -42,10 +46,18 @@ func (a *loginAgent) LoginStart(context.Context, *connect.Request[agentv1.LoginS
 	if a.startErr != nil {
 		return nil, a.startErr
 	}
-	return connect.NewResponse(&agentv1.LoginStartResponse{Url: "https://login.example/x?state=secret", Code: "AB-12", NeedsCode: true}), nil
+	return connect.NewResponse(&agentv1.LoginStartResponse{Url: "https://login.example/x?state=secret", Code: "AB-12", NeedsCode: !a.deviceFlow}), nil
 }
 
-func (a *loginAgent) LoginFinish(_ context.Context, r *connect.Request[agentv1.LoginFinishRequest]) (*connect.Response[agentv1.LoginFinishResponse], error) {
+func (a *loginAgent) LoginFinish(ctx context.Context, r *connect.Request[agentv1.LoginFinishRequest]) (*connect.Response[agentv1.LoginFinishResponse], error) {
+	a.mu.Lock()
+	takes := a.finishTakes
+	a.mu.Unlock()
+	select {
+	case <-time.After(takes):
+	case <-ctx.Done():
+		return nil, connect.NewError(connect.CodeCanceled, ctx.Err())
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.finished = append(a.finished, r.Msg.GetCode())
@@ -80,9 +92,18 @@ func do(h http.Handler, method, path, body string) *httptest.ResponseRecorder {
 	return rec
 }
 
+// fakeStates is hostd's connectors, as the agents list reads them.
+type fakeStates struct {
+	states map[string]string
+	err    error
+}
+
+func (f fakeStates) AgentStates(context.Context) (map[string]string, error) { return f.states, f.err }
+
 func TestAgentsListReportsEach(t *testing.T) {
 	a := &loginAgent{signedIn: true}
-	h := NewHandler(nil, map[string]agentv1connect.AgentServiceClient{"claude": serveLogin(t, a)})
+	h := NewHandler(nil, map[string]agentv1connect.AgentServiceClient{"claude": serveLogin(t, a)},
+		fakeStates{states: map[string]string{"claude": "added", "codex": "not_added"}})
 	rec := do(h, "GET", "/api/v1/agents", "")
 	if rec.Code != 200 {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
@@ -91,18 +112,70 @@ func TestAgentsListReportsEach(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	want := []AgentView{{"claude", true, "me@example.org", "1.2.3", "m1", true}, {Name: "codex"}}
+	want := []AgentView{{"claude", true, "me@example.org", "1.2.3", "m1", true, "added"}, {Name: "codex", State: "not_added"}}
 	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
-	if !strings.Contains(rec.Body.String(), `"reachable":false`) {
+	if !strings.Contains(rec.Body.String(), `"reachable":false`) || !strings.Contains(rec.Body.String(), `"state":"not_added"`) {
 		t.Fatalf("body %s", rec.Body)
+	}
+}
+
+func TestAgentsListWithHostdAwayStillAnswers(t *testing.T) {
+	a := &loginAgent{signedIn: true}
+	h := NewHandler(nil, map[string]agentv1connect.AgentServiceClient{"claude": serveLogin(t, a)},
+		fakeStates{err: context.DeadlineExceeded})
+	rec := do(h, "GET", "/api/v1/agents", "")
+	var got []AgentView
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != 200 {
+		t.Fatalf("%d %s %v", rec.Code, rec.Body, err)
+	}
+	if got[0].State != "" || !got[0].Reachable || got[1].State != "" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestADeviceSignInFinishesWithNoCodeAndOutlivesTheLoginTimeout(t *testing.T) {
+	codex := &loginAgent{deviceFlow: true, finishTakes: 300 * time.Millisecond} // the owner enters the code meanwhile
+	claude := &loginAgent{}
+	h := (&handler{agents: map[string]agentv1connect.AgentServiceClient{"claude": serveLogin(t, claude), "codex": serveLogin(t, codex)},
+		needsCode: map[string]bool{}, loginTimeout: 50 * time.Millisecond, finishTimeout: 5 * time.Second}).routes()
+	if rec := do(h, "POST", "/api/v1/agents/codex/login", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"needs_code":false`) {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if rec := do(h, "POST", "/api/v1/agents/codex/login/finish", `{"code":""}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("a device sign-in's finish: %d %s", rec.Code, rec.Body)
+	}
+	if len(codex.finished) != 1 || codex.finished[0] != "" {
+		t.Fatalf("finished %q", codex.finished)
+	}
+	// Claude's sign-in takes the owner's code: none is refused before it reaches the daemon.
+	if rec := do(h, "POST", "/api/v1/agents/claude/login", ""); rec.Code != 200 {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if rec := do(h, "POST", "/api/v1/agents/claude/login/finish", `{"code":" "}`); rec.Code != http.StatusBadRequest ||
+		!strings.Contains(rec.Body.String(), "a code is needed") || len(claude.finished) != 0 {
+		t.Fatalf("%d %s %q", rec.Code, rec.Body, claude.finished)
+	}
+}
+
+func TestAFinishWithNoSignInStartedNeedsACode(t *testing.T) {
+	codex := &loginAgent{deviceFlow: true}
+	h := NewHandler(nil, map[string]agentv1connect.AgentServiceClient{"codex": serveLogin(t, codex)}, nil)
+	if rec := do(h, "POST", "/api/v1/agents/codex/login/finish", `{"code":""}`); rec.Code != http.StatusBadRequest || len(codex.finished) != 0 {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestTheFinishWaitsAsLongAsTheCLIsOwnSignIn(t *testing.T) {
+	if finishTimeout <= 15*time.Minute {
+		t.Fatalf("the finish gives up at %v, before the CLI's 15 min", finishTimeout)
 	}
 }
 
 func TestAgentCheckIsPassedOnlyWhenSignedIn(t *testing.T) {
 	a := &loginAgent{}
-	h := NewHandler(nil, map[string]agentv1connect.AgentServiceClient{"claude": serveLogin(t, a)})
+	h := NewHandler(nil, map[string]agentv1connect.AgentServiceClient{"claude": serveLogin(t, a)}, nil)
 	if rec := do(h, "GET", "/api/v1/agents/claude/check", ""); rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != `{"state":"pending"}` {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
@@ -119,7 +192,7 @@ func TestAgentCheckIsPassedOnlyWhenSignedIn(t *testing.T) {
 
 func TestLoginProxiesStartAndFinish(t *testing.T) {
 	a := &loginAgent{}
-	h := NewHandler(nil, map[string]agentv1connect.AgentServiceClient{"claude": serveLogin(t, a)})
+	h := NewHandler(nil, map[string]agentv1connect.AgentServiceClient{"claude": serveLogin(t, a)}, nil)
 	rec := do(h, "POST", "/api/v1/agents/claude/login", "")
 	if rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != `{"code":"AB-12","needs_code":true,"url":"https://login.example/x?state=secret"}` {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
@@ -143,7 +216,7 @@ func TestLoginProxiesStartAndFinish(t *testing.T) {
 
 func TestLoginErrorsAreMappedAndPlain(t *testing.T) {
 	a := &loginAgent{startErr: connect.NewError(connect.CodeFailedPrecondition, context.DeadlineExceeded)}
-	h := NewHandler(nil, map[string]agentv1connect.AgentServiceClient{"claude": serveLogin(t, a)})
+	h := NewHandler(nil, map[string]agentv1connect.AgentServiceClient{"claude": serveLogin(t, a)}, nil)
 	if rec := do(h, "POST", "/api/v1/agents/claude/login", ""); rec.Code != http.StatusConflict {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
@@ -156,7 +229,7 @@ func TestLoginErrorsAreMappedAndPlain(t *testing.T) {
 }
 
 func TestUnknownAgentIs404(t *testing.T) {
-	h := NewHandler(nil, nil)
+	h := NewHandler(nil, nil, nil)
 	for _, p := range []string{"login", "login/finish", "logout"} {
 		if rec := do(h, "POST", "/api/v1/agents/gemini/"+p, `{"code":"1"}`); rec.Code != http.StatusNotFound {
 			t.Fatalf("%s: %d", p, rec.Code)
@@ -188,7 +261,7 @@ func TestConversationListAndOne(t *testing.T) {
 	if err := s.AddUsage(context.Background(), cv, &agentv1.Usage{Model: "m", CostUsd: 0.5, CostKnown: true, InputTokens: 10, OutputTokens: 3}); err != nil {
 		t.Fatal(err)
 	}
-	h := NewHandler(s, nil)
+	h := NewHandler(s, nil, nil)
 
 	rec := do(h, "GET", "/api/v1/conversations", "")
 	var list []ConversationView
@@ -238,7 +311,7 @@ func TestConversationListAndOne(t *testing.T) {
 }
 
 func TestConversationsWithNoHubAre503(t *testing.T) {
-	h := NewHandler(nil, nil)
+	h := NewHandler(nil, nil, nil)
 	for _, p := range []string{"/api/v1/conversations", "/api/v1/conversations/1"} {
 		rec := do(h, "GET", p, "")
 		if rec.Code != http.StatusServiceUnavailable || strings.TrimSpace(rec.Body.String()) != `{"error":"agent unavailable"}` {
