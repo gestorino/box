@@ -243,7 +243,7 @@ FAKE_SSH_FAIL=" restore -from" run box-restore.sh "$work/same.tar.gz"
 [ $code -ne 0 ] && all_removed && ok "restore: a failing box restore removes the box's copy" || fail "restore: failing restore cleanup" "code $code: $(cat "$LOG")"
 export FAKE_VERSION_WANTED=0.5.0
 FAKE_SSH_FAIL=" restore -from" run box-restore.sh "$work/pub.tar.gz"
-case $out in *"The box now runs the backup's build (0.5.0, bbb2222)"*"make backup-resume"*"make deploy"*) ok "restore: a failed restore after install-build says the box runs the backup's build, held down" ;; *) fail "restore: failed restore after install-build says so" "$out" ;; esac
+case $out in *"The box now runs the backup's build (0.5.0, bbb2222)"*"held down"*"make restore again"*) ok "restore: a failed restore after install-build says the box runs the backup's build, held down" ;; *) fail "restore: failed restore after install-build says so" "$out" ;; esac
 [ "$(logged 'install-build -from [^ ]* -for 0123456789abcdef0123456789abcdef$')" = 1 ] && ok "restore: install-build is for the backup's ID" || fail "restore: install-build -for the backup's ID" "$(cat "$LOG")"
 FAKE_SSH_FAIL=" restore -from" run box-restore.sh "$work/same.tar.gz"
 case $out in *"The box now runs"*) fail "restore: no such note when no build was installed" "$out" ;; *) ok "restore: no such note when no build was installed" ;; esac

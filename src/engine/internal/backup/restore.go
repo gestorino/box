@@ -429,7 +429,7 @@ func InstallBuild(sys System, root, archive, forID string) (leftovers []string, 
 		return nil, fmt.Errorf("installing the build: %w (the services are stopped: make backup-resume starts them)", err)
 	}
 	if err := sys.SyncVenv(filepath.Join(opt, "browser")); err != nil {
-		return left, fmt.Errorf("the build is installed, but rebuilding the worker's venv failed: %w", err)
+		return left, fmt.Errorf("the build is installed, but rebuilding the worker's venv failed: %w (the services are held down by the marker)", err)
 	}
 	return left, nil
 }

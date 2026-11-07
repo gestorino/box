@@ -87,7 +87,8 @@ the recovery code, the same backup can also be restored onto another box, its se
 - **A backup older than what the box has run since is refused** unless forced (`FORCE=1`; *my
   call*): restoring it loses what arrived in between for good, and puts WhatsApp's and Telegram's
   sessions back behind what their servers have seen (WhatsApp may then need relinking). The restore
-  goes ahead unforced only onto a box stopped by `STOP=1` for that very backup; onto a fresh install
+  goes ahead unforced only onto a box stopped for that very backup (by `STOP=1`, or by installing
+  its build for a forced restore that then did not finish, so running it again needs no FORCE); onto a fresh install
   (the later USB test) it is forced too (*my call*: telling a fresh box from a used one is not worth
   its own rules). Forced, it says what may be lost.
 - **Same box**: the master key is put back as it was; its TPM opens it. No code needed.

@@ -48,7 +48,7 @@ cleanup() {
 	rm -rf "$tmp"
 	if [ -n "$installed" ] && [ -z "$restored" ] && [ $status -ne 0 ]; then
 		echo "The box now runs the backup's build ($version, $revision) but the restore did not finish; its services are held down." \
-			"Run make restore again, or make backup-resume and then make deploy to return it to main." >&2
+			"Run make restore again to finish it (make backup-resume would start the backup's build on the box's newer data)." >&2
 	fi
 }
 trap cleanup EXIT
