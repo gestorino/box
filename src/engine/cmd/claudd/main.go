@@ -42,6 +42,6 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return agent.Serve(ctx, "claudd", claude.NewRunner(*bin, *home, *model), claude.NewLogin(*bin, *home), *listen,
-		"version", version, "revision", revision, "model", *model)
+	return agent.Serve(ctx, "claudd", claude.NewRunner(*bin, *home, *model), claude.NewLogin(*bin, *home), *model, *listen,
+		"version", version, "revision", revision)
 }

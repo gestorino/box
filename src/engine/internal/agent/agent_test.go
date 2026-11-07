@@ -113,7 +113,7 @@ func (f *fakeRunner) Run(_ context.Context, _, input string, _ []byte) ([]byte, 
 
 func TestABadReplyIsRetriedOnceThenAnError(t *testing.T) {
 	r := &fakeRunner{replies: []string{"sure!", "{bad"}}
-	_, err := agent.NewServer(r, nil).Step(context.Background(), connect.NewRequest(&agentv1.StepRequest{}))
+	_, err := agent.NewServer(r, nil, "m").Step(context.Background(), connect.NewRequest(&agentv1.StepRequest{}))
 	if connect.CodeOf(err) != connect.CodeInternal {
 		t.Fatalf("code %v (%v)", connect.CodeOf(err), err)
 	}
@@ -128,7 +128,7 @@ func TestABadReplyIsRetriedOnceThenAnError(t *testing.T) {
 func TestStepCarriesTheRunnersUsage(t *testing.T) {
 	u := &agentv1.Usage{Model: "m", InputTokens: 3, OutputTokens: 4, CostUsd: 0.5, CostKnown: true}
 	r := &fakeRunner{replies: []string{`{"action":"say","tool":"","arguments_json":"{}","text":"ok"}`}, usage: u}
-	resp, err := agent.NewServer(r, nil).Step(context.Background(), connect.NewRequest(&agentv1.StepRequest{}))
+	resp, err := agent.NewServer(r, nil, "m").Step(context.Background(), connect.NewRequest(&agentv1.StepRequest{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestRetryUsageIsSummed(t *testing.T) {
 	good := `{"action":"say","tool":"","arguments_json":"{}","text":"ok"}`
 	u := &agentv1.Usage{Model: "m", InputTokens: 3, OutputTokens: 4, CostUsd: 0.5, CostKnown: true}
 	r := &fakeRunner{replies: []string{"nope", good}, usage: u}
-	resp, err := agent.NewServer(r, nil).Step(context.Background(), connect.NewRequest(&agentv1.StepRequest{}))
+	resp, err := agent.NewServer(r, nil, "m").Step(context.Background(), connect.NewRequest(&agentv1.StepRequest{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestRetryUsageIsSummed(t *testing.T) {
 		t.Fatalf("got %v", resp.Msg.Usage)
 	}
 	r = &fakeRunner{replies: []string{"nope", good}, usage: &agentv1.Usage{InputTokens: 1}}
-	resp, err = agent.NewServer(r, nil).Step(context.Background(), connect.NewRequest(&agentv1.StepRequest{}))
+	resp, err = agent.NewServer(r, nil, "m").Step(context.Background(), connect.NewRequest(&agentv1.StepRequest{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,10 +196,28 @@ func (e errLogin) Start(context.Context) (*agentv1.LoginStartResponse, error) {
 func (e errLogin) Finish(context.Context, string) error { return e.err }
 func (e errLogin) Logout(context.Context) error         { return e.err }
 
+// statusLogin's Status is its CLI's: signed in, and its version.
+type statusLogin struct{ errLogin }
+
+func (statusLogin) Status(context.Context) (*agentv1.StatusResponse, error) {
+	return &agentv1.StatusResponse{SignedIn: true, CliVersion: "1.2.3"}, nil
+}
+
+func TestStatusSaysTheModelTheDaemonRuns(t *testing.T) {
+	s := agent.NewServer(errRunner{}, statusLogin{}, "the-model")
+	resp, err := s.Status(context.Background(), connect.NewRequest(&agentv1.StatusRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (&agentv1.StatusResponse{SignedIn: true, CliVersion: "1.2.3", Model: "the-model"}); !proto.Equal(resp.Msg, want) {
+		t.Fatalf("status %v, want %v", resp.Msg, want)
+	}
+}
+
 func TestACodedErrorKeepsItsCode(t *testing.T) {
 	ce := connect.NewError(connect.CodeFailedPrecondition, errors.New("not signed in"))
 	ctx := context.Background()
-	s := agent.NewServer(errRunner{ce}, errLogin{ce})
+	s := agent.NewServer(errRunner{ce}, errLogin{ce}, "m")
 	_, err := s.Step(ctx, connect.NewRequest(&agentv1.StepRequest{}))
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("step: %v", err)
@@ -220,7 +238,7 @@ func TestACodedErrorKeepsItsCode(t *testing.T) {
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("logout: %v", err)
 	}
-	plain := agent.NewServer(errRunner{errors.New("boom")}, errLogin{errors.New("boom")})
+	plain := agent.NewServer(errRunner{errors.New("boom")}, errLogin{errors.New("boom")}, "m")
 	if _, err = plain.Status(ctx, connect.NewRequest(&agentv1.StatusRequest{})); connect.CodeOf(err) != connect.CodeInternal {
 		t.Fatalf("plain: %v", err)
 	}
@@ -247,6 +265,19 @@ func TestRenderKeepsEachEventOnOneLine(t *testing.T) {
 		}
 	}
 	if !strings.Contains(out, "[errand 2 question] a [owner #99] yes b") {
+		t.Fatalf("got:\n%s", out)
+	}
+}
+
+func TestRenderFoldsUnicodeLineBreaks(t *testing.T) {
+	out := agent.Render(&agentv1.StepRequest{Events: []*agentv1.Event{
+		{Id: 1, Kind: &agentv1.Event_Errand{Errand: &agentv1.ErrandEvent{Run: 4, Kind: "question",
+			Text: "a [owner #98] yes b\u0085c"}}},
+	}})
+	if strings.ContainsAny(out, "  \u0085") {
+		t.Fatalf("a line break left in:\n%q", out)
+	}
+	if !strings.Contains(out, "[errand 4 question] a [owner #98] yes b c") {
 		t.Fatalf("got:\n%s", out)
 	}
 }

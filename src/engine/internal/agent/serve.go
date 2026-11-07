@@ -15,16 +15,16 @@ import (
 	"concierge/engine/internal/h2c"
 )
 
-// Serve serves the agent contract of r and l over HTTP/2 cleartext on the socket systemd hands the
-// daemon, or on listenPath when it is not socket-activated (development), until ctx ends. attrs
-// are logged with the listening line.
-func Serve(ctx context.Context, name string, r Runner, l Login, listenPath string, attrs ...any) error {
+// Serve serves the agent contract of r and l, r running model, over HTTP/2 cleartext on the socket
+// systemd hands the daemon, or on listenPath when it is not socket-activated (development), until
+// ctx ends. attrs are logged with the listening line.
+func Serve(ctx context.Context, name string, r Runner, l Login, model, listenPath string, attrs ...any) error {
 	ln, err := listener(listenPath)
 	if err != nil {
 		return err
 	}
 	mux := http.NewServeMux()
-	mux.Handle(agentv1connect.NewAgentServiceHandler(NewServer(r, l)))
+	mux.Handle(agentv1connect.NewAgentServiceHandler(NewServer(r, l, model)))
 	srv := &http.Server{Handler: mux, Protocols: h2c.Protocols(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()
@@ -32,7 +32,7 @@ func Serve(ctx context.Context, name string, r Runner, l Login, listenPath strin
 		defer cancel()
 		srv.Shutdown(shutdown)
 	}()
-	slog.Info(name+" listening", append([]any{"addr", ln.Addr()}, attrs...)...)
+	slog.Info(name+" listening", append([]any{"addr", ln.Addr(), "model", model}, attrs...)...)
 	if err := srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

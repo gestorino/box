@@ -25,14 +25,15 @@ type Login interface {
 	Logout(ctx context.Context) error
 }
 
-// NewServer serves the agent contract with r and l.
-func NewServer(r Runner, l Login) agentv1connect.AgentServiceHandler {
-	return &server{r: r, l: l}
+// NewServer serves the agent contract with r and l; model is the model r runs, which Status says.
+func NewServer(r Runner, l Login, model string) agentv1connect.AgentServiceHandler {
+	return &server{r: r, l: l, model: model}
 }
 
 type server struct {
-	r Runner
-	l Login
+	r     Runner
+	l     Login
+	model string
 }
 
 // Step runs the model; a reply that does not parse is retried once with the error told. Nothing
@@ -67,6 +68,7 @@ func (s *server) Status(ctx context.Context, _ *connect.Request[agentv1.StatusRe
 	if err != nil {
 		return nil, coded(err)
 	}
+	r.Model = s.model
 	return connect.NewResponse(r), nil
 }
 
