@@ -33,7 +33,7 @@ func TestSameMessageStoredOnce(t *testing.T) {
 	a, _ := openTemp(t)
 	r := row("ana@s.whatsapp.net", "M1", "hi", t0)
 	for range 2 { // history sync, then live delivery
-		if err := a.Save(ctx, r); err != nil {
+		if _, _, err := a.Save(ctx, r); err != nil {
 			t.Fatal(err)
 		}
 	}

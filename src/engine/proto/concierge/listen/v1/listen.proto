@@ -1,5 +1,5 @@
 // The listen contract: a connector pushes each stored incoming message that matches a listener's
-// filter. emaild and smsd implement it; the engine calls it.
+// filter. emaild, smsd and whatsappd implement it; the engine calls it.
 syntax = "proto3";
 
 package concierge.listen.v1;
@@ -15,12 +15,13 @@ service ListenService {
 // ListenRequest is the filter. Only incoming messages match.
 message ListenRequest {
   // Who sent it. Email: the sender's address, exactly, case-insensitive. SMS: the sender number
-  // or ID contains it, case-insensitive. Empty matches any sender.
+  // or ID contains it, case-insensitive. WhatsApp: the sender's phone, digits only, exactly (other
+  // characters in the request are ignored). Empty matches any sender.
   string from = 1;
   // Email only, and required: one of the email's To addresses, exactly, case-insensitive.
-  // SMS: must be empty (InvalidArgument otherwise).
+  // SMS and WhatsApp: must be empty (InvalidArgument otherwise).
   string to = 2;
-  // Email only: case-insensitive substring of the subject. SMS: must be empty.
+  // Email only: case-insensitive substring of the subject. SMS and WhatsApp: must be empty.
   string subject_contains = 3;
   // Unset: live only. Set: replay matching messages stored at or after it, then live. The zero
   // time replays the whole archive.
@@ -47,6 +48,7 @@ message Message {
   oneof body {
     Email email = 3;
     SMS sms = 4;
+    WhatsApp whatsapp = 5;
   }
 }
 
@@ -73,4 +75,15 @@ message SMS {
   string number = 1;
   string text = 2;
   string sent_at = 3;
+}
+
+// WhatsApp is an incoming text message of a private chat, live only: whatsappd publishes what it
+// receives, never history it backfills.
+message WhatsApp {
+  // The chat's JID.
+  string chat = 1;
+  // The chat's phone, digits only.
+  string phone = 2;
+  string text = 3;
+  google.protobuf.Timestamp sent_at = 4;
 }

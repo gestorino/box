@@ -79,7 +79,7 @@ func TestSendBadChat(t *testing.T) {
 
 func TestSendRoute(t *testing.T) {
 	s, c, _ := connectedService(t)
-	h := NewHandler(s)
+	h := NewHandler(s, NewListen(s.archive, nil))
 	if rec := call(h, "POST", "/whatsapp/send", `{"chat":"+351911111111","text":"hi"}`); rec.Code != http.StatusNoContent {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}

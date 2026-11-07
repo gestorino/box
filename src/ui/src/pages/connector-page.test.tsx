@@ -14,7 +14,7 @@ const only = (added: string[], settingUp: string[] = []) => ({
     connectors: ['email', 'voice', 'sms', 'whatsapp', 'telegram'].map((name) => ({
       name,
       state: added.includes(name) ? 'added' : settingUp.includes(name) ? 'setting_up' : 'not_added',
-      needs_sim: name === 'voice' || name === 'sms',
+      kind: 'channel', needs_sim: name === 'voice' || name === 'sms',
     })),
   },
 })

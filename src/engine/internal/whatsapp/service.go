@@ -272,8 +272,9 @@ func (s *Service) Send(ctx context.Context, chat, text string) error {
 	if err != nil {
 		return err
 	}
-	return s.archive.Save(ctx, Row{Account: account, ChatJID: jid.String(), ID: id, SenderJID: account,
+	_, _, err = s.archive.Save(ctx, Row{Account: account, ChatJID: jid.String(), ID: id, SenderJID: account,
 		FromMe: true, SentAt: at, Kind: "text", Text: text})
+	return err
 }
 
 func sendTarget(chat string) (types.JID, bool) {
@@ -386,9 +387,14 @@ func (s *Service) message(ctx context.Context, e *events.Message) {
 			row.Unread = private(chat, self)
 		}
 	}
-	if err := s.archive.Save(ctx, row); err != nil {
+	row.Live = true
+	inserted, rowid, err := s.archive.Save(ctx, row)
+	if err != nil {
 		slog.Error("whatsapp: storing a message", "chat", row.ChatJID, "id", row.ID, "err", err)
 		return
+	}
+	if inserted {
+		s.archive.publish(ctx, row, rowid) // live only: history() never publishes
 	}
 	s.name(ctx, account, row.ChatJID, e)
 }
@@ -427,7 +433,7 @@ func (s *Service) history(ctx context.Context, h *events.HistorySync) {
 	}
 	rows, names := FromHistory(account, h, s.c.ParseWebMessage, s.pnOf)
 	for _, r := range rows {
-		if err := s.archive.Save(ctx, r); err != nil {
+		if _, _, err := s.archive.Save(ctx, r); err != nil {
 			slog.Error("whatsapp: storing history", "chat", r.ChatJID, "err", err)
 		}
 	}

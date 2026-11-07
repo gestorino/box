@@ -76,7 +76,7 @@ describe('routes', () => {
 
   const connectors = (added: string[]) => ({
     sim: true,
-    connectors: ['email', 'voice', 'sms', 'whatsapp', 'telegram'].map((name) => ({ name, state: added.includes(name) ? 'added' : 'not_added', needs_sim: name === 'voice' || name === 'sms' })),
+    connectors: ['email', 'voice', 'sms', 'whatsapp', 'telegram'].map((name) => ({ name, state: added.includes(name) ? 'added' : 'not_added', kind: 'channel', needs_sim: name === 'voice' || name === 'sms' })),
   })
   const group = (label: string) => screen.getByText(label).closest('[data-sidebar="group"]') as HTMLElement
   const sections = (g: HTMLElement) =>
@@ -86,7 +86,7 @@ describe('routes', () => {
     stubFetch({ 'GET /api/v1/connectors': { body: connectors(['sms', 'email', 'telegram']) } })
     render(<RouterProvider router={createMemoryRouter(routes, { initialEntries: ['/'] })} />)
     expect(await screen.findByRole('link', { name: 'SMS' })).toBeInTheDocument()
-    expect(sections(group('Console'))).toEqual([['Overview', 'Connections', 'Accounts', 'Errands', 'Appointments', 'Logs']])
+    expect(sections(group('Console'))).toEqual([['Overview', 'Connections', 'Accounts', 'Errands', 'Agent', 'Appointments', 'Logs']])
     expect(sections(group('System'))).toEqual([['Account', 'Settings', 'Health']])
     expect(sections(group('Connectors'))).toEqual([['Email'], ['SMS'], ['Telegram']])
     expect(group('Connectors').querySelectorAll('[data-sidebar="separator"]')).toHaveLength(2)

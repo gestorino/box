@@ -47,6 +47,10 @@ type Config struct {
 	// HasKey says the OpenRouter key is stored: every run's model needs it, so none starts without
 	// it, nor while it can't be read (secretd unavailable). Nil is no key.
 	HasKey func(context.Context) (bool, error)
+	// Events is told what an agent run waits on the owner for, and how an errand ended (RunEvent).
+	// It must return at once (the receiver queues): it runs on the run's own goroutine, with no
+	// lock held. Nil tells nothing.
+	Events func(RunEvent)
 }
 
 type Service struct {
@@ -69,6 +73,8 @@ type Service struct {
 	current map[string]int64
 	// agents holds each agent run in flight by run id: its stop, and the question it waits on.
 	agents map[int64]*agentRun
+	// waitSeq numbers the questions the runs wait on (Question.Wait).
+	waitSeq int64
 	// runs counts the background runs in flight.
 	runs sync.WaitGroup
 }

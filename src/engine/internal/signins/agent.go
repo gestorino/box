@@ -29,10 +29,13 @@ var ErrBadAnswer = errors.New("an answer needs to say something")
 // questionWait is how long a question waits on the owner before the run ends.
 const questionWait = time.Hour
 
-// Question is what an agent run asks the owner: the page's question and the choices it offers.
+// Question is what an agent run asks the owner: the page's question and the choices it offers. Wait
+// names this one wait, unique in the service: AnswerWait answers it only while it is the run's
+// current one.
 type Question struct {
 	Text    string   `json:"text"`
 	Options []string `json:"options"`
+	Wait    int64    `json:"-"`
 }
 
 // Served is one model and provider's share of an agent run: calls and OpenRouter's billed cost.
@@ -248,7 +251,9 @@ func (s *Service) agentAsk(e *agentRun, log *runLog) browser.Ask {
 		case "email":
 			return s.nextEmail(ctx, e, log)
 		case "human_check":
-			done, ok := s.humanCheck(ctx, e.site, log)
+			done, ok := s.humanCheck(ctx, e.site, log, func() {
+				s.emit(RunEvent{Run: log.id, Kind: "human_check", Text: q.Why})
+			})
 			if !ok && ctx.Err() == nil {
 				// Given up or timed out: the run ends.
 				s.mu.Lock()
@@ -263,7 +268,9 @@ func (s *Service) agentAsk(e *agentRun, log *runLog) browser.Ask {
 		}
 		answer := make(chan string, 1)
 		s.mu.Lock()
-		e.question, e.answer, e.until = &Question{Text: q.Why, Options: q.Options}, answer, s.cfg.Now().Add(questionWait)
+		s.waitSeq++
+		wait := s.waitSeq
+		e.question, e.answer, e.until = &Question{Text: q.Why, Options: q.Options, Wait: wait}, answer, s.cfg.Now().Add(questionWait)
 		s.mu.Unlock()
 		defer func() {
 			s.mu.Lock()
@@ -271,6 +278,7 @@ func (s *Service) agentAsk(e *agentRun, log *runLog) browser.Ask {
 			s.mu.Unlock()
 		}()
 		log.line("question", q.Why) // its choices are the question's own, shown with it while it waits
+		s.emit(RunEvent{Run: log.id, Kind: questionKind(q.Why), Text: q.Why, Options: q.Options, Wait: wait})
 		select {
 		case a := <-answer:
 			log.line("reply", a)
@@ -288,7 +296,21 @@ func (s *Service) agentAsk(e *agentRun, log *runLog) browser.Ask {
 }
 
 // Answer gives the owner's answer to the question an agent run waits on.
-func (s *Service) Answer(run int64, answer string) error {
+func (s *Service) Answer(run int64, answer string) error { return s.answer(run, 0, answer) }
+
+// ErrWaitChanged refuses an answer to a wait that is no longer the run's current one.
+var ErrWaitChanged = errors.New("the errand now waits on something else")
+
+// AnswerWait answers the run's question only while wait (Question.Wait) is the one it waits on.
+func (s *Service) AnswerWait(run, wait int64, answer string) error {
+	if wait == 0 {
+		return ErrWaitChanged
+	}
+	return s.answer(run, wait, answer)
+}
+
+// answer answers the run's current question; wait, when not 0, must be its wait.
+func (s *Service) answer(run, wait int64, answer string) error {
 	answer = strings.TrimSpace(answer)
 	if answer == "" {
 		return ErrBadAnswer
@@ -298,6 +320,9 @@ func (s *Service) Answer(run int64, answer string) error {
 	e := s.agents[run]
 	if e == nil || e.answer == nil {
 		return ErrNotWaiting
+	}
+	if wait != 0 && e.question.Wait != wait {
+		return ErrWaitChanged
 	}
 	e.answer <- answer
 	e.answer = nil

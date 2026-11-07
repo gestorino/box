@@ -95,6 +95,7 @@ func (s *Service) errand(ctx context.Context, e Errand, effect string) (int64, e
 			if err == nil && ended == "" && ctx.Err() == nil {
 				s.applyEffect(ctx, site, run, effect, e.Appointment, session != "", reply)
 			}
+			s.emit(endEvent(run, reply, err, ended, ctx.Err() != nil))
 			return nil
 		}})
 }

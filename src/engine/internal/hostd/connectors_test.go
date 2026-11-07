@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -79,7 +80,7 @@ func TestConnectorsListsFiveInOrderNoneAdded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Connector{{Name: "email", State: "not_added"}, {Name: "voice", State: "not_added", NeedsSIM: true}, {Name: "sms", State: "not_added", NeedsSIM: true}, {Name: "whatsapp", State: "not_added"}, {Name: "telegram", State: "not_added"}}
+	want := []Connector{{Name: "email", State: "not_added", Kind: "channel"}, {Name: "voice", State: "not_added", NeedsSIM: true, Kind: "channel"}, {Name: "sms", State: "not_added", NeedsSIM: true, Kind: "channel"}, {Name: "whatsapp", State: "not_added", Kind: "channel"}, {Name: "telegram", State: "not_added", Kind: "channel"}, {Name: "claude", State: "not_added", Kind: "agent"}, {Name: "codex", State: "not_added", Kind: "agent"}}
 	if !c.SIM || !reflect.DeepEqual(c.Connectors, want) {
 		t.Fatalf("%+v", c)
 	}
@@ -182,6 +183,8 @@ func TestReconcileStartsAddedStopsTheRest(t *testing.T) {
 		"start concierge-sms.socket", "start concierge-sms.service",
 		"stop concierge-whatsapp.service", "stop concierge-whatsapp.socket",
 		"stop concierge-telegram.service", "stop concierge-telegram.socket",
+		"stop concierge-claude.service", "stop concierge-claude.socket",
+		"stop concierge-codex.service", "stop concierge-codex.socket",
 	}
 	if got := units.Calls(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("%v", got)
@@ -194,7 +197,7 @@ func TestReconcileSurvivesAFailingUnit(t *testing.T) {
 	st.Begin(ctx, "telegram")
 	units.fail["start concierge-sms.service"] = errors.New("bad binary")
 	s.Reconcile(ctx)
-	if got := units.Calls(); got[len(got)-1] != "start concierge-telegram.service" {
+	if got := units.Calls(); !slices.Contains(got, "start concierge-telegram.service") {
 		t.Fatalf("stopped at the failure: %v", got)
 	}
 }
@@ -203,7 +206,7 @@ func TestConnectorRoutes(t *testing.T) {
 	s, units, mm, st := connectorRig(t)
 	h := NewHandler(s, st)
 	rec := call(h, "GET", "/connectors", "")
-	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Body.String(), `{"sim":true,"connectors":[{"name":"email","state":"not_added","needs_sim":false}`) {
+	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Body.String(), `{"sim":true,"connectors":[{"name":"email","state":"not_added","needs_sim":false,"kind":"channel"}`) {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
 	if rec := call(h, "POST", "/connectors/sms", ""); rec.Code != http.StatusNoContent {
@@ -313,10 +316,93 @@ func TestVerifiedRoute(t *testing.T) {
 	if rec := call(h, "POST", "/connectors/sms/verified", ""); rec.Code != http.StatusNoContent {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
-	if rec := call(h, "GET", "/connectors", ""); !strings.Contains(rec.Body.String(), `{"name":"sms","state":"added","needs_sim":true}`) {
+	if rec := call(h, "GET", "/connectors", ""); !strings.Contains(rec.Body.String(), `{"name":"sms","state":"added","needs_sim":true,"kind":"channel"}`) {
 		t.Fatal(rec.Body)
 	}
 	if rec := call(h, "POST", "/connectors/fax/verified", ""); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown: %d", rec.Code)
+	}
+}
+
+func TestAgentsAreUnitsOfTheirOwnKind(t *testing.T) {
+	s, units, _, _ := connectorRig(t)
+	c, err := s.Connectors(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	for _, x := range c.Connectors {
+		kinds[x.Name] = x.Kind
+		if x.Kind == "agent" && x.NeedsSIM {
+			t.Fatalf("%s needs a SIM", x.Name)
+		}
+	}
+	want := map[string]string{"email": "channel", "voice": "channel", "sms": "channel", "whatsapp": "channel", "telegram": "channel", "claude": "agent", "codex": "agent"}
+	if !reflect.DeepEqual(kinds, want) {
+		t.Fatalf("%v", kinds)
+	}
+	if err := s.AddConnector(ctx, "claude"); err != nil {
+		t.Fatal(err)
+	}
+	if got := units.Calls(); !reflect.DeepEqual(got, []string{"start concierge-claude.socket", "start concierge-claude.service"}) {
+		t.Fatalf("%v", got)
+	}
+	if stateOf(t, s, "claude") != "setting_up" {
+		t.Fatal(stateOf(t, s, "claude"))
+	}
+	if err := s.VerifyConnector(ctx, "claude"); err != nil || stateOf(t, s, "claude") != "added" {
+		t.Fatal(err)
+	}
+	if err := s.RemoveConnector(ctx, "claude"); err != nil {
+		t.Fatal(err)
+	}
+	if got := units.Calls(); got[len(got)-1] != "stop concierge-claude.socket" || stateOf(t, s, "claude") != "not_added" {
+		t.Fatalf("%v", got)
+	}
+}
+
+func TestTheChosenAgentIsClearedWhenItsUnitIsRemoved(t *testing.T) {
+	s, _, _, st := connectorRig(t)
+	if err := s.AddConnector(ctx, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetAgent(ctx, Agent{Agent: "codex", Answer: AgentAnswer{WhatsApp: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RemoveConnector(ctx, "claude"); err != nil { // another agent: the choice stays
+		t.Fatal(err)
+	}
+	if a, _ := st.Agent(ctx); a.Agent != "codex" {
+		t.Fatalf("%+v", a)
+	}
+	if err := s.RemoveConnector(ctx, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	a, err := st.Agent(ctx)
+	if err != nil || a.Agent != "" || !a.Answer.WhatsApp {
+		t.Fatalf("%+v %v", a, err)
+	}
+}
+
+func TestRemovingWhatsAppSwitchesOffTheAgentsAnswerThere(t *testing.T) {
+	s, _, _, st := connectorRig(t)
+	if err := s.AddConnector(ctx, "whatsapp"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetAgent(ctx, Agent{Agent: "claude", Answer: AgentAnswer{WhatsApp: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RemoveConnector(ctx, "telegram"); err != nil { // another channel: the switch stays
+		t.Fatal(err)
+	}
+	if a, _ := st.Agent(ctx); !a.Answer.WhatsApp {
+		t.Fatalf("%+v", a)
+	}
+	if err := s.RemoveConnector(ctx, "whatsapp"); err != nil {
+		t.Fatal(err)
+	}
+	a, err := st.Agent(ctx)
+	if err != nil || a.Agent != "claude" || a.Answer.WhatsApp {
+		t.Fatalf("%+v %v", a, err)
 	}
 }

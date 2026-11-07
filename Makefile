@@ -1,9 +1,9 @@
 # The merge bar: `make check` must be green before every commit.
-.PHONY: check generate test-engine test-browser test-browser-live test-box check-ui test-release test-box-backup test-dist dist release run deploy box-browser backup restore backup-resume recovery-code
+.PHONY: check generate test-engine test-browser test-browser-live test-agent-live test-box check-ui test-release test-box-backup test-dist dist release run deploy box-browser backup restore backup-resume recovery-code
 
 check: test-engine test-browser check-ui test-release test-box-backup
 
-# Regenerate the listen contract's Go code (offline: the generators are pinned `tool`s in their own
+# Regenerate the listen and agent contracts' Go code (offline: the generators are pinned `tool`s in their own
 # module, src/engine/tools, so they never move the versions the engine's binaries ship).
 generate:
 	cd src/engine && go tool -modfile=tools/go.mod buf generate
@@ -20,6 +20,11 @@ test-browser:
 # Opt-in: real Chromium against the loopback fixture. Not part of `check`.
 test-browser-live:
 	cd src/browser && uv run --with pytest --with-editable . pytest -q -m live
+
+# Opt-in: one real Step through claudd and codexd, with each daemon's home (CLAUDD_HOME, CODEXD_HOME) already signed in through that daemon
+# (`make test-agent-live ARGS=--record` saves the raw replies over the testdata). Not part of `check`.
+test-agent-live:
+	scripts/agent-live.sh $(ARGS)
 
 # Opt-in: the screen (Xvnc, openbox, websockify, Chrome) on the real box, over SSH. Not part of `check`.
 # The box is $CONCIERGE_BOX (its ssh target; no default: the owner exports it as CLAUDE.local.md writes it).

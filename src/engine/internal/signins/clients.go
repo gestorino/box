@@ -22,7 +22,8 @@ type UplinkReader interface {
 }
 
 // Owner is the Account's names and phone, the only fields of it read here.
-type Owner struct{ FirstName, LastName, Phone string }
+// ContactPhone is the owner's own phone (Contacts), where the box reaches them, not the box's SIM.
+type Owner struct{ FirstName, LastName, Phone, ContactPhone string }
 
 // OwnerReader is hostd's Account: the owner's names for a form, and the phone, the box's SIM, the number sign-ups give.
 type OwnerReader interface {
@@ -103,9 +104,49 @@ func (h *HostdClient) Owner(ctx context.Context) (Owner, error) {
 		FirstName string `json:"owner_first_name"`
 		LastName  string `json:"owner_last_name"`
 		Phone     string `json:"phone"`
+		Contacts  struct {
+			Phone string `json:"phone"`
+		} `json:"contacts"`
 	}
 	if err := h.c.get(ctx, "/settings/account", &out); err != nil {
 		return Owner{}, err
 	}
-	return Owner{FirstName: out.FirstName, LastName: out.LastName, Phone: out.Phone}, nil
+	return Owner{FirstName: out.FirstName, LastName: out.LastName, Phone: out.Phone, ContactPhone: out.Contacts.Phone}, nil
+}
+
+// AgentStates is each agent's connector state in hostd's `/connectors` (not_added, setting_up or
+// added), by name.
+func (h *HostdClient) AgentStates(ctx context.Context) (map[string]string, error) {
+	var out struct {
+		Connectors []struct {
+			Name  string `json:"name"`
+			State string `json:"state"`
+			Kind  string `json:"kind"`
+		} `json:"connectors"`
+	}
+	if err := h.c.get(ctx, "/connectors", &out); err != nil {
+		return nil, err
+	}
+	states := map[string]string{}
+	for _, c := range out.Connectors {
+		if c.Kind == "agent" {
+			states[c.Name] = c.State
+		}
+	}
+	return states, nil
+}
+
+// AgentSettings is hostd's `/settings/agent`: the chosen agent ("" for none) and whether the owner
+// answers on WhatsApp.
+func (h *HostdClient) AgentSettings(ctx context.Context) (agent string, whatsapp bool, err error) {
+	var out struct {
+		Agent  string `json:"agent"`
+		Answer struct {
+			WhatsApp bool `json:"whatsapp"`
+		} `json:"answer"`
+	}
+	if err := h.c.get(ctx, "/settings/agent", &out); err != nil {
+		return "", false, err
+	}
+	return out.Agent, out.Answer.WhatsApp, nil
 }

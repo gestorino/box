@@ -71,7 +71,7 @@ func (s *Service) Register(ctx context.Context, key string) (int64, error) {
 	return s.launch(ctx, agentStart{key: key, kind: "register", url: c.Link, action: registerAction, session: key,
 		domains: []string{key, "*." + key}, values: values, email: a.Email, done: "registered", notDone: "not registered",
 		finish: func(ctx context.Context, run int64, reply browser.Message, err error, ended string) func() {
-			return s.registered(ctx, a, run, reply, err, ended)
+			return s.registrationEnded(ctx, a, run, reply, err, ended)
 		}})
 }
 
@@ -133,13 +133,13 @@ func (s *Service) startAccount(ctx context.Context, key, mailbox string, owner O
 		"full_name": owner.FirstName + " " + owner.LastName, "phone": owner.Phone, "secret:password": password}, a, nil
 }
 
-// registered records how a registration ended. Only the model's word that it was done counts: then
+// registrationEnded records how a registration ended. Only the model's word that it was done counts: then
 // the account is the box's, and a sign-in check follows once the site is free (its model sign-in
 // leaves the account's first footprint). Cut short (Stop, the engine or the worker going), nothing is known of the
 // site's side: the account stays interrupted with its profile, and Register starts over. Otherwise
 // there is no account: its row goes and the worker forgets its profile (a bot wall's cookie in it
 // would block the next try).
-func (s *Service) registered(ctx context.Context, a Account, run int64, reply browser.Message, err error, ended string) (next func()) {
+func (s *Service) registrationEnded(ctx context.Context, a Account, run int64, reply browser.Message, err error, ended string) (next func()) {
 	ctx = context.WithoutCancel(ctx)
 	a.Run = run
 	switch {

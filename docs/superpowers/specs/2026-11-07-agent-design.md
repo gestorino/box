@@ -89,7 +89,9 @@ codex", as two daemons, "so it can be configured separately and user can choose 
   says "I couldn't finish that, please try again".
 - **The loop is the engine's.** It calls a step, runs the tool, appends the result, and calls again,
   until a `say` or an `end`. That gives at most 8 tool calls per turn *(my call)*; past that the turn
-  ends with "I couldn't finish that, please try again".
+  ends with "I couldn't finish that, please try again". A turn that fails on an errand's question or
+  end (done, not done, failed, stopped) instead relays it as the errand said it, as a Confirm is: the
+  question with its options, or the end in the errand's own words.
 - **Signing in** is on Settings → AI, a row per agent:
   - **Claude:** `claude setup-token`, the documented headless path, which makes a token valid for a
     year from the owner's subscription. The daemon starts it and the console shows its link; the
@@ -137,7 +139,9 @@ codex", as two daemons, "so it can be configured separately and user can choose 
 ### 2. The engine: the hub
 
 - **It hears the owner** through each channel daemon. A request counts only when it comes from:
-  - **WhatsApp:** a private chat whose JID is the owner's Contacts phone.
+  - **WhatsApp:** a private chat whose JID is the owner's Contacts phone, a message sent within the
+    last 10 minutes. The listener resumes after the last message the hub took in (kept in agent.db),
+    so one sent while the engine was down still counts, once: each is taken in by its id.
   - **Telegram:** a private chat with the user whose phone is the owner's Contacts phone. *The
     builder resolves the user from the phone with gotd (`contacts.resolvePhone` or importing the
     contact), and keeps the user ID, re-resolving when Contacts change.*
@@ -171,8 +175,10 @@ codex", as two daemons, "so it can be configured separately and user can choose 
   - **What reaches the errand:** the owner's own words, verbatim, become the errand's answer.
   - **Once only:** a Confirm is answered once. A second answer, or one naming an earlier event, is
     refused.
-  - **Other questions:** the agent may answer the site's other questions only with what the owner said
-    in this conversation ("for 4"). Otherwise it asks the owner.
+  - **Other questions:** the agent never passes words of its own to an errand. It answers the site's
+    other questions only with one of the question's own options, word for word, or by naming the
+    owner's message that answers it (`owner_event`), whose words go verbatim. A question with no
+    options takes only `owner_event`. Otherwise it asks the owner.
 - **Kept** in the engine's store: `conversations` (channel, thread, state, times, total cost) and
   `conversation_events`. The history the agent sees is bounded *(my call: the last 60 events)*.
 - **Google's results live only as long as the conversation** *(builder check, my call)*. A
@@ -225,7 +231,7 @@ Each tool is a plain call into the engine's own services. Every gate stays where
 | `find_place {query}` | Google Places Text Search (New): up to 5 candidates, each with name, address, rating and Google's place ID | Not kept beyond the conversation. The engine credits Google ("from Google Maps") wherever a candidate is shown or said. |
 | `find_routes {place_id, name, address, action}` | Where the box can do the action for that place: see below | Takes the name and address the agent got from `find_place`, so there is no second paid call. |
 | `start_errand {link, action, details}` | The existing errand on a link within one of the box's accounts, with one of that card's actions and its details | The card action's effect applies, so a booking becomes an appointment, as from the console. |
-| `answer_errand {run, answer \| owner_event}` | Answers the errand's waiting question; a Confirm only with `owner_event` (above) | |
+| `answer_errand {run, answer \| owner_event}` | Answers the errand's waiting question: `answer` only one of its options; a Confirm, or a question with no options, only with `owner_event` (above) | |
 | `stop_errand {run}` | Stops it | |
 | `errand_status {run}` | Its state, the waiting question with its options, its final report | |
 | `list_appointments {}` | The box's appointments, upcoming first | |

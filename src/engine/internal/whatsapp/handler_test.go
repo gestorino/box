@@ -23,7 +23,7 @@ func call(h http.Handler, method, path, body string) *httptest.ResponseRecorder 
 func TestHandlerLinkQRAndStatus(t *testing.T) {
 	s, c, _ := newService(t)
 	s.Start(ctx)
-	h := NewHandler(s)
+	h := NewHandler(s, NewListen(s.archive, nil))
 
 	if rec := call(h, "GET", "/whatsapp/status", ""); strings.TrimSpace(rec.Body.String()) != `{"state":"unlinked"}` {
 		t.Fatalf("status %s", rec.Body)
@@ -56,7 +56,7 @@ func TestHandlerUnlinkReadsAndValidation(t *testing.T) {
 	s.Start(ctx)
 	c.emit(&events.Connected{})
 	a.Save(ctx, row(ana.String(), "1", "hi", t0))
-	h := NewHandler(s)
+	h := NewHandler(s, NewListen(s.archive, nil))
 
 	if rec := call(h, "GET", "/whatsapp/chats", ""); !strings.Contains(rec.Body.String(), `"last_text":"hi"`) {
 		t.Fatalf("chats %s", rec.Body)
@@ -89,7 +89,7 @@ func TestRemoveRoute(t *testing.T) {
 	c.account = me
 	c.logoutErr = errors.New("offline")
 	s.Start(ctx)
-	h := NewHandler(s)
+	h := NewHandler(s, NewListen(s.archive, nil))
 	if rec := call(h, "POST", "/whatsapp/remove", `{"delete_data":false,"force":false}`); rec.Code != http.StatusFailedDependency ||
 		strings.TrimSpace(rec.Body.String()) != `{"error":"couldn't reach WhatsApp to log out"}` {
 		t.Fatalf("%d %s", rec.Code, rec.Body)

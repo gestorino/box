@@ -8,7 +8,7 @@ import (
 	"slices"
 )
 
-// The box's channels, each a daemon behind a socket-activated systemd unit pair. Only added ones
+// The box's channels and agents, each a daemon behind a socket-activated systemd unit pair. Only added ones
 // run: hostd starts and stops them (a polkit rule grants exactly these units' start and stop) and
 // reconciles them against the list on every start. Design:
 // docs/superpowers/specs/2026-10-28-connectors-design.md.
@@ -24,12 +24,13 @@ type Units interface {
 	Stop(ctx context.Context, unit string) error
 }
 
-// Connector is one channel and its state: not_added, setting_up (its daemon runs; the owner hasn't
+// Connector is one channel or agent and its state: not_added, setting_up (its daemon runs; the owner hasn't
 // answered its check yet) or added (verified: it is in the sidebar).
 type Connector struct {
 	Name     string `json:"name"`
 	State    string `json:"state"`
 	NeedsSIM bool   `json:"needs_sim"`
+	Kind     string `json:"kind"` // channel or agent
 }
 
 type Connectors struct {
@@ -41,14 +42,17 @@ type Connectors struct {
 type connectorUnit struct {
 	name, unit string
 	needsSIM   bool
+	kind       string
 }
 
 var connectors = []connectorUnit{
-	{"email", "concierge-email", false},
-	{"voice", "concierge-calls", true},
-	{"sms", "concierge-sms", true},
-	{"whatsapp", "concierge-whatsapp", false},
-	{"telegram", "concierge-telegram", false},
+	{"email", "concierge-email", false, "channel"},
+	{"voice", "concierge-calls", true, "channel"},
+	{"sms", "concierge-sms", true, "channel"},
+	{"whatsapp", "concierge-whatsapp", false, "channel"},
+	{"telegram", "concierge-telegram", false, "channel"},
+	{"claude", "concierge-claude", false, "agent"},
+	{"codex", "concierge-codex", false, "agent"},
 }
 
 func unitOf(name string) (unit string, needsSIM bool, err error) {
@@ -76,7 +80,7 @@ func (s *Service) Connectors(ctx context.Context) (Connectors, error) {
 		if state == "" {
 			state = "not_added"
 		}
-		out.Connectors = append(out.Connectors, Connector{Name: c.name, State: state, NeedsSIM: c.needsSIM})
+		out.Connectors = append(out.Connectors, Connector{Name: c.name, State: state, NeedsSIM: c.needsSIM, Kind: c.kind})
 	}
 	return out, nil
 }

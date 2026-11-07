@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"concierge/engine/internal/dbmigrate"
+	"concierge/engine/internal/listen"
 
 	_ "modernc.org/sqlite"
 )
@@ -22,6 +23,7 @@ type Row struct {
 	SentAt                                      time.Time
 	Kind, Text, FileName                        string
 	Unread                                      bool // an incoming private message the owner has not opened
+	Live                                        bool // received live, not from a history sync: only these reach listeners
 }
 
 type Chat struct {
@@ -45,7 +47,11 @@ type Msg struct {
 	FileName   string `json:"file_name,omitempty"`
 }
 
-type Archive struct{ db *sql.DB }
+type Archive struct {
+	db  *sql.DB
+	now func() time.Time
+	hub *listen.Hub // set before the service runs; nil publishes nowhere
+}
 
 // migrations[v] brings archive.db from version v to v+1. Messages stored before unread existed start read.
 var migrations = []string{`
@@ -62,6 +68,11 @@ CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL);`,
 	`ALTER TABLE messages ADD COLUMN unread INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE messages ADD COLUMN mark_pending INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX messages_unread ON messages (account, chat_jid) WHERE unread = 1;`,
+	// stored_at: when the box stored the row (listeners replay by it); rows from before keep ''.
+	`ALTER TABLE messages ADD COLUMN stored_at TEXT NOT NULL DEFAULT '';
+CREATE INDEX messages_stored ON messages (stored_at) WHERE stored_at <> '';`,
+	// live: the row arrived live, never by history sync; listeners replay only these.
+	`ALTER TABLE messages ADD COLUMN live INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // OpenArchive opens (creating if needed) the archive at path: WAL, and synchronous=FULL so a stored
@@ -76,7 +87,7 @@ func OpenArchive(path string) (*Archive, error) {
 		db.Close()
 		return nil, fmt.Errorf("archive schema: %w", err)
 	}
-	return &Archive{db: db}, nil
+	return &Archive{db: db, now: time.Now}, nil
 }
 
 func (a *Archive) Close() error { return a.db.Close() }
@@ -84,25 +95,33 @@ func (a *Archive) Close() error { return a.db.Close() }
 func ts(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
 // Save stores a message once (history sync and live delivery can both bring it) and moves its chat's
-// last_at forward.
-func (a *Archive) Save(ctx context.Context, r Row) error {
+// last_at forward. inserted says it was new, rowid is then its row (0 when it was already stored).
+func (a *Archive) Save(ctx context.Context, r Row) (inserted bool, rowid int64, err error) {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return false, 0, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO messages
-		(account, chat_jid, id, sender_jid, sender_name, from_me, sent_at, kind, text, file_name, unread)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`,
-		r.Account, r.ChatJID, r.ID, r.SenderJID, r.SenderName, r.FromMe, ts(r.SentAt), r.Kind, r.Text, r.FileName, r.Unread); err != nil {
-		return err
+	res, err := tx.ExecContext(ctx, `INSERT INTO messages
+		(account, chat_jid, id, sender_jid, sender_name, from_me, sent_at, kind, text, file_name, unread, stored_at, live)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`,
+		r.Account, r.ChatJID, r.ID, r.SenderJID, r.SenderName, r.FromMe, ts(r.SentAt), r.Kind, r.Text, r.FileName, r.Unread, ts(a.now()), r.Live)
+	if err != nil {
+		return false, 0, err
+	}
+	if n, _ := res.RowsAffected(); n == 1 {
+		inserted = true
+		rowid, _ = res.LastInsertId()
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO chats (account, jid, last_at) VALUES (?,?,?)
 		ON CONFLICT (account, jid) DO UPDATE SET last_at = MAX(last_at, excluded.last_at)`,
 		r.Account, r.ChatJID, ts(r.SentAt)); err != nil {
-		return err
+		return false, 0, err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return false, 0, err
+	}
+	return inserted, rowid, nil
 }
 
 // Update replaces a stored message's text: an edit, or a deletion for everyone.

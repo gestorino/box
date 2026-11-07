@@ -267,9 +267,79 @@ func (s *Settings) Verify(ctx context.Context, name string) (ok bool, err error)
 	return n > 0, err
 }
 
+// Forget unlists name, in one transaction with what goes with it: when it is the chosen agent the
+// choice is cleared, and when it is WhatsApp the agent's answering there is switched off.
 func (s *Settings) Forget(ctx context.Context, name string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM connectors WHERE name = ?`, name)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM connectors WHERE name = ?`, name); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE settings SET value = '' WHERE key = 'agent' AND value = ?`, name); err != nil {
+		return err
+	}
+	if name == "whatsapp" {
+		if _, err := tx.ExecContext(ctx, `UPDATE settings SET value = '0' WHERE key = 'agent_answer_whatsapp'`); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// Agent is which agent answers the owner (claude, codex or none) and where it answers. Only the
+// console reads it, through hostd's main socket.
+type Agent struct {
+	Agent  string      `json:"agent"`
+	Answer AgentAnswer `json:"answer"`
+}
+
+type AgentAnswer struct {
+	WhatsApp bool `json:"whatsapp"`
+}
+
+var ErrAgent = errors.New("agent must be claude, codex or empty")
+
+func (s *Settings) Agent(ctx context.Context) (Agent, error) {
+	var a Agent
+	for key, set := range map[string]func(string){
+		"agent":                 func(v string) { a.Agent = v },
+		"agent_answer_whatsapp": func(v string) { a.Answer.WhatsApp = v == "1" },
+	} {
+		var v string
+		switch err := s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, key).Scan(&v); {
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return Agent{}, err
+		default:
+			set(v)
+		}
+	}
+	return a, nil
+}
+
+func (s *Settings) SetAgent(ctx context.Context, a Agent) error {
+	if !slices.Contains([]string{"", "claude", "codex"}, a.Agent) {
+		return ErrAgent
+	}
+	whatsapp := "0"
+	if a.Answer.WhatsApp {
+		whatsapp = "1"
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for key, v := range map[string]string{"agent": a.Agent, "agent_answer_whatsapp": whatsapp} {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES (?, ?)
+			ON CONFLICT (key) DO UPDATE SET value = excluded.value`, key, v); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // NewSettingsHandler is what hostd serves on its read-only settings socket — the daemons' only
@@ -365,5 +435,26 @@ func voiceRoutes(mux *http.ServeMux, st *Settings) {
 			err = errBadRequest(err.Error())
 		}
 		reply(w, "voice-update", http.StatusNoContent, nil, err)
+	})
+}
+
+func agentRoutes(mux *http.ServeMux, st *Settings) {
+	mux.HandleFunc("GET /settings/agent", func(w http.ResponseWriter, r *http.Request) {
+		a, err := st.Agent(r.Context())
+		reply(w, "agent", http.StatusOK, a, err)
+	})
+	mux.HandleFunc("PUT /settings/agent", func(w http.ResponseWriter, r *http.Request) {
+		var in Agent
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&in); err != nil {
+			reply(w, "agent-update", 0, nil, errBadRequest("body must be {agent, answer: {whatsapp}}"))
+			return
+		}
+		err := st.SetAgent(r.Context(), in)
+		if errors.Is(err, ErrAgent) {
+			err = errBadRequest(err.Error())
+		}
+		reply(w, "agent-update", http.StatusNoContent, nil, err)
 	})
 }

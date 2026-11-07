@@ -51,7 +51,7 @@ func replyFromPhone(c *fakeClient, chat types.JID, id, text string) {
 
 func TestWhatsAppCheckPassesOnASelfChatReply(t *testing.T) {
 	s, c, _ := connectedService(t)
-	h := NewHandler(s)
+	h := NewHandler(s, NewListen(s.archive, nil))
 	if rec := hit(h, "POST", "/whatsapp/check", `{}`); rec.Code != http.StatusNoContent {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
@@ -77,7 +77,7 @@ func TestWhatsAppCheckReplyUnderTheOwnersLID(t *testing.T) {
 	s, c, _ := connectedService(t)
 	lid := types.NewJID("99999999999999", types.HiddenUserServer)
 	c.lids[lid] = types.NewJID("351910000000", types.DefaultUserServer)
-	h := NewHandler(s)
+	h := NewHandler(s, NewListen(s.archive, nil))
 	hit(h, "POST", "/whatsapp/check", `{}`)
 	_, answer := sentCheck(t, c)
 	replyFromPhone(c, lid, "R1", answer)
@@ -89,7 +89,7 @@ func TestWhatsAppCheckReplyUnderTheOwnersLID(t *testing.T) {
 func TestWhatsAppCheckNotConnected(t *testing.T) {
 	s, _, _ := newService(t)
 	s.set("unlinked")
-	rec := hit(NewHandler(s), "POST", "/whatsapp/check", `{}`)
+	rec := hit(NewHandler(s, NewListen(s.archive, nil)), "POST", "/whatsapp/check", `{}`)
 	if rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != `{"error":"not connected"}` {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}

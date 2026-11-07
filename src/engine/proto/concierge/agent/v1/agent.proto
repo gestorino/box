@@ -1,0 +1,145 @@
+// The agent contract: the owner's agent, one step at a time. claudd and codexd implement it; the
+// engine calls it. The engine owns the conversation and the tools; a daemon only runs its model
+// (its CLI, signed in on the owner's subscription) and answers with the next action.
+syntax = "proto3";
+
+package concierge.agent.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "concierge/engine/internal/gen/agent/v1;agentv1";
+
+service AgentService {
+  // Step answers the conversation so far with its next action.
+  rpc Step(StepRequest) returns (StepResponse);
+  // Status says whether the daemon's CLI is signed in.
+  rpc Status(StatusRequest) returns (StatusResponse);
+  // LoginStart begins signing the CLI in.
+  rpc LoginStart(LoginStartRequest) returns (LoginStartResponse);
+  // LoginFinish completes a sign-in that needed a code.
+  rpc LoginFinish(LoginFinishRequest) returns (LoginFinishResponse);
+  // Logout signs the CLI out and forgets its login.
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+}
+
+// StepRequest is the conversation the agent sees.
+message StepRequest {
+  // The channel the owner writes on, for example "whatsapp".
+  string channel = 1;
+  // The conversation's last events, oldest first.
+  repeated Event events = 2;
+  // The tools the agent may call.
+  repeated Tool tools = 3;
+  // The time of this step.
+  google.protobuf.Timestamp now = 4;
+  // The owner's IANA time zone.
+  string time_zone = 5;
+}
+
+// Event is one item of the conversation.
+message Event {
+  // The conversation's own event id.
+  int64 id = 1;
+  oneof kind {
+    // What the owner wrote.
+    string owner = 2;
+    // What the agent said to the owner.
+    string agent = 3;
+    // A tool the agent called.
+    ToolCall tool_call = 4;
+    // What that tool returned.
+    ToolResult tool_result = 5;
+    // Something an errand the agent started needs or has finished.
+    ErrandEvent errand = 6;
+  }
+}
+
+message ToolCall {
+  // Pairs the call with its result.
+  string call_id = 1;
+  string name = 2;
+  // The arguments, a JSON object.
+  string arguments_json = 3;
+}
+
+message ToolResult {
+  string call_id = 1;
+  // The result, JSON.
+  string result_json = 2;
+}
+
+message ErrandEvent {
+  // The errand's run id.
+  int64 run = 1;
+  // One of: question, confirm, human_check, done, not_done, failed, stopped.
+  string kind = 2;
+  string text = 3;
+  // The choices the site offers, for a question.
+  repeated string options = 4;
+  // The errand's wait a question or confirm is (signins' Question.Wait): an answer reaches the
+  // errand only while that wait is its current one. 0 for every other kind.
+  int64 wait = 5;
+}
+
+message Tool {
+  string name = 1;
+  string description = 2;
+  // The parameters, a JSON Schema.
+  string parameters_json = 3;
+}
+
+// StepResponse is the agent's next action.
+message StepResponse {
+  oneof action {
+    // Call a tool; the engine runs it and steps again.
+    ToolCall tool_call = 1;
+    // Say this to the owner.
+    string say = 2;
+    // Stop for now, with a reason.
+    string end = 3;
+  }
+  // What this step used.
+  Usage usage = 4;
+}
+
+message Usage {
+  string model = 1;
+  int64 input_tokens = 2;
+  int64 output_tokens = 3;
+  // The plan-equivalent cost, when the CLI reports one.
+  double cost_usd = 4;
+  // False when the CLI gave no cost: unknown, never zero.
+  bool cost_known = 5;
+}
+
+message StatusRequest {}
+
+message StatusResponse {
+  bool signed_in = 1;
+  // The signed-in account's name, when signed in.
+  string account = 2;
+  string cli_version = 3;
+  // The model the daemon runs.
+  string model = 4;
+}
+
+message LoginStartRequest {}
+
+message LoginStartResponse {
+  // Where the owner signs in.
+  string url = 1;
+  // A code to enter there, when the CLI gives one.
+  string code = 2;
+  // True when the owner must bring a code back to LoginFinish.
+  bool needs_code = 3;
+}
+
+message LoginFinishRequest {
+  string code = 1;
+}
+
+message LoginFinishResponse {}
+
+message LogoutRequest {}
+
+message LogoutResponse {}

@@ -9,6 +9,7 @@ import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAiKey } from '@/hooks/use-ai-key'
 import { checkAiKey, removeAiKey, saveAiKey } from '@/lib/ai'
+import { AgentSection } from './agent'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
@@ -24,6 +25,7 @@ export function AiSettings() {
       {error && !data && <HostError error={error} what="the OpenRouter key" />}
       {!data && !error && <Skeleton className="h-32 w-full" />}
       {data && <KeyCard set={data.set} masked={data.masked} reload={reload} />}
+      <AgentSection />
     </div>
   )
 }
