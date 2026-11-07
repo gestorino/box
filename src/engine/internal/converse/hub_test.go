@@ -199,7 +199,7 @@ func newRig(t *testing.T, store *Store, step func(n int, req *agentv1.StepReques
 	done := make(chan struct{})
 	go func() { r.hub.Run(ctx); close(done) }()
 	r.stop = sync.OnceFunc(func() { cancel(); <-done })
-	t.Cleanup(r.stop)
+	t.Cleanup(func() { r.stop(); r.hub.Close() })
 	return r
 }
 
@@ -504,6 +504,42 @@ func TestQueuedMessagesOutliveARestart(t *testing.T) {
 	if pending, err := second.Pending(context.Background()); err != nil || len(pending) != 0 {
 		t.Fatalf("still pending: %v %v", pending, err)
 	}
+}
+
+func TestAnErrandEndingDuringTheStopIsKeptAndToldAfterTheRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.db")
+	first, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := newRig(t, first, func(int, *agentv1.StepRequest) (*agentv1.StepResponse, error) {
+		t.Error("stepped during the stop")
+		return say("no"), nil
+	})
+	r.linked(t, 41)
+	// The engine stops: the hub's turns end first, then signins cancels its runs, whose end the hub
+	// still takes in (pending) before its intake closes.
+	r.stop()
+	r.hub.RunEvent(signins.RunEvent{Run: 41, Kind: "failed", Text: "the box restarted"})
+	r.hub.Close()
+	r.channel.none(t)
+	if pending, err := first.Pending(context.Background()); err != nil || len(pending) != 1 ||
+		pending[0].Event.GetErrand().GetKind() != "failed" {
+		t.Fatalf("pending: %v %v", pending, err)
+	}
+	r.hub.RunEvent(signins.RunEvent{Run: 41, Kind: "done"}) // after the intake closed: dropped
+	first.Close()
+
+	second := openStoreAt(t, path)
+	r2 := newRig(t, second, func(_ int, req *agentv1.StepRequest) (*agentv1.StepResponse, error) {
+		x := req.GetEvents()[len(req.GetEvents())-1].GetErrand()
+		return say("The errand " + x.GetKind() + ": " + x.GetText()), nil
+	})
+	if got := r2.channel.next(t); got != "The errand failed: the box restarted" {
+		t.Fatalf("after the restart sent %q", got)
+	}
+	r2.settle(t)
+	r2.channel.none(t)
 }
 
 // linked is a conversation of the rig that started run.

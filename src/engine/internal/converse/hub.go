@@ -90,11 +90,17 @@ type Config struct {
 // store until its turn finishes, so a restart takes it again, and a turn's steps never see the
 // events pending after its own. An errand's events queue per run first (one goroutine each, in order)
 // while they wait for the run's conversation. Neither Owner nor RunEvent waits on a turn.
+//
+// A stop comes in two steps: Run's end cancels the turns, and the hub still takes events in (stored
+// pending, for the next start) until Close, so the errands the engine's stop ends still reach their
+// conversations.
 type Hub struct {
-	cfg      Config
-	base     context.Context
-	cancel   context.CancelFunc
-	linkWait time.Duration
+	cfg Config
+	// base is the turns' context, cancelled when Run ends; life is the intake's, which outlives it:
+	// Close ends the intake when nothing is left to take in.
+	base, life context.Context
+	cancel     context.CancelFunc
+	linkWait   time.Duration
 	// retryFirst and retryMax are the settings retry's bounds (the consts; tests shorten them).
 	retryFirst, retryMax time.Duration
 
@@ -108,8 +114,11 @@ type Hub struct {
 	// orphans are the runs a full linkWait found no conversation of (a console errand's): their later
 	// events are dropped at once, until the run's end.
 	orphans map[int64]bool
-	closed  bool
-	wg      sync.WaitGroup
+	// stopping is Run's end: events are still taken in, but no turn starts. closed is Close's: the hub
+	// takes nothing more.
+	stopping, closed bool
+	turns, routes    sync.WaitGroup // the conversations' goroutines, the runs' goroutines
+	closeOnce        sync.Once
 }
 
 // NewHub is the hub of cfg. It queues again every event still pending, so a turn the engine's last
@@ -120,7 +129,8 @@ func NewHub(cfg Config) *Hub {
 		cfg.Now = time.Now
 	}
 	base, cancel := context.WithCancel(context.Background())
-	h := &Hub{cfg: cfg, base: base, cancel: cancel, linkWait: linkWait, retryFirst: retryFirst, retryMax: retryMax,
+	h := &Hub{cfg: cfg, base: base, life: context.WithoutCancel(base), cancel: cancel, linkWait: linkWait,
+		retryFirst: retryFirst, retryMax: retryMax,
 		convs: map[int64][]*agentv1.Event{}, runs: map[int64][]*agentv1.Event{}, orphans: map[int64]bool{}}
 	pending, err := cfg.Store.Pending(base)
 	if err != nil {
@@ -164,7 +174,8 @@ func (h *Hub) closeDangling(conv int64) {
 }
 
 // Run closes idle conversations every minute until ctx ends; then it cancels the turns running and
-// waits for them, and the hub takes nothing more. A cancelled turn's event stays pending.
+// waits for them, and starts no turn more. A cancelled turn's event stays pending, and so does each
+// event taken in after, until Close.
 func (h *Hub) Run(ctx context.Context) {
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
@@ -172,10 +183,10 @@ func (h *Hub) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			h.mu.Lock()
-			h.closed = true
+			h.stopping = true
 			h.mu.Unlock()
 			h.cancel()
-			h.wg.Wait()
+			h.turns.Wait()
 			return
 		case <-tick.C:
 			h.intake.Lock()
@@ -183,6 +194,20 @@ func (h *Hub) Run(ctx context.Context) {
 			h.intake.Unlock()
 		}
 	}
+}
+
+// Close ends the hub's intake once what may still tell it (the errands the stop ends) has: it takes
+// nothing more, and waits for the events being taken in (each stored, pending) and any turn still
+// running.
+func (h *Hub) Close() {
+	h.closeOnce.Do(func() {
+		h.mu.Lock()
+		h.closed = true
+		h.mu.Unlock()
+		h.cancel()
+		h.routes.Wait()
+		h.turns.Wait()
+	})
 }
 
 // Owner takes in a message of the owner's, already gated as theirs, on the channel's thread: it
@@ -228,7 +253,7 @@ func (h *Hub) RunEvent(e signins.RunEvent) {
 	q, busy := h.runs[e.Run]
 	h.runs[e.Run] = append(q, ev)
 	if !busy {
-		h.wg.Add(1)
+		h.routes.Add(1)
 		go h.routeRun(e.Run)
 	}
 }
@@ -259,7 +284,7 @@ func (h *Hub) closeIdle(ctx context.Context) {
 // running is a run still running; one that can't be read counts as running, so its conversation
 // stays open.
 func (h *Hub) running(run int64) bool {
-	ok, err := h.cfg.Tools.Running(h.base, run)
+	ok, err := h.cfg.Tools.Running(h.life, run)
 	if err != nil {
 		slog.Error("converse: reading a run", "run", run, "err", err)
 		return true
@@ -268,16 +293,17 @@ func (h *Hub) running(run int64) bool {
 }
 
 // enqueue queues the event on its conversation, starting the conversation's goroutine when none runs.
+// Once the hub stops it queues nothing: the event, stored pending, is the next start's.
 func (h *Hub) enqueue(conv int64, e *agentv1.Event) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.closed {
+	if h.stopping || h.closed {
 		return
 	}
 	q, busy := h.convs[conv]
 	h.convs[conv] = append(q, e)
 	if !busy {
-		h.wg.Add(1)
+		h.turns.Add(1)
 		go h.drain(conv)
 	}
 }
@@ -297,7 +323,7 @@ func (h *Hub) next(queues map[int64][]*agentv1.Event, key int64) (*agentv1.Event
 
 // drain takes the conversation's events in order, each with its turn.
 func (h *Hub) drain(conv int64) {
-	defer h.wg.Done()
+	defer h.turns.Done()
 	for {
 		e, ok := h.next(h.convs, conv)
 		if !ok {
@@ -310,7 +336,7 @@ func (h *Hub) drain(conv int64) {
 // routeRun takes in the run's events, in order, in the conversation that started the run. A run
 // none started costs one wait: it is remembered as an orphan until its end.
 func (h *Hub) routeRun(run int64) {
-	defer h.wg.Done()
+	defer h.routes.Done()
 	var conv int64
 	looked := false
 	for {
@@ -327,7 +353,7 @@ func (h *Hub) routeRun(run int64) {
 			continue
 		}
 		h.intake.Lock()
-		h.takeIn(h.base, conv, e, Source{})
+		h.takeIn(h.life, conv, e, Source{})
 		h.intake.Unlock()
 	}
 }
@@ -357,7 +383,7 @@ func (h *Hub) conversationOf(run int64) int64 {
 	}
 	deadline := time.Now().Add(h.linkWait)
 	for {
-		conv, ok, err := h.cfg.Store.ConversationOfRun(h.base, run)
+		conv, ok, err := h.cfg.Store.ConversationOfRun(h.life, run)
 		if err != nil {
 			slog.Error("converse: the conversation of a run", "run", run, "err", err)
 		}
@@ -367,11 +393,7 @@ func (h *Hub) conversationOf(run int64) int64 {
 		if !time.Now().Before(deadline) {
 			return 0
 		}
-		select {
-		case <-h.base.Done():
-			return 0
-		case <-time.After(linkPoll):
-		}
+		time.Sleep(linkPoll)
 	}
 }
 
@@ -381,6 +403,9 @@ func (h *Hub) conversationOf(run int64) int64 {
 // once answered, unless the hub's stop cut its turn short.
 func (h *Hub) take(conv int64, e *agentv1.Event) {
 	ctx := h.base
+	if ctx.Err() != nil { // the hub stopped: the event stays pending
+		return
+	}
 	c, err := h.cfg.Store.conversation(ctx, conv)
 	if err != nil {
 		slog.Error("converse: reading a conversation", "conversation", conv, "err", err)

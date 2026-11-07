@@ -63,8 +63,10 @@ type converseConfig struct {
 }
 
 // startConverse opens the conversations' store, builds the hub over svc, hands it to events and runs
-// it and the WhatsApp listener under ctx. The returned func waits for both to stop and closes the
-// store; call it after ctx ends. The handler is the console's agents and conversations API: with no
+// it and the WhatsApp listener under ctx. The returned func waits for both to stop, closes the hub's
+// intake and then the store; call it after ctx ends and the sign-ins runs have drained, so the
+// errands the stop ended still reach their conversations. The handler is the console's agents and
+// conversations API: with no
 // -agent-db the agents' sign-in still answers and the conversations answer 503.
 func startConverse(ctx context.Context, c converseConfig, svc *signins.Service, events *eventForwarder) (api http.Handler, wait func(), err error) {
 	agents := map[string]agentv1connect.AgentServiceClient{}
@@ -106,6 +108,7 @@ func startConverse(ctx context.Context, c converseConfig, svc *signins.Service, 
 	}()
 	return converse.NewHandler(store, agents), sync.OnceFunc(func() {
 		wg.Wait()
+		hub.Close()
 		store.Close()
 	}), nil
 }

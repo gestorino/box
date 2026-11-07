@@ -158,7 +158,20 @@ func run() error {
 		}()
 	}
 	// Shutting down: stop serving, then give the sign-ins runs (cancelled with ctx) what is left of
-	// the window to record where they stopped, before the store closes.
+	// the window to record where they stopped, before the stores close; the hub (its turns cancelled
+	// with ctx) still takes in their ends until then.
+	drain := func(shutdown context.Context) {
+		if signInsSvc != nil {
+			idle := make(chan struct{})
+			go func() { signInsSvc.Wait(); close(idle) }()
+			select {
+			case <-idle:
+			case <-shutdown.Done():
+				slog.Warn("sign-ins runs still going at shutdown")
+			}
+		}
+		waitConverse()
+	}
 	drained := make(chan struct{})
 	go func() {
 		defer close(drained)
@@ -169,22 +182,13 @@ func run() error {
 		if metricsSrv != nil {
 			metricsSrv.Shutdown(shutdown)
 		}
-		waitConverse()
-		if signInsSvc != nil {
-			idle := make(chan struct{})
-			go func() { signInsSvc.Wait(); close(idle) }()
-			select {
-			case <-idle:
-			case <-shutdown.Done():
-				slog.Warn("sign-ins runs still going at shutdown")
-			}
-		}
+		drain(shutdown)
 	}()
 	slog.Info("engine listening", "addr", *addr, "version", version, "revision", revision)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-		// Not a shutdown: stop what runs under ctx, and wait for the hub and its listener.
+		// Not a shutdown: stop what runs under ctx, and wait for the runs, the hub and its listener.
 		stop()
-		waitConverse()
+		<-drained
 		return err
 	}
 	<-drained
