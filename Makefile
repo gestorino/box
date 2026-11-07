@@ -3,7 +3,7 @@
 
 check: test-engine test-browser check-ui test-release
 
-# Regenerate the listen contract's Go code (offline: the generators are pinned `tool`s in their own
+# Regenerate the listen and agent contracts' Go code (offline: the generators are pinned `tool`s in their own
 # module, src/engine/tools, so they never move the versions the engine's binaries ship).
 generate:
 	cd src/engine && go tool -modfile=tools/go.mod buf generate
