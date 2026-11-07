@@ -1,7 +1,7 @@
 # The merge bar: `make check` must be green before every commit.
-.PHONY: check generate test-engine test-browser test-browser-live test-box check-ui test-release test-dist dist release run deploy box-browser
+.PHONY: check generate test-engine test-browser test-browser-live test-box check-ui test-release test-box-backup test-dist dist release run deploy box-browser backup restore backup-resume recovery-code
 
-check: test-engine test-browser check-ui test-release
+check: test-engine test-browser check-ui test-release test-box-backup
 
 # Regenerate the listen contract's Go code (offline: the generators are pinned `tool`s in their own
 # module, src/engine/tools, so they never move the versions the engine's binaries ship).
@@ -34,6 +34,10 @@ check-ui:
 # out), in throwaway git repos.
 test-release:
 	scripts/test-release.sh
+
+# The Mac side of backup and restore, against fakes of ssh, scp, gh, git and make.
+test-box-backup:
+	scripts/test-box-backup.sh
 
 # The release archive, built for real and checked. Not in `check` (it builds everything); CI runs
 # it after `make check`.
@@ -77,3 +81,21 @@ deploy: check
 # Ctrl+C ends it.
 box-browser:
 	CONCIERGE_BOX="$(CONCIERGE_BOX)" scripts/box-browser.sh $(FLAGS)
+
+# A backup of the box into ~/Backups/concierge. STOP=1 holds the services down while it is taken
+# (a marker file and a start condition on the box, until `make backup-resume`).
+backup:
+	CONCIERGE_BOX="$(CONCIERGE_BOX)" STOP="$(STOP)" scripts/box-backup.sh
+
+# Restore a backup onto the box: make restore B=<file> [FORCE=1] [NEW_BOX=1]. The recovery code is
+# typed on the box's tty (ssh -t), never here.
+restore:
+	CONCIERGE_BOX="$(CONCIERGE_BOX)" FORCE="$(FORCE)" NEW_BOX="$(NEW_BOX)" scripts/box-restore.sh "$(B)"
+
+# Start the services again after `make backup STOP=1`.
+backup-resume:
+	CONCIERGE_BOX="$(CONCIERGE_BOX)" scripts/box-backup-resume.sh
+
+# Make (or replace) the recovery code; the box shows it once.
+recovery-code:
+	CONCIERGE_BOX="$(CONCIERGE_BOX)" scripts/box-recovery-code.sh

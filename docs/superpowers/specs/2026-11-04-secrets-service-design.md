@@ -104,6 +104,8 @@ changes the console's login (piece 3).
   backup** of the master key or the secrets. The owner enters the two model keys, the card and the
   mailbox's app password again; the box's site accounts are recovered with the sites' own password
   reset.
+- **Since 2026-11-07 the master key has a recovery-locked copy** in a backup, which moves the
+  secrets to another box or back after a lost TPM: `2026-11-07-backup-restore-design.md`.
 
 ### The callers
 

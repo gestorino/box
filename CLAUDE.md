@@ -29,6 +29,11 @@ make deploy                # build + ship to the box with Ansible (ansible/, a p
 make test-box              # opt-in: the per-run screen (Xvnc, openbox, tint2, websockify, Chrome) on the box, over SSH ($CONCIERGE_BOX)
 make dist V=… R=…          # the release archive (scripts/dist.sh); make test-dist tests it
 make release               # cut the next minor release locally (below); pushes nothing
+make backup [STOP=1]       # a backup of the box into ~/Backups/concierge (STOP=1 holds the services down until backup-resume)
+make restore B=FILE [FORCE=1] [NEW_BOX=1]  # restore a backup onto the box (installs the backup's build first when it differs)
+make backup-resume         # start the services after `make backup STOP=1`
+make recovery-code         # make or replace the recovery code (shown once, on the box's tty)
+make test-box-backup       # the Mac side of the above against fakes (part of check)
 make box-browser           # a plain Chrome on the box, by hand in your browser: docs/BOX-BROWSER.md ($CONCIERGE_BOX)
 
 cd src/engine && go test -race -run TestHealthRoundTrip ./internal/browser/   # one Go test
@@ -71,6 +76,18 @@ a local, untracked, git-ignored directory; the box's specifics are in `CLAUDE.lo
 `scripts/audit-public.sh` checks the public tree (optional private values in
 `scripts/audit-public.local`); keep it at exit 0, and `--strict` (which also fails while any private
 path is tracked) at exit 0 once the tree is public.
+
+**Backup and restore** (`src/engine/cmd/backup` on the box; `scripts/box-backup.sh`, `box-restore.sh`,
+`box-recovery-code.sh`, `box-backup-resume.sh` here, over SSH): `make backup` keeps the box's state in
+`~/Backups/concierge/<stamp>-<version>.tar.gz` (0600, directory 0700). `STOP=1` holds the services down
+by a marker file and a start condition on the box (nothing is masked) until `make backup-resume`. The
+secrets move to another box only with the **recovery code** (`make recovery-code`; the owner types it on
+the box's own tty over `ssh -t`, the Mac scripts never read, store or pass it). `make restore` installs
+the backup's own build first when the box's differs: a published release, attestation-verified here, or a
+local patch tag that must point at the backup's revision, then says to `make deploy`. **Never delete a
+published release, and never delete a local patch tag (`vX.Y.Z`, Z ≠ 0):** a backup can only be
+restored onto the build that took it, and those are the only places that build lives. Design:
+`docs/superpowers/specs/2026-11-07-backup-restore-design.md`.
 
 ## Layout
 
