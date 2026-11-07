@@ -333,3 +333,34 @@ func TestTheReadOnlySocketCarriesVoice(t *testing.T) {
 		t.Fatalf("read-only get: %s", rec.Body)
 	}
 }
+
+func TestAgentSettingsRoundTrip(t *testing.T) {
+	svc, _, _, _ := newService()
+	st, _ := openSettings(t)
+	h := NewHandler(svc, st)
+	if rec := call(h, "GET", "/settings/agent", ""); rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != `{"agent":"","answer":{"whatsapp":false}}` {
+		t.Fatalf("empty: %d %s", rec.Code, rec.Body)
+	}
+	if rec := call(h, "PUT", "/settings/agent", `{"agent":"codex","answer":{"whatsapp":true}}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("put: %d %s", rec.Code, rec.Body)
+	}
+	if rec := call(h, "GET", "/settings/agent", ""); strings.TrimSpace(rec.Body.String()) != `{"agent":"codex","answer":{"whatsapp":true}}` {
+		t.Fatalf("get: %s", rec.Body)
+	}
+	rec := call(h, "PUT", "/settings/agent", `{"agent":"gpt","answer":{"whatsapp":false}}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "agent") {
+		t.Fatalf("gpt: %d %s", rec.Code, rec.Body)
+	}
+	if rec := call(h, "PUT", "/settings/agent", `{"agent":"claude","nope":1}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("unknown field: %d", rec.Code)
+	}
+	if rec := call(h, "GET", "/settings/agent", ""); strings.TrimSpace(rec.Body.String()) != `{"agent":"codex","answer":{"whatsapp":true}}` {
+		t.Fatalf("refused puts changed it: %s", rec.Body)
+	}
+	if rec := call(h, "PUT", "/settings/agent", `{"agent":"","answer":{"whatsapp":false}}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("clear: %d", rec.Code)
+	}
+	if rec := call(NewSettingsHandler(st, svc), "GET", "/settings/agent", ""); rec.Code == http.StatusOK {
+		t.Fatal("the read-only socket serves /settings/agent")
+	}
+}

@@ -33,6 +33,7 @@ func NewHandler(s *Service, st *Settings) http.Handler {
 		settingsRoutes(mux, st)
 		callsKeepRoutes(mux, st)
 		voiceRoutes(mux, st)
+		agentRoutes(mux, st)
 		accountRoutes(mux, st)
 		connectorRoutes(mux, s)
 	}
