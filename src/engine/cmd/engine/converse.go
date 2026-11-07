@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -67,6 +69,9 @@ func startConverse(ctx context.Context, c converseConfig, svc *signins.Service, 
 	if c.DB == "" {
 		return func() {}, nil
 	}
+	if _, err := time.LoadLocation(c.TimeZone); err != nil {
+		return nil, fmt.Errorf("-time-zone %q: %w", c.TimeZone, err)
+	}
 	if svc == nil || c.HostdSocket == "" || c.WhatsAppSocket == "" {
 		return nil, errors.New("-agent-db needs -signins-db, -hostd-socket and -whatsapp-socket")
 	}
@@ -98,11 +103,30 @@ func startConverse(ctx context.Context, c converseConfig, svc *signins.Service, 
 		defer wg.Done()
 		converse.ListenWhatsApp(ctx, listen.NewClient(c.WhatsAppSocket), hub, settings)
 	}()
-	return func() {
+	return sync.OnceFunc(func() {
 		wg.Wait()
 		store.Close()
-	}, nil
+	}), nil
 }
 
-// localZone is the box's time zone's name, the default of -time-zone.
-func localZone() string { return time.Local.String() }
+// localZone is the box's IANA time zone name, the default of -time-zone.
+func localZone() string { return zoneName(os.Getenv, os.Readlink) }
+
+// zoneName is $TZ when it names a loadable zone, else the zoneinfo name /etc/localtime links to,
+// else UTC (said in the log).
+func zoneName(getenv func(string) string, readlink func(string) (string, error)) string {
+	if tz := strings.TrimPrefix(getenv("TZ"), ":"); tz != "" {
+		if _, err := time.LoadLocation(tz); err == nil {
+			return tz
+		}
+	}
+	if link, err := readlink("/etc/localtime"); err == nil {
+		if _, name, ok := strings.Cut(link, "zoneinfo/"); ok && name != "" {
+			if _, err := time.LoadLocation(name); err == nil {
+				return name
+			}
+		}
+	}
+	slog.Warn("converse: the box's time zone is unknown, using UTC; set -time-zone")
+	return "UTC"
+}

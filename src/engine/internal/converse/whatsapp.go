@@ -108,7 +108,7 @@ func listenWhatsApp(ctx context.Context, l listen.Listener, h owners, s Settings
 					defer close(fin)
 					for e := range l.Listen(lctx, &listenv1.ListenRequest{From: d}) {
 						if m := e.GetMessage(); m != nil {
-							deliver(lctx, h, s, now, m.GetWhatsapp())
+							deliver(lctx, h, s, now, d, m.GetWhatsapp())
 						}
 					}
 				}()
@@ -122,12 +122,26 @@ func listenWhatsApp(ctx context.Context, l listen.Listener, h owners, s Settings
 	}
 }
 
-func deliver(ctx context.Context, h owners, s Settings, now func() time.Time, w *listenv1.WhatsApp) {
-	if w == nil {
+// maxAhead is how far a message's sent_at may be in the future (clock skew).
+const maxAhead = time.Minute
+
+// deliver gives the hub one message of the listener opened for the owner's digits: only the owner's
+// own, fresh, with a sent_at, while the listener is still the current one and the switch is on.
+func deliver(ctx context.Context, h owners, s Settings, now func() time.Time, owner string, w *listenv1.WhatsApp) {
+	if w == nil || ctx.Err() != nil {
 		return
 	}
-	if w.GetSentAt() != nil && now().Sub(w.GetSentAt().AsTime()) > maxAge {
-		slog.Info("converse: dropped a WhatsApp message sent more than 10 minutes ago")
+	if digits(w.GetPhone()) != owner {
+		slog.Warn("converse: dropped a WhatsApp message not from the owner's phone")
+		return
+	}
+	if w.GetSentAt() == nil {
+		slog.Warn("converse: dropped a WhatsApp message with no send time")
+		return
+	}
+	age := now().Sub(w.GetSentAt().AsTime())
+	if age > maxAge || age < -maxAhead {
+		slog.Info("converse: dropped a WhatsApp message sent too long ago or in the future")
 		return
 	}
 	_, on, err := s.Agent(ctx)
@@ -135,7 +149,7 @@ func deliver(ctx context.Context, h owners, s Settings, now func() time.Time, w 
 		slog.Warn("converse: reading the WhatsApp switch", "err", err)
 		return
 	}
-	if !on {
+	if !on || ctx.Err() != nil {
 		return
 	}
 	h.Owner(ctx, "whatsapp", w.GetChat(), w.GetText())

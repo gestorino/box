@@ -181,6 +181,9 @@ func run() error {
 	}()
 	slog.Info("engine listening", "addr", *addr, "version", version, "revision", revision)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		// Not a shutdown: stop what runs under ctx, and wait for the hub and its listener.
+		stop()
+		waitConverse()
 		return err
 	}
 	<-drained

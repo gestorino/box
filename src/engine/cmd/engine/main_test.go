@@ -22,6 +22,9 @@ func TestTheForwarderDropsEventsBeforeTheHub(t *testing.T) {
 	if _, err := startConverse(context.Background(), converseConfig{DB: "x.db"}, nil, &eventForwarder{}); err == nil {
 		t.Fatal("-agent-db without its sockets started")
 	}
+	if _, err := startConverse(context.Background(), converseConfig{DB: "x.db", TimeZone: "Bad/Zone"}, nil, &eventForwarder{}); err == nil || !strings.Contains(err.Error(), "-time-zone") {
+		t.Fatalf("a bad time zone: %v", err)
+	}
 	wait, err := startConverse(context.Background(), converseConfig{}, nil, &eventForwarder{})
 	if err != nil {
 		t.Fatal(err)

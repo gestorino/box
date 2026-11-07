@@ -162,6 +162,35 @@ func TestAChangedContactReopensTheListener(t *testing.T) {
 	}
 }
 
+// deliver alone: the engine checks the sender, the send time and the listener itself.
+func TestDeliverChecksTheMessageItself(t *testing.T) {
+	now := time.Now()
+	clock := func() time.Time { return now }
+	s := &phoneSettings{whatsapp: true}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	noTime := wa("351912345678", "x", now)
+	noTime.GetWhatsapp().SentAt = nil
+	for name, c := range map[string]struct {
+		ctx context.Context
+		m   *listenv1.Message
+		ok  bool
+	}{
+		"the owner's":       {context.Background(), wa("351912345678", "x", now), true},
+		"another number":    {context.Background(), wa("351999999999", "x", now), false},
+		"a replaced stream": {cancelled, wa("351912345678", "x", now), false},
+		"no send time":      {context.Background(), noTime, false},
+		"future":            {context.Background(), wa("351912345678", "x", now.Add(2*time.Minute)), false},
+		"a little ahead":    {context.Background(), wa("351912345678", "x", now.Add(30*time.Second)), true},
+	} {
+		o := &fakeOwners{got: make(chan ownerMsg, 1)}
+		deliver(c.ctx, o, s, clock, "351912345678", c.m.GetWhatsapp())
+		if got := len(o.got) == 1; got != c.ok {
+			t.Errorf("%s: delivered = %v, want %v", name, got, c.ok)
+		}
+	}
+}
+
 func TestNoPhoneNoListener(t *testing.T) {
 	r := newWARig(t, "", true)
 	time.Sleep(200 * time.Millisecond)
