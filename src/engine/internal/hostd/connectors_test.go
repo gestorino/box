@@ -383,3 +383,26 @@ func TestTheChosenAgentIsClearedWhenItsUnitIsRemoved(t *testing.T) {
 		t.Fatalf("%+v %v", a, err)
 	}
 }
+
+func TestRemovingWhatsAppSwitchesOffTheAgentsAnswerThere(t *testing.T) {
+	s, _, _, st := connectorRig(t)
+	if err := s.AddConnector(ctx, "whatsapp"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetAgent(ctx, Agent{Agent: "claude", Answer: AgentAnswer{WhatsApp: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RemoveConnector(ctx, "telegram"); err != nil { // another channel: the switch stays
+		t.Fatal(err)
+	}
+	if a, _ := st.Agent(ctx); !a.Answer.WhatsApp {
+		t.Fatalf("%+v", a)
+	}
+	if err := s.RemoveConnector(ctx, "whatsapp"); err != nil {
+		t.Fatal(err)
+	}
+	a, err := st.Agent(ctx)
+	if err != nil || a.Agent != "claude" || a.Answer.WhatsApp {
+		t.Fatalf("%+v %v", a, err)
+	}
+}

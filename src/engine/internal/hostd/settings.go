@@ -267,7 +267,8 @@ func (s *Settings) Verify(ctx context.Context, name string) (ok bool, err error)
 	return n > 0, err
 }
 
-// Forget unlists name; when it is the chosen agent, the choice is cleared in the same transaction.
+// Forget unlists name, in one transaction with what goes with it: when it is the chosen agent the
+// choice is cleared, and when it is WhatsApp the agent's answering there is switched off.
 func (s *Settings) Forget(ctx context.Context, name string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -279,6 +280,11 @@ func (s *Settings) Forget(ctx context.Context, name string) error {
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE settings SET value = '' WHERE key = 'agent' AND value = ?`, name); err != nil {
 		return err
+	}
+	if name == "whatsapp" {
+		if _, err := tx.ExecContext(ctx, `UPDATE settings SET value = '0' WHERE key = 'agent_answer_whatsapp'`); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
