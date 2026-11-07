@@ -344,3 +344,22 @@ func TestASitesPageListsItsRegistrationsAndSignIns(t *testing.T) {
 		t.Fatal("a site with no card was found")
 	}
 }
+
+func TestRegisteredIsTheBoxsOwnAccount(t *testing.T) {
+	f, ctx := newFixture(t), context.Background()
+	cards, err := f.svc.Cards(ctx)
+	if err != nil || len(cards) != 1 || cards[0].Key != shopKey {
+		t.Fatalf("cards %v %v", cards, err)
+	}
+	for _, c := range []struct {
+		state string
+		want  bool
+	}{{"", false}, {"warn", false}, {"registered", true}} {
+		if c.state != "" {
+			f.signedUp(t, c.state)
+		}
+		if got, err := f.svc.Registered(ctx, shopKey); err != nil || got != c.want {
+			t.Fatalf("state %q: registered %v %v", c.state, got, err)
+		}
+	}
+}

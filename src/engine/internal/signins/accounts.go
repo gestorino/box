@@ -134,6 +134,15 @@ func (s *Service) Sites(ctx context.Context) ([]SiteView, error) {
 	return out, nil
 }
 
+// Cards is every card in the catalog, by name.
+func (s *Service) Cards(ctx context.Context) ([]Card, error) { return s.cfg.Store.Cards(ctx) }
+
+// Registered says the box has its own account on the site: the account's state is registered.
+func (s *Service) Registered(ctx context.Context, key string) (bool, error) {
+	a, has, err := s.cfg.Store.Account(ctx, key)
+	return has && a.State == "registered", err
+}
+
 // Icon is the site's icon as PNG bytes; nil when it has none.
 func (s *Service) Icon(ctx context.Context, key string) ([]byte, error) {
 	c, found, err := s.cfg.Store.Card(ctx, key)
