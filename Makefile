@@ -1,5 +1,5 @@
 # The merge bar: `make check` must be green before every commit.
-.PHONY: check generate test-engine test-browser test-browser-live test-box check-ui test-release test-dist dist release run deploy box-browser
+.PHONY: check generate test-engine test-browser test-browser-live test-agent-live test-box check-ui test-release test-dist dist release run deploy box-browser
 
 check: test-engine test-browser check-ui test-release
 
@@ -20,6 +20,11 @@ test-browser:
 # Opt-in: real Chromium against the loopback fixture. Not part of `check`.
 test-browser-live:
 	cd src/browser && uv run --with pytest --with-editable . pytest -q -m live
+
+# Opt-in: one real Step through claudd and codexd, with the CLIs signed in on this computer
+# (`make test-agent-live ARGS=--record` saves the raw replies over the testdata). Not part of `check`.
+test-agent-live:
+	scripts/agent-live.sh $(ARGS)
 
 # Opt-in: the screen (Xvnc, openbox, websockify, Chrome) on the real box, over SSH. Not part of `check`.
 # The box is $CONCIERGE_BOX (its ssh target; no default: the owner exports it as CLAUDE.local.md writes it).
