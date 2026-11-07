@@ -29,6 +29,8 @@ type System interface {
 // Units are the box's services and sockets in stop order: the engine first and
 // secretd (its service, then its socket) last, so nothing that reads secrets
 // outlives it. A backup or restore stops them all; it starts only CoreUnits.
+// sensord is among them: it reads the state directories (CAP_DAC_READ_SEARCH)
+// through mounts made on the ones it started with, so it must not outlive a swap.
 var Units = []string{
 	"concierge-engine.service",
 	"concierge-worker.service",
@@ -45,6 +47,7 @@ var Units = []string{
 	"concierge-telegram.socket",
 	"concierge-email.service",
 	"concierge-email.socket",
+	"concierge-sensors.service",
 	"concierge-secrets.service",
 	"concierge-secrets.socket",
 }
@@ -59,6 +62,7 @@ var CoreUnits = []string{
 	"concierge-hostd.socket",
 	"concierge-hostd-settings.socket",
 	"concierge-hostd.service",
+	"concierge-sensors.service",
 	"concierge-worker.service",
 	"concierge-engine.service",
 }

@@ -20,8 +20,13 @@ func TestUnitsStopOrder(t *testing.T) {
 		}
 		seen[u] = true
 	}
-	if n != 17 {
-		t.Errorf("%d units; want 17", n)
+	if n != 18 {
+		t.Errorf("%d units; want 18", n)
+	}
+	// sensord reads the state directories (CAP_DAC_READ_SEARCH) through mounts on the old ones: it
+	// must not outlive a swap, and stops before secretd as everything else does.
+	if i := slices.Index(Units, "concierge-sensors.service"); i < 0 || i >= n-2 {
+		t.Errorf("concierge-sensors.service at %d; want it stopped before secretd", i)
 	}
 }
 
@@ -33,6 +38,7 @@ func TestCoreUnitsStartOrder(t *testing.T) {
 		"concierge-hostd.socket",
 		"concierge-hostd-settings.socket",
 		"concierge-hostd.service",
+		"concierge-sensors.service",
 		"concierge-worker.service",
 		"concierge-engine.service",
 	}

@@ -47,16 +47,33 @@ func Busy(sys System, root string) (string, error) {
 	return reason, nil
 }
 
-// parseCalls returns the call paths in mmcli's --voice-list-calls output.
-// "No calls were found" and its no-modem errors name none.
+// parseCalls returns the paths of the calls not yet ended in mmcli's --voice-list-calls output, a
+// line "<path> <direction> (<state>)" each. An ended call ("terminated") stays listed until
+// ModemManager deletes it, and keeps nothing waiting; a line whose state can't be read counts as a
+// call. "No calls were found" and its no-modem errors name none.
 func parseCalls(out string) []string {
 	var calls []string
 	for _, line := range strings.Split(out, "\n") {
-		if i := strings.Index(line, callPrefix); i >= 0 {
-			calls = append(calls, strings.Fields(line[i:])[0])
+		i := strings.Index(line, callPrefix)
+		if i < 0 {
+			continue
 		}
+		rest := strings.TrimSpace(line[i:])
+		if callState(rest) == "terminated" {
+			continue
+		}
+		calls = append(calls, strings.Fields(rest)[0])
 	}
 	return calls
+}
+
+// callState is the state in a call line's trailing parentheses, "" when it has none.
+func callState(line string) string {
+	open := strings.LastIndex(line, "(")
+	if open < 0 || !strings.HasSuffix(line, ")") {
+		return ""
+	}
+	return line[open+1 : len(line)-1]
 }
 
 // isNoModem reports mmcli's failure for a box with no modem.

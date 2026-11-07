@@ -68,6 +68,30 @@ func TestBusyCall(t *testing.T) {
 	}
 }
 
+// An ended call stays listed until ModemManager deletes it (calld does, and it may be stopped): it
+// keeps nothing waiting. Any other state, or a line whose state can't be read, is a call.
+func TestBusyCallStates(t *testing.T) {
+	for out, busy := range map[string]bool{
+		"/org/freedesktop/ModemManager1/Call/3 incoming (terminated)":                                                                                      false,
+		"Found 2 calls:\n\n\t/org/freedesktop/ModemManager1/Call/3 incoming (terminated)\n\t/org/freedesktop/ModemManager1/Call/4 outgoing (terminated)\n": false,
+		"/org/freedesktop/ModemManager1/Call/3 incoming (active)":                                                                                          true,
+		"/org/freedesktop/ModemManager1/Call/3 incoming (ringing-in)":                                                                                      true,
+		"/org/freedesktop/ModemManager1/Call/3 outgoing (ringing-out)":                                                                                     true,
+		"/org/freedesktop/ModemManager1/Call/3 incoming (terminated)\n/org/freedesktop/ModemManager1/Call/4 outgoing (dialing)":                            true,
+		"/org/freedesktop/ModemManager1/Call/3":                                                                                                            true,
+		"/org/freedesktop/ModemManager1/Call/3 incoming (terminated":                                                                                       true,
+		"/org/freedesktop/ModemManager1/Call/3 incoming ()":                                                                                                true,
+	} {
+		got, err := Busy(&fakeSystem{callsOut: out}, screensRoot(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := map[bool]string{true: "a call is in progress", false: ""}[busy]; got != want {
+			t.Errorf("Busy with %q = %q, want %q", out, got, want)
+		}
+	}
+}
+
 func TestBusyCallsError(t *testing.T) {
 	sys := &fakeSystem{callsErr: os.ErrPermission}
 	if _, err := Busy(sys, screensRoot(t)); err == nil {
