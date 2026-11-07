@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -172,13 +173,12 @@ func readHeader(tr *tar.Reader) (Header, error) {
 	return h, nil
 }
 
-// Owners maps an entry's owner names to this machine's ids and applies them.
+// Owners maps an entry's owner names to this machine's ids.
 type Owners interface {
 	Lookup(user, group string) (uid, gid int, err error)
-	Chown(path string, uid, gid int) error
 }
 
-// SystemOwners is Owners on the real machine: os/user lookups and Lchown (never following a link).
+// SystemOwners is Owners on the real machine: os/user lookups.
 type SystemOwners struct{}
 
 func (SystemOwners) Lookup(name, group string) (int, int, error) {
@@ -201,10 +201,11 @@ func (SystemOwners) Lookup(name, group string) (int, int, error) {
 	return uid, gid, nil
 }
 
-func (SystemOwners) Chown(path string, uid, gid int) error { return os.Lchown(path, uid, gid) }
-
-// Extract unpacks an archive into staging/<path>, owners by name through o, modes as stored. It
-// refuses an entry outside staging and a header whose Format is not 1.
+// Extract unpacks an archive into staging/<path>, owners by name through o, modes as stored. Every
+// file operation goes through an os.Root on staging, which refuses any path that resolves outside
+// it (a symlink in the archive cannot lead a later entry out). It refuses a header whose Format is
+// not 1 or whose Paths are not backup Paths, an entry that is not one of the header's Paths or
+// beneath one, and an archive whose gzip checksum fails.
 func Extract(r io.Reader, staging string, o Owners) (Header, error) {
 	zr, err := gzip.NewReader(r)
 	if err != nil {
@@ -219,40 +220,59 @@ func Extract(r io.Reader, staging string, o Owners) (Header, error) {
 	if h.Format != 1 {
 		return Header{}, fmt.Errorf("backup format %d is not supported", h.Format)
 	}
+	for _, p := range h.Paths {
+		if !slices.Contains(Paths, p) {
+			return Header{}, fmt.Errorf("backup path %q is not one a backup holds", p)
+		}
+	}
+	root, err := os.OpenRoot(staging)
+	if err != nil {
+		return Header{}, err
+	}
+	defer root.Close()
 	for {
 		th, err := tr.Next()
 		if err == io.EOF {
+			// The tar ends before the gzip trailer: draining it checks the checksum.
+			if _, err := io.Copy(io.Discard, zr); err != nil {
+				return Header{}, err
+			}
 			return h, nil
 		}
 		if err != nil {
 			return Header{}, err
 		}
-		if err := extractEntry(tr, th, staging, o); err != nil {
+		if err := extractEntry(tr, th, h.Paths, root, o); err != nil {
 			return Header{}, fmt.Errorf("%s: %w", th.Name, err)
 		}
 	}
 }
 
-func extractEntry(tr *tar.Reader, th *tar.Header, staging string, o Owners) error {
-	name := filepath.FromSlash(th.Name)
-	if filepath.IsAbs(name) || strings.HasPrefix(th.Name, "/") || !filepath.IsLocal(name) {
+func extractEntry(tr *tar.Reader, th *tar.Header, paths []string, root *os.Root, o Owners) error {
+	name := filepath.Clean(filepath.FromSlash(th.Name))
+	if strings.HasPrefix(th.Name, "/") || !filepath.IsLocal(name) {
 		return errors.New("outside the staging directory")
 	}
-	dest := filepath.Join(staging, name)
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+	if !slices.ContainsFunc(paths, func(p string) bool {
+		p = filepath.FromSlash(p)
+		return name == p || strings.HasPrefix(name, p+string(filepath.Separator))
+	}) {
+		return errors.New("not in the backup's paths")
+	}
+	if err := root.MkdirAll(filepath.Dir(name), 0o755); err != nil {
 		return err
 	}
 	mode := fs.FileMode(th.Mode).Perm()
 	switch th.Typeflag {
 	case tar.TypeDir:
-		if err := os.MkdirAll(dest, 0o700); err != nil {
+		if err := root.MkdirAll(name, 0o700); err != nil {
 			return err
 		}
-		if err := os.Chmod(dest, mode); err != nil {
+		if err := root.Chmod(name, mode); err != nil {
 			return err
 		}
 	case tar.TypeReg:
-		f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
 			return err
 		}
@@ -263,11 +283,11 @@ func extractEntry(tr *tar.Reader, th *tar.Header, staging string, o Owners) erro
 		if err != nil {
 			return err
 		}
-		if err := os.Chmod(dest, mode); err != nil {
+		if err := root.Chmod(name, mode); err != nil {
 			return err
 		}
 	case tar.TypeSymlink:
-		if err := os.Symlink(th.Linkname, dest); err != nil {
+		if err := root.Symlink(th.Linkname, name); err != nil {
 			return err
 		}
 	default:
@@ -277,5 +297,5 @@ func extractEntry(tr *tar.Reader, th *tar.Header, staging string, o Owners) erro
 	if err != nil {
 		return err
 	}
-	return o.Chown(dest, uid, gid)
+	return root.Lchown(name, uid, gid)
 }

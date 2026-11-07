@@ -46,24 +46,14 @@ func put(t *testing.T, root, rel, body string, mode os.FileMode) {
 type fakeOwners struct {
 	mu      sync.Mutex
 	lookups [][2]string
-	chowns  map[string][2]int
 }
 
+// Lookup answers with the test's own ids, which an unprivileged Lchown accepts.
 func (f *fakeOwners) Lookup(user, group string) (int, int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.lookups = append(f.lookups, [2]string{user, group})
-	return 1234, 5678, nil
-}
-
-func (f *fakeOwners) Chown(path string, uid, gid int) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.chowns == nil {
-		f.chowns = map[string][2]int{}
-	}
-	f.chowns[path] = [2]int{uid, gid}
-	return nil
+	return os.Getuid(), os.Getgid(), nil
 }
 
 func header() Header {
@@ -149,20 +139,10 @@ func TestArchiveOwnersByName(t *testing.T) {
 	if _, err := Extract(bytes.NewReader(raw), staging, o); err != nil {
 		t.Fatal(err)
 	}
-	for _, rel := range []string{"var/lib/concierge", "var/lib/concierge/a.db"} {
-		if c := o.chowns[filepath.Join(staging, rel)]; c != [2]int{1234, 5678} {
-			t.Fatalf("chown %s = %v", rel, c)
-		}
-	}
+	// One lookup per entry (the directory and the file), by the names the entries carry.
 	want := names["var/lib/concierge/a.db"]
-	found := false
-	for _, l := range o.lookups {
-		if l == want {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("lookups %v lack %v", o.lookups, want)
+	if len(o.lookups) != 2 || o.lookups[0] != names["var/lib/concierge/"] || o.lookups[1] != want {
+		t.Fatalf("lookups %v, want the entries' names %v", o.lookups, want)
 	}
 }
 
@@ -203,21 +183,118 @@ func TestArchiveSkipsSocketsKeepsSymlinks(t *testing.T) {
 	}
 }
 
-func tarOf(t *testing.T, names ...string) *bytes.Buffer {
+// archiveOf hand-makes an archive: backup.json for h, then the entries (a regular file's body is "x").
+func archiveOf(t *testing.T, h Header, entries ...tar.Header) *bytes.Buffer {
 	t.Helper()
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(zw)
-	hb, _ := json.Marshal(header())
+	hb, _ := json.Marshal(h)
 	tw.WriteHeader(&tar.Header{Name: "backup.json", Mode: 0o600, Size: int64(len(hb))})
 	tw.Write(hb)
-	for _, n := range names {
-		tw.WriteHeader(&tar.Header{Name: n, Mode: 0o600, Size: 1})
-		tw.Write([]byte("x"))
+	for _, e := range entries {
+		if e.Typeflag == 0 || e.Typeflag == tar.TypeReg {
+			e.Typeflag, e.Size = tar.TypeReg, 1
+		}
+		e.Mode = 0o750
+		tw.WriteHeader(&e)
+		if e.Typeflag == tar.TypeReg {
+			tw.Write([]byte("x"))
+		}
 	}
 	tw.Close()
 	zw.Close()
 	return &buf
+}
+
+func withPaths(paths ...string) Header {
+	h := header()
+	h.Paths = paths
+	return h
+}
+
+func tarOf(t *testing.T, names ...string) *bytes.Buffer {
+	var es []tar.Header
+	for _, n := range names {
+		es = append(es, tar.Header{Name: n})
+	}
+	return archiveOf(t, withPaths("var/lib/concierge"), es...)
+}
+
+func TestExtractRefusesSymlinkEscapes(t *testing.T) {
+	for name, entries := range map[string][]tar.Header{
+		"file through an absolute link": {
+			{Name: "var/lib/concierge/x", Typeflag: tar.TypeSymlink, Linkname: "@OUT@"},
+			{Name: "var/lib/concierge/x/evil"},
+		},
+		"file through a relative link": {
+			{Name: "var/lib/concierge/x", Typeflag: tar.TypeSymlink, Linkname: "../../../../out"},
+			{Name: "var/lib/concierge/x/evil"},
+		},
+		"directory over a link": {
+			{Name: "var/lib/concierge/x", Typeflag: tar.TypeSymlink, Linkname: "@OUT@"},
+			{Name: "var/lib/concierge/x/", Typeflag: tar.TypeDir},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			outer := shortDir(t)
+			// out sits beside staging's grandparent: four levels up from staging/var/lib/concierge.
+			out := filepath.Join(outer, "a", "b", "out")
+			staging := filepath.Join(outer, "a", "b", "stage")
+			for _, d := range []string{out, staging} {
+				if err := os.MkdirAll(d, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i := range entries {
+				if entries[i].Linkname == "@OUT@" {
+					entries[i].Linkname = out
+				}
+			}
+			if _, err := Extract(archiveOf(t, withPaths("var/lib/concierge"), entries...), staging, &fakeOwners{}); err == nil {
+				t.Fatal("no error")
+			}
+			if fis, _ := os.ReadDir(out); len(fis) != 0 {
+				t.Fatalf("wrote outside staging: %v", fis)
+			}
+			if fi, _ := os.Stat(out); fi.Mode().Perm() != 0o755 {
+				t.Fatalf("outside directory's mode changed to %v", fi.Mode().Perm())
+			}
+		})
+	}
+}
+
+func TestExtractRefusesBadChecksum(t *testing.T) {
+	root := shortDir(t)
+	put(t, root, "var/lib/concierge/a.db", "alpha", 0o600)
+	var buf bytes.Buffer
+	if err := Write(&buf, header(), root); err != nil {
+		t.Fatal(err)
+	}
+	raw := buf.Bytes()
+	raw[len(raw)-8] ^= 0xff // the gzip trailer's CRC
+	if _, err := Extract(bytes.NewReader(raw), shortDir(t), &fakeOwners{}); err == nil {
+		t.Fatal("corrupt trailer accepted")
+	}
+}
+
+func TestExtractConfinesToBackupPaths(t *testing.T) {
+	staging := shortDir(t)
+	// A header naming a path a backup never holds.
+	if _, err := Extract(archiveOf(t, withPaths("etc")), staging, &fakeOwners{}); err == nil {
+		t.Fatal("header path outside Paths accepted")
+	}
+	// An entry outside the header's paths, though it is one a backup could hold.
+	if _, err := Extract(archiveOf(t, withPaths("var/lib/concierge"), tar.Header{Name: "etc/concierge/x"}), staging, &fakeOwners{}); err == nil {
+		t.Fatal("entry outside the header's paths accepted")
+	}
+	// A sibling that merely shares a prefix.
+	if _, err := Extract(archiveOf(t, withPaths("var/lib/concierge"), tar.Header{Name: "var/lib/concierge-worker/x"}), staging, &fakeOwners{}); err == nil {
+		t.Fatal("prefix sibling accepted")
+	}
+	if _, err := os.Stat(filepath.Join(staging, "etc")); err == nil {
+		t.Fatal("wrote an entry outside the paths")
+	}
 }
 
 func TestExtractRefusesEscapes(t *testing.T) {
