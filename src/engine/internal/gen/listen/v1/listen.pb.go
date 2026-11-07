@@ -582,9 +582,12 @@ type WhatsApp struct {
 	// The chat's JID.
 	Chat string `protobuf:"bytes,1,opt,name=chat,proto3" json:"chat,omitempty"`
 	// The chat's phone, digits only.
-	Phone         string                 `protobuf:"bytes,2,opt,name=phone,proto3" json:"phone,omitempty"`
-	Text          string                 `protobuf:"bytes,3,opt,name=text,proto3" json:"text,omitempty"`
-	SentAt        *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=sent_at,json=sentAt,proto3" json:"sent_at,omitempty"`
+	Phone  string                 `protobuf:"bytes,2,opt,name=phone,proto3" json:"phone,omitempty"`
+	Text   string                 `protobuf:"bytes,3,opt,name=text,proto3" json:"text,omitempty"`
+	SentAt *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=sent_at,json=sentAt,proto3" json:"sent_at,omitempty"`
+	// WhatsApp's own id of the message: with the chat, what the message is known by. Message.id is
+	// whatsappd's row, numbered again when its archive is wiped.
+	Id            string `protobuf:"bytes,5,opt,name=id,proto3" json:"id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -647,6 +650,13 @@ func (x *WhatsApp) GetSentAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *WhatsApp) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
 var File_concierge_listen_v1_listen_proto protoreflect.FileDescriptor
 
 const file_concierge_listen_v1_listen_proto_rawDesc = "" +
@@ -689,12 +699,13 @@ const file_concierge_listen_v1_listen_proto_rawDesc = "" +
 	"\x03SMS\x12\x16\n" +
 	"\x06number\x18\x01 \x01(\tR\x06number\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x17\n" +
-	"\asent_at\x18\x03 \x01(\tR\x06sentAt\"}\n" +
+	"\asent_at\x18\x03 \x01(\tR\x06sentAt\"\x8d\x01\n" +
 	"\bWhatsApp\x12\x12\n" +
 	"\x04chat\x18\x01 \x01(\tR\x04chat\x12\x14\n" +
 	"\x05phone\x18\x02 \x01(\tR\x05phone\x12\x12\n" +
 	"\x04text\x18\x03 \x01(\tR\x04text\x123\n" +
-	"\asent_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x06sentAt2[\n" +
+	"\asent_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x06sentAt\x12\x0e\n" +
+	"\x02id\x18\x05 \x01(\tR\x02id2[\n" +
 	"\rListenService\x12J\n" +
 	"\x06Listen\x12\".concierge.listen.v1.ListenRequest\x1a\x1a.concierge.listen.v1.Event0\x01B2Z0concierge/engine/internal/gen/listen/v1;listenv1b\x06proto3"
 

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -111,9 +112,44 @@ func (r *waRig) next(t *testing.T, m func() *listenv1.Message) ownerMsg {
 	}
 }
 
+// waIDs numbers the test's WhatsApp messages, as WhatsApp gives each its own id.
+var waIDs atomic.Int64
+
 func wa(phone, text string, sent time.Time) *listenv1.Message {
 	return &listenv1.Message{Body: &listenv1.Message_Whatsapp{Whatsapp: &listenv1.WhatsApp{
-		Chat: phone + "@s.whatsapp.net", Phone: phone, Text: text, SentAt: timestamppb.New(sent)}}}
+		Chat: phone + "@s.whatsapp.net", Id: "3EB0" + strconv.FormatInt(waIDs.Add(1), 10), Phone: phone, Text: text,
+		SentAt: timestamppb.New(sent)}}}
+}
+
+// A WhatsApp message is known by its chat and WhatsApp's own id, never by whatsappd's row: rows are
+// numbered again after its archive is wiped (WhatsApp removed with its data, then added back).
+func TestAWhatsAppMessageIsKnownByItsOwnIDNotItsRow(t *testing.T) {
+	at := time.Now()
+	before := wa("351912345678", "old", at)
+	before.Id, before.GetWhatsapp().Id = 5, "3EB0OLD"
+	after := wa("351912345678", "new", at)
+	after.Id, after.GetWhatsapp().Id = 5, "3EB0NEW" // the same row number, after a wipe
+	a, b := sourceOf(before), sourceOf(after)
+	if a.Channel != "whatsapp" || a.ID != "351912345678@s.whatsapp.net/3EB0OLD" || a.key() == b.key() {
+		t.Fatalf("sources %+v and %+v", a, b)
+	}
+	if again := sourceOf(before); again.key() != a.key() {
+		t.Fatalf("a replay of the same message is %q, not %q", again.key(), a.key())
+	}
+	noID := wa("351912345678", "?", at)
+	noID.GetWhatsapp().Id = ""
+	if got := sourceOf(noID); got.key() != "" {
+		t.Fatalf("a message with no WhatsApp id is %q", got.key())
+	}
+
+	s, ctx := openStore(t), context.Background()
+	conv := open(t, s, "chat")
+	if _, err := s.Intake(ctx, conv, owner("old"), at, a); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Intake(ctx, conv, owner("new"), at, b); err != nil {
+		t.Fatalf("the new message on a reused row: %v", err)
+	}
 }
 
 func TestTheOwnersWhatsAppReachesTheHub(t *testing.T) {

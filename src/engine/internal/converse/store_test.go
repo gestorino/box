@@ -59,7 +59,7 @@ func TestAConnectorsMessageIsTakenInOnce(t *testing.T) {
 	if _, ok, err := s.LastHeard(ctx, "whatsapp"); ok || err != nil {
 		t.Fatalf("heard before anything: %v %v", ok, err)
 	}
-	later := Source{Channel: "whatsapp", ID: 8, StoredAt: t0.Add(time.Minute + 500*time.Millisecond)}
+	later := Source{Channel: "whatsapp", ID: "351912345678@s.whatsapp.net/B", StoredAt: t0.Add(time.Minute + 500*time.Millisecond)}
 	if _, err := s.Intake(ctx, conv, owner("later"), t0, later); err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestAConnectorsMessageIsTakenInOnce(t *testing.T) {
 		t.Fatalf("heard: %v %v", heard, err)
 	}
 	// An older message heard after it (a replay's order) never moves the mark back.
-	if _, err := s.Intake(ctx, conv, owner("earlier"), t0, Source{Channel: "whatsapp", ID: 7, StoredAt: t0.Add(time.Minute)}); err != nil {
+	if _, err := s.Intake(ctx, conv, owner("earlier"), t0, Source{Channel: "whatsapp", ID: "351912345678@s.whatsapp.net/A", StoredAt: t0.Add(time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
 	if at, ok, err := s.LastHeard(ctx, "whatsapp"); !ok || err != nil || !at.Equal(later.StoredAt) {

@@ -29,12 +29,13 @@ func privatePhone(chatJID string) (string, bool) {
 	return j.User, true
 }
 
-func message(id int64, chat, phone, text string, sentAt, storedAt time.Time) *listenv1.Message {
+// message is a stored row as a listener sees it: rowid is whatsappd's, msgID WhatsApp's own.
+func message(rowid int64, chat, msgID, phone, text string, sentAt, storedAt time.Time) *listenv1.Message {
 	return &listenv1.Message{
-		Id:       id,
+		Id:       rowid,
 		StoredAt: timestamppb.New(storedAt),
 		Body: &listenv1.Message_Whatsapp{Whatsapp: &listenv1.WhatsApp{
-			Chat: chat, Phone: phone, Text: text, SentAt: timestamppb.New(sentAt)}},
+			Chat: chat, Id: msgID, Phone: phone, Text: text, SentAt: timestamppb.New(sentAt)}},
 	}
 }
 
@@ -55,13 +56,13 @@ func (a *Archive) publish(ctx context.Context, r Row, rowid int64) {
 		slog.Error("whatsapp: publishing a message", "id", rowid, "err", err)
 		return
 	}
-	a.hub.Publish(message(rowid, r.ChatJID, phone, r.Text, r.SentAt, at))
+	a.hub.Publish(message(rowid, r.ChatJID, r.ID, phone, r.Text, r.SentAt, at))
 }
 
 // Since are the incoming private text messages received live and stored at or after since, oldest first. Rows
 // received before the live flag existed are never replayed, nor is anything a history sync brought.
 func (a *Archive) Since(ctx context.Context, since time.Time) ([]*listenv1.Message, error) {
-	rows, err := a.db.QueryContext(ctx, `SELECT rowid, chat_jid, text, sent_at, stored_at FROM messages
+	rows, err := a.db.QueryContext(ctx, `SELECT rowid, chat_jid, id, text, sent_at, stored_at FROM messages
 		WHERE from_me = 0 AND live = 1 AND text <> '' AND stored_at >= ?
 		ORDER BY stored_at ASC, rowid ASC`, ts(since))
 	if err != nil {
@@ -71,8 +72,8 @@ func (a *Archive) Since(ctx context.Context, since time.Time) ([]*listenv1.Messa
 	var out []*listenv1.Message
 	for rows.Next() {
 		var id int64
-		var chat, text, sentAt, storedAt string
-		if err := rows.Scan(&id, &chat, &text, &sentAt, &storedAt); err != nil {
+		var chat, msgID, text, sentAt, storedAt string
+		if err := rows.Scan(&id, &chat, &msgID, &text, &sentAt, &storedAt); err != nil {
 			return nil, err
 		}
 		phone, ok := privatePhone(chat)
@@ -87,7 +88,7 @@ func (a *Archive) Since(ctx context.Context, since time.Time) ([]*listenv1.Messa
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, message(id, chat, phone, text, sent, stored))
+		out = append(out, message(id, chat, msgID, phone, text, sent, stored))
 	}
 	return out, rows.Err()
 }

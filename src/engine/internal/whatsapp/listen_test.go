@@ -80,7 +80,7 @@ func TestOnlyTheOwnersPrivateChatListens(t *testing.T) {
 	select {
 	case e := <-evs:
 		w := e.GetMessage().GetWhatsapp()
-		if w.GetPhone() != ownerPhone || w.GetText() != "once" || w.GetChat() != owner.String() || e.GetMessage().GetId() == 0 {
+		if w.GetPhone() != ownerPhone || w.GetText() != "once" || w.GetChat() != owner.String() || e.GetMessage().GetId() == 0 || w.GetId() == "" {
 			t.Fatalf("event %v", e)
 		}
 	case <-time.After(5 * time.Second):
@@ -152,7 +152,8 @@ func TestWhatsAppReplaysSince(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(got) != 2 || got[0].GetWhatsapp().GetText() != "first" || got[1].GetWhatsapp().GetText() != "second" ||
-		got[0].GetId() >= got[1].GetId() || got[0].GetWhatsapp().GetPhone() != ownerPhone {
+		got[0].GetId() >= got[1].GetId() || got[0].GetWhatsapp().GetPhone() != ownerPhone ||
+		got[0].GetWhatsapp().GetId() != "2" || got[1].GetWhatsapp().GetId() != "7" {
 		t.Fatalf("got %v", got)
 	}
 }

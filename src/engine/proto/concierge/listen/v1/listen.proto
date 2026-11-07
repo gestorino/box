@@ -86,4 +86,7 @@ message WhatsApp {
   string phone = 2;
   string text = 3;
   google.protobuf.Timestamp sent_at = 4;
+  // WhatsApp's own id of the message: with the chat, what the message is known by. Message.id is
+  // whatsappd's row, numbered again when its archive is wiped.
+  string id = 5;
 }

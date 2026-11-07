@@ -210,7 +210,18 @@ func deliver(ctx context.Context, h owners, s Settings, now func() time.Time, ow
 	if ctx.Err() != nil {
 		return
 	}
-	h.Owner(ctx, "whatsapp", w.GetChat(), w.GetText(), Source{Channel: "whatsapp", ID: m.GetId(), StoredAt: m.GetStoredAt().AsTime()})
+	h.Owner(ctx, "whatsapp", w.GetChat(), w.GetText(), sourceOf(m))
+}
+
+// sourceOf is the WhatsApp message a listen message carries, known by its chat and WhatsApp's own
+// id: whatsappd's row id (Message.id) is numbered again after its archive is wiped, so it would take
+// a new message for one heard before. One with no WhatsApp id is no source (nothing to know it by).
+func sourceOf(m *listenv1.Message) Source {
+	w := m.GetWhatsapp()
+	if w.GetId() == "" {
+		return Source{}
+	}
+	return Source{Channel: "whatsapp", ID: w.GetChat() + "/" + w.GetId(), StoredAt: m.GetStoredAt().AsTime()}
 }
 
 func digits(s string) string {

@@ -8,7 +8,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strconv"
 	"time"
 
 	"concierge/engine/internal/dbmigrate"
@@ -154,19 +153,20 @@ func (s *Store) Open(ctx context.Context, channel, thread string, at time.Time) 
 		CostKnown: true}, nil
 }
 
-// Source is the connector's message an owner's event came from: its channel, its id there and when
-// the connector stored it. The zero Source is none (an errand's event).
+// Source is the connector's message an owner's event came from: its channel, the message's own
+// identity there (for WhatsApp its chat and WhatsApp's id, never whatsappd's row, which is numbered
+// again after a wipe) and when the connector stored it. The zero Source is none (an errand's event).
 type Source struct {
 	Channel  string
-	ID       int64
+	ID       string
 	StoredAt time.Time
 }
 
 func (src Source) key() string {
-	if src.ID == 0 {
+	if src.ID == "" {
 		return ""
 	}
-	return src.Channel + ":" + strconv.FormatInt(src.ID, 10)
+	return src.Channel + ":" + src.ID
 }
 
 // ErrHeard is a connector's message taken in already.
