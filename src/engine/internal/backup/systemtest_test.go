@@ -15,13 +15,13 @@ type fakeSystem struct {
 	decryptErr    error
 	encryptErr    error
 	callsOut      string
+	callsSeq      []string // when set, each Calls answers the next one (then callsOut)
 	callsErr      error
 	active        map[string]bool // a unit missing from it is active
 	stopErr       error
 	startErr      error
-	maskErr       error
-	unmaskErr     error
 	syncErr       error
+	onStart       func() // called on Start, before it answers
 }
 
 func (f *fakeSystem) record(method string, args ...string) {
@@ -35,17 +35,10 @@ func (f *fakeSystem) Stop(units []string) error {
 
 func (f *fakeSystem) Start(units []string) error {
 	f.record("Start", units...)
+	if f.onStart != nil {
+		f.onStart()
+	}
 	return f.startErr
-}
-
-func (f *fakeSystem) Mask(units []string) error {
-	f.record("Mask", units...)
-	return f.maskErr
-}
-
-func (f *fakeSystem) Unmask(units []string) error {
-	f.record("Unmask", units...)
-	return f.unmaskErr
 }
 
 func (f *fakeSystem) Active(unit string) (bool, error) {
@@ -71,6 +64,11 @@ func (f *fakeSystem) Encrypt(key []byte, credPath string) error {
 
 func (f *fakeSystem) Calls() (string, error) {
 	f.record("Calls")
+	if len(f.callsSeq) > 0 {
+		out := f.callsSeq[0]
+		f.callsSeq = f.callsSeq[1:]
+		return out, f.callsErr
+	}
 	return f.callsOut, f.callsErr
 }
 

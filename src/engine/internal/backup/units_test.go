@@ -1,6 +1,9 @@
 package backup
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestUnitsStopOrder(t *testing.T) {
 	n := len(Units)
@@ -19,5 +22,26 @@ func TestUnitsStopOrder(t *testing.T) {
 	}
 	if n != 17 {
 		t.Errorf("%d units; want 17", n)
+	}
+}
+
+// The core starts in this order; hostd then starts the added connectors itself, as at boot.
+func TestCoreUnitsStartOrder(t *testing.T) {
+	want := []string{
+		"concierge-secrets.socket",
+		"concierge-secrets.service",
+		"concierge-hostd.socket",
+		"concierge-hostd-settings.socket",
+		"concierge-hostd.service",
+		"concierge-worker.service",
+		"concierge-engine.service",
+	}
+	if !slices.Equal(CoreUnits, want) {
+		t.Fatalf("CoreUnits = %q, want %q", CoreUnits, want)
+	}
+	for _, u := range CoreUnits {
+		if !slices.Contains(Units, u) {
+			t.Errorf("%s is not one of Units: a backup would not stop it", u)
+		}
 	}
 }

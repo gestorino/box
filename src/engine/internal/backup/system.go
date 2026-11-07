@@ -15,8 +15,6 @@ import (
 type System interface {
 	Stop(units []string) error
 	Start(units []string) error
-	Mask(units []string) error
-	Unmask(units []string) error
 	Active(unit string) (bool, error)
 	// Decrypt returns the TPM-sealed credential at credPath.
 	Decrypt(credPath string) ([]byte, error)
@@ -30,7 +28,7 @@ type System interface {
 
 // Units are the box's services and sockets in stop order: the engine first and
 // secretd (its service, then its socket) last, so nothing that reads secrets
-// outlives it. Starting goes in reverse: secretd first, the engine last.
+// outlives it. A backup or restore stops them all; it starts only CoreUnits.
 var Units = []string{
 	"concierge-engine.service",
 	"concierge-worker.service",
@@ -51,6 +49,20 @@ var Units = []string{
 	"concierge-secrets.socket",
 }
 
+// CoreUnits are what a backup or restore starts again, in start order: secretd first, the engine
+// last. hostd then starts the connectors the owner added, and keeps the rest stopped, as at boot.
+// While Marker exists none of the units starts (each has ConditionPathExists=! on it), reboot
+// included, so it is removed before they are started.
+var CoreUnits = []string{
+	"concierge-secrets.socket",
+	"concierge-secrets.service",
+	"concierge-hostd.socket",
+	"concierge-hostd-settings.socket",
+	"concierge-hostd.service",
+	"concierge-worker.service",
+	"concierge-engine.service",
+}
+
 const credName = "--name=concierge-secrets-master"
 
 // Exec is the real System: it runs the box's commands. It is exercised only
@@ -60,10 +72,8 @@ type Exec struct{}
 
 var _ System = Exec{}
 
-func (Exec) Stop(units []string) error   { return systemctl("stop", units) }
-func (Exec) Start(units []string) error  { return systemctl("start", units) }
-func (Exec) Mask(units []string) error   { return systemctl("mask", units) }
-func (Exec) Unmask(units []string) error { return systemctl("unmask", units) }
+func (Exec) Stop(units []string) error  { return systemctl("stop", units) }
+func (Exec) Start(units []string) error { return systemctl("start", units) }
 
 func systemctl(verb string, units []string) error {
 	return run(exec.Command("systemctl", append([]string{verb}, units...)...), verb)

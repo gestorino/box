@@ -25,20 +25,23 @@ type RestoreOptions struct {
 	sleep func(time.Duration) // the services' poll; time.Sleep when nil
 }
 
-// Report is what a restore did: the backup it put back, on its own box or another.
+// Report is what a restore did: the backup it put back, on its own box or another. Leftovers are
+// copies of the box's old state the restore could not delete (it is done; they are the owner's to
+// delete).
 type Report struct {
-	SameBox bool
-	Header  Header
+	SameBox   bool
+	Header    Header
+	Leftovers []string
 }
 
-// startWait is how long a restore waits for every service to come back.
+// startWait is how long a restore waits for the core's services to come back.
 const startWait = 60 * time.Second
 
 // Restore puts the backup at from back on the box under root, replacing the state the backup
 // holds: it extracts to a staging directory, opens the master key (the box's TPM, else the
 // recovery code, then sealed to this TPM), stops the services, swaps the backup's paths in and
-// starts the services again. Until the swap nothing on the box changes; the staging directory is
-// gone afterwards, whatever happened. A service that is not running a minute later is an error
+// starts the core again. Until the swap nothing on the box changes; the staging directory is gone
+// afterwards, whatever happened. A core service that is not running a minute later is an error
 // that names it, though the state stays restored.
 func Restore(sys System, root, from string, o RestoreOptions) (Report, error) {
 	if err := idle(sys, root); err != nil {
@@ -102,25 +105,28 @@ func Restore(sys System, root, from string, o RestoreOptions) (Report, error) {
 		return Report{}, err
 	}
 
+	// Again, right before stopping: a run or a call may have begun since (the code took typing).
+	if err := idle(sys, root); err != nil {
+		return Report{}, err
+	}
 	if err := sys.Stop(Units); err != nil {
 		return Report{}, err
 	}
-	if err := Swap(root, staging, staged.Paths); err != nil {
-		return Report{}, fmt.Errorf("putting the backup in place, undone: %w (the services are stopped: make backup-resume starts them)", err)
+	left, err := Swap(root, staging, h.ID, staged.Paths)
+	if err != nil {
+		return Report{}, fmt.Errorf("%w (the services are stopped: make backup-resume starts them)", err)
 	}
-	if err := sys.Unmask(Units); err != nil {
-		return Report{}, err
-	}
-	if err := sys.Start(reversed(Units)); err != nil {
-		return Report{}, err
-	}
+	rep := Report{SameBox: same, Header: staged, Leftovers: left}
+	// The marker first: while it exists the units' condition keeps them from starting.
 	if err := removeMarker(root); err != nil {
-		return Report{}, err
+		return rep, restoredBut("removing the stop marker", err)
+	}
+	if err := sys.Start(CoreUnits); err != nil {
+		return rep, restoredBut("starting the services", err)
 	}
 	if err := os.RemoveAll(staging); err != nil {
-		return Report{}, err
+		return rep, restoredBut("removing the staging directory", err)
 	}
-	rep := Report{SameBox: same, Header: staged}
 	sleep := o.sleep
 	if sleep == nil {
 		sleep = time.Sleep
@@ -128,16 +134,29 @@ func Restore(sys System, root, from string, o RestoreOptions) (Report, error) {
 	return rep, waitActive(sys, sleep)
 }
 
+func restoredBut(what string, err error) error {
+	return fmt.Errorf("the backup is restored, but %s failed: %w", what, err)
+}
+
 // openMasterKey leaves the staged credential one this box's TPM opens and says whether it already
 // was (the same box). Otherwise the recovery code unlocks the staged recovery copy and the key is
-// sealed over the staged credential. The key stays in memory and pipes.
+// sealed over the staged credential. The key stays in memory and pipes. Why the TPM refused it is
+// part of any error that follows.
 func openMasterKey(sys System, cred, recovery string, o RestoreOptions) (sameBox bool, err error) {
+	var tpmErr error
 	if !o.NewBox {
-		if key, err := sys.Decrypt(cred); err == nil {
+		key, err := sys.Decrypt(cred)
+		if err == nil {
 			clear(key)
 			return true, nil
 		}
+		tpmErr = err
 	}
+	defer func() {
+		if err != nil && tpmErr != nil {
+			err = fmt.Errorf("%w (this box's TPM did not open the backup's master key: %v)", err, tpmErr)
+		}
+	}()
 	locked, err := os.ReadFile(recovery)
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, errors.New("this backup has no recovery copy: it restores on its own box only")
@@ -163,18 +182,18 @@ func openMasterKey(sys System, cred, recovery string, o RestoreOptions) (sameBox
 	return false, nil
 }
 
-// waitActive polls every service in Units each second until all are active, for startWait at
-// most, then names those that are not.
+// waitActive polls the core's services each second until all are active, for startWait at most,
+// then names those that are not. The connectors are hostd's to start, only those added.
 func waitActive(sys System, sleep func(time.Duration)) error {
 	for waited := time.Duration(0); ; waited += time.Second {
 		var down []string
-		for _, u := range Units {
+		for _, u := range CoreUnits {
 			if !strings.HasSuffix(u, ".service") {
 				continue
 			}
 			up, err := sys.Active(u)
 			if err != nil {
-				return err
+				return restoredBut("checking "+u, err)
 			}
 			if !up {
 				down = append(down, u)
@@ -195,60 +214,92 @@ func waitActive(sys System, sleep func(time.Duration)) error {
 var parentModes = map[string]fs.FileMode{"etc/credstore.encrypted": 0o700}
 
 // Swap puts each of paths (relative, a directory or a file) from staging in place under root: the
-// live one, if any, is renamed aside to <path>.old-<id>, the staged one renamed in. A failure puts
-// back every path already done; success removes the copies aside. Staging and root must be on one
-// filesystem.
-func Swap(root, staging string, paths []string) error {
-	id, err := newID()
-	if err != nil {
-		return err
+// live one, if any, is renamed aside to <path>.old-<id>, the staged one renamed in. It refuses,
+// changing nothing, while a copy aside with that id is left from an earlier run. A failure undoes
+// every path already done, and the error says whether that worked or which copies aside hold the
+// old state. After a swap that went through, the copies aside are removed; those that can't be are
+// returned, the swap still done. Staging and root must be on one filesystem.
+func Swap(root, staging, id string, paths []string) (leftovers []string, err error) {
+	return swap(os.Rename, root, staging, id, paths)
+}
+
+func swap(rename func(from, to string) error, root, staging, id string, paths []string) ([]string, error) {
+	aside := func(p string) string { return filepath.Join(root, p) + ".old-" + id }
+	asideNow := func() ([]string, error) {
+		var found []string
+		for _, p := range paths {
+			if ok, err := exists(aside(p)); err != nil {
+				return nil, err
+			} else if ok {
+				found = append(found, aside(p))
+			}
+		}
+		return found, nil
 	}
+	earlier, err := asideNow()
+	if err != nil {
+		return nil, err
+	}
+	if earlier != nil {
+		return nil, fmt.Errorf("%s left from an earlier run: put it back or delete it first; nothing changed", strings.Join(earlier, ", "))
+	}
+
 	type move struct {
 		path  string
 		aside bool // a live one was moved aside
 	}
 	var done []move
-	undo := func(err error) error {
-		errs := []error{err}
+	fail := func(p string, err error, undoErrs ...error) error {
 		for _, m := range slices.Backward(done) {
 			live := filepath.Join(root, m.path)
-			errs = append(errs, os.Rename(live, filepath.Join(staging, m.path)))
+			undoErrs = append(undoErrs, rename(live, filepath.Join(staging, m.path)))
 			if m.aside {
-				errs = append(errs, os.Rename(live+".old-"+id, live))
+				undoErrs = append(undoErrs, rename(aside(m.path), live))
 			}
 		}
-		return errors.Join(errs...)
+		undoErr := errors.Join(undoErrs...)
+		if undoErr == nil {
+			return fmt.Errorf("putting %s in place: %w; undone, nothing changed", p, err)
+		}
+		olds, _ := asideNow()
+		if olds == nil {
+			return fmt.Errorf("putting %s in place: %w; undoing it partly failed (%v), though the old state is back in place", p, err, undoErr)
+		}
+		return fmt.Errorf("putting %s in place: %w; and undoing it failed (%v): the box's old state is in %s: put it back by hand",
+			p, err, undoErr, strings.Join(olds, ", "))
 	}
 	for _, p := range paths {
 		live := filepath.Join(root, p)
-		old := live + ".old-" + id
 		if err := ensureParent(root, filepath.Dir(p)); err != nil {
-			return undo(err)
+			return nil, fail(p, err)
 		}
-		aside, err := exists(live)
+		was, err := exists(live)
 		if err != nil {
-			return undo(err)
+			return nil, fail(p, err)
 		}
-		if aside {
-			if err := os.Rename(live, old); err != nil {
-				return undo(err)
+		if was {
+			if err := rename(live, aside(p)); err != nil {
+				return nil, fail(p, err)
 			}
 		}
-		if err := os.Rename(filepath.Join(staging, p), live); err != nil {
-			if aside {
-				err = errors.Join(err, os.Rename(old, live))
+		if err := rename(filepath.Join(staging, p), live); err != nil {
+			var back error
+			if was {
+				back = rename(aside(p), live)
 			}
-			return undo(err)
+			return nil, fail(p, err, back)
 		}
-		done = append(done, move{p, aside})
+		done = append(done, move{p, was})
 	}
-	var errs []error
+	var left []string
 	for _, m := range done {
 		if m.aside {
-			errs = append(errs, os.RemoveAll(filepath.Join(root, m.path)+".old-"+id))
+			if err := os.RemoveAll(aside(m.path)); err != nil {
+				left = append(left, aside(m.path))
+			}
 		}
 	}
-	return errors.Join(errs...)
+	return left, nil
 }
 
 // ensureParent makes dir (relative to root) and its missing parents, each with its parentModes mode.
@@ -280,44 +331,56 @@ var buildPaths = []string{"bin", "ui", "browser", "VERSION", "REVISION"}
 // daemons must be the box's (the build runs under the box's units), the box keeps its own backup
 // command (the restore that follows is the box's), the services are stopped and the worker's venv
 // rebuilt. It starts nothing: the restore that follows does. Run as root, every file it writes is
-// root's, with the archive's modes.
-func InstallBuild(sys System, root, archive string) error {
+// root's, with the archive's modes. Leftovers are copies of the old build it could not delete.
+func InstallBuild(sys System, root, archive string) (leftovers []string, err error) {
 	if err := idle(sys, root); err != nil {
-		return err
+		return nil, err
 	}
 	dir, err := stateDir(root)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	staging, err := os.MkdirTemp(dir, "build-")
+	id, err := newID()
 	if err != nil {
-		return err
+		return nil, err
+	}
+	staging := filepath.Join(dir, "build-"+id)
+	if err := os.Mkdir(staging, 0o700); err != nil {
+		return nil, err
 	}
 	defer os.RemoveAll(staging)
 	if err := extractBuild(archive, staging); err != nil {
-		return fmt.Errorf("the build's archive: %w", err)
+		return nil, fmt.Errorf("the build's archive: %w", err)
 	}
 	for _, p := range buildPaths {
 		if ok, err := exists(filepath.Join(staging, p)); err != nil {
-			return err
+			return nil, err
 		} else if !ok {
-			return fmt.Errorf("the build's archive has no %s", p)
+			return nil, fmt.Errorf("the build's archive has no %s", p)
 		}
 	}
 	opt := filepath.Join(root, "opt/concierge")
 	if err := sameDaemons(filepath.Join(staging, "bin"), filepath.Join(opt, "bin")); err != nil {
-		return err
+		return nil, err
 	}
 	if err := keepOwnBackup(filepath.Join(opt, "bin/backup"), filepath.Join(staging, "bin/backup")); err != nil {
-		return err
+		return nil, err
+	}
+	// Again, right before stopping: a run or a call may have begun while the archive was unpacked.
+	if err := idle(sys, root); err != nil {
+		return nil, err
 	}
 	if err := sys.Stop(Units); err != nil {
-		return err
+		return nil, err
 	}
-	if err := Swap(opt, staging, buildPaths); err != nil {
-		return fmt.Errorf("installing the build, undone: %w (the services are stopped: make backup-resume starts them)", err)
+	left, err := Swap(opt, staging, id, buildPaths)
+	if err != nil {
+		return nil, fmt.Errorf("installing the build: %w (the services are stopped: make backup-resume starts them)", err)
 	}
-	return sys.SyncVenv(filepath.Join(opt, "browser"))
+	if err := sys.SyncVenv(filepath.Join(opt, "browser")); err != nil {
+		return left, fmt.Errorf("the build is installed, but rebuilding the worker's venv failed: %w", err)
+	}
+	return left, nil
 }
 
 // extractBuild unpacks a dist archive's directories and files into staging, modes as stored,

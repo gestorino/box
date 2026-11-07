@@ -81,6 +81,9 @@ func stoppedBox(t *testing.T) string {
 	return root
 }
 
+// testID is header()'s ID: the backup's, and the .old- copies' suffix.
+var testID = header().ID
+
 func staged(root, rel string) string {
 	return filepath.Join(root, "var/lib/concierge-backup/staging-"+header().ID, rel)
 }
@@ -134,28 +137,31 @@ func withoutActive(calls []string) []string {
 func TestRestoreSameBox(t *testing.T) {
 	root := stoppedBox(t)
 	sys := &fakeSystem{key: masterKey()}
+	markerGoneAtStart(t, sys, root)
 	var asked bool
 	var sleeps int
 	rep, err := Restore(sys, root, backupFile(t, nil), RestoreOptions{ReadCode: refuseCode(&asked), sleep: noSleep(&sleeps)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !rep.SameBox || rep.Header.ID != header().ID || asked || sleeps != 0 {
+	if !rep.SameBox || rep.Header.ID != header().ID || asked || sleeps != 0 || rep.Leftovers != nil {
 		t.Fatalf("report %+v, code asked %v, slept %d", rep, asked, sleeps)
 	}
 	want := []string{
 		"Calls",
 		"Decrypt " + staged(root, credentialFile),
-		"Stop " + units(),
-		"Unmask " + units(),
-		"Start " + reverseds(),
+		"Calls", // busy again, right before stopping
+		"Stop " + stops(),
+		"Start " + starts(),
 	}
 	if got := withoutActive(sys.calls); !reflect.DeepEqual(got, want) {
 		t.Fatalf("calls = %q, want %q", got, want)
 	}
+	// Only the core's services: hostd starts the added connectors itself, and stops the rest.
 	for _, u := range Units {
-		if strings.HasSuffix(u, ".service") != slices.Contains(sys.calls, "Active "+u) {
-			t.Fatalf("%s: polled %v", u, slices.Contains(sys.calls, "Active "+u))
+		core := slices.Contains(CoreUnits, u) && strings.HasSuffix(u, ".service")
+		if polled := slices.Contains(sys.calls, "Active "+u); polled != core {
+			t.Fatalf("%s: polled %v", u, polled)
 		}
 	}
 	assertState(t, root, restored)
@@ -167,14 +173,18 @@ func TestRestoreSameBox(t *testing.T) {
 
 func TestRestoreNamesServicesThatDidNotStart(t *testing.T) {
 	root := stoppedBox(t)
-	sys := &fakeSystem{key: masterKey(), active: map[string]bool{"concierge-email.service": false}}
+	// The email connector is not added (hostd keeps it stopped): not the restore's to wait for.
+	sys := &fakeSystem{key: masterKey(), active: map[string]bool{
+		"concierge-worker.service": false,
+		"concierge-email.service":  false,
+	}}
 	var sleeps int
 	_, err := Restore(sys, root, backupFile(t, nil), RestoreOptions{sleep: noSleep(&sleeps)})
-	if err == nil || !strings.Contains(err.Error(), "concierge-email.service") {
+	if err == nil || !strings.Contains(err.Error(), "concierge-worker.service") {
 		t.Fatalf("err = %v", err)
 	}
-	if strings.Contains(err.Error(), "concierge-engine.service") {
-		t.Fatalf("names a service that started: %v", err)
+	if strings.Contains(err.Error(), "concierge-engine.service") || strings.Contains(err.Error(), "concierge-email.service") {
+		t.Fatalf("names a service it should not: %v", err)
 	}
 	if sleeps != 60 {
 		t.Fatalf("polled over %d s, want 60", sleeps)
@@ -263,7 +273,7 @@ func TestRestoreNewBox(t *testing.T) {
 			if dec == o.NewBox {
 				t.Fatalf("decrypted the staged credential: %v, new box %v", dec, o.NewBox)
 			}
-			if i, j := slices.Index(sys.calls, enc), slices.Index(sys.calls, "Stop "+units()); i < 0 || j < i {
+			if i, j := slices.Index(sys.calls, enc), slices.Index(sys.calls, "Stop "+stops()); i < 0 || j < i {
 				t.Fatalf("calls = %q: sealed after stopping", sys.calls)
 			}
 			// The fake seals nothing: what was staged goes in.
@@ -297,18 +307,88 @@ func TestRestoreWrongCodeChangesNothing(t *testing.T) {
 }
 
 func TestRestoreNoRecoveryCopyOnNewBox(t *testing.T) {
+	for name, c := range map[string]struct {
+		o       RestoreOptions
+		sys     *fakeSystem
+		decrypt bool
+		cause   string // what the error must also say
+	}{
+		"asked for": {RestoreOptions{NewBox: true}, &fakeSystem{key: masterKey()}, false, ""},
+		// Not asked for, but this box's TPM does not open the backup's key: the owner sees why.
+		"the TPM refuses it": {RestoreOptions{}, &fakeSystem{decryptErr: errors.New("tpm: no such key")}, true, "tpm: no such key"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := stoppedBox(t)
+			var asked bool
+			c.o.ReadCode = refuseCode(&asked)
+			_, err := Restore(c.sys, root, backupFile(t, nil), c.o)
+			if err == nil || !strings.Contains(err.Error(), "restores on its own box only") || !strings.Contains(err.Error(), c.cause) {
+				t.Fatalf("err = %v", err)
+			}
+			want := []string{"Calls"}
+			if c.decrypt {
+				want = append(want, "Decrypt "+staged(root, credentialFile))
+			}
+			if asked || !reflect.DeepEqual(c.sys.calls, want) {
+				t.Fatalf("code asked %v, calls %q, want %q", asked, c.sys.calls, want)
+			}
+			assertState(t, root, untouched)
+			assertNoLeftovers(t, root)
+		})
+	}
+}
+
+func TestRestoreRechecksBusyBeforeStopping(t *testing.T) {
 	root := stoppedBox(t)
-	sys := &fakeSystem{key: masterKey()}
-	var asked bool
-	_, err := Restore(sys, root, backupFile(t, nil), RestoreOptions{NewBox: true, ReadCode: refuseCode(&asked)})
-	if err == nil || !strings.Contains(err.Error(), "restores on its own box only") {
+	// Idle when the restore begins; a call has come in by the time it would stop the services.
+	sys := &fakeSystem{key: masterKey(), callsSeq: []string{"", busyCall}}
+	_, err := Restore(sys, root, backupFile(t, nil), RestoreOptions{sleep: noSleep(new(int))})
+	if err == nil || !strings.Contains(err.Error(), "a call is in progress") {
 		t.Fatalf("err = %v", err)
 	}
-	if asked || !reflect.DeepEqual(sys.calls, []string{"Calls"}) {
-		t.Fatalf("code asked %v, calls %q", asked, sys.calls)
+	if want := []string{"Calls", "Decrypt " + staged(root, credentialFile), "Calls"}; !reflect.DeepEqual(sys.calls, want) {
+		t.Fatalf("calls = %q, want %q", sys.calls, want)
 	}
 	assertState(t, root, untouched)
 	assertNoLeftovers(t, root)
+}
+
+func TestRestoreSaysWhatFailedAfterTheSwap(t *testing.T) {
+	root := stoppedBox(t)
+	sys := &fakeSystem{key: masterKey(), startErr: errors.New("start refused")}
+	_, err := Restore(sys, root, backupFile(t, nil), RestoreOptions{sleep: noSleep(new(int))})
+	if err == nil || !strings.Contains(err.Error(), "restored, but") || !strings.Contains(err.Error(), "start refused") {
+		t.Fatalf("err = %v", err)
+	}
+	assertState(t, root, restored)
+}
+
+func TestRestoreCarriesOnWithAnOldCopyLeft(t *testing.T) {
+	root := stoppedBox(t)
+	// The live state holds a directory whose file can't be deleted: its .old- copy stays.
+	put(t, root, "var/lib/concierge/sub/f", "live", 0o600)
+	sub := filepath.Join(root, "var/lib/concierge/sub")
+	if err := os.Chmod(sub, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(root, "var/lib/concierge.old-"+testID)
+	t.Cleanup(func() { os.Chmod(sub, 0o755); os.Chmod(filepath.Join(old, "sub"), 0o755) })
+
+	sys := &fakeSystem{key: masterKey()}
+	rep, err := Restore(sys, root, backupFile(t, nil), RestoreOptions{sleep: noSleep(new(int))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(rep.Leftovers, []string{old}) {
+		t.Fatalf("leftovers = %q, want %q", rep.Leftovers, old)
+	}
+	assertState(t, root, restored)
+	if !slices.Contains(sys.calls, "Start "+starts()) {
+		t.Fatalf("calls = %q: not started", sys.calls)
+	}
+	if _, err := os.Stat(filepath.Join(root, Marker)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("marker still there: %v", err)
+	}
 }
 
 func TestRestoreRemovesStagingWhenExtractFails(t *testing.T) {
@@ -379,8 +459,9 @@ func TestSwapRollsBackOnFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chmod(ro, 0o755) })
 
-	if err := Swap(root, staging, paths); err == nil {
-		t.Fatal("no error")
+	_, err := Swap(root, staging, testID, paths)
+	if err == nil || !strings.Contains(err.Error(), "undone") || strings.Contains(err.Error(), "by hand") {
+		t.Fatalf("err = %v, want it to say the swap was undone", err)
 	}
 	for _, p := range paths {
 		if got := readFile(t, filepath.Join(root, p, "f")); got != "live" {
@@ -394,13 +475,82 @@ func TestSwapRollsBackOnFailure(t *testing.T) {
 	if err := os.Chmod(ro, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := Swap(root, staging, paths); err != nil {
-		t.Fatal(err)
+	if left, err := Swap(root, staging, testID, paths); err != nil || left != nil {
+		t.Fatal(left, err)
 	}
 	for _, p := range paths {
 		if got := readFile(t, filepath.Join(root, p, "f")); got != "staged" {
 			t.Fatalf("%s = %q after the second swap", p, got)
 		}
+		if _, err := os.Stat(filepath.Join(root, p+".old-"+testID)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s's old copy left: %v", p, err)
+		}
+	}
+}
+
+func TestSwapSaysWhenUndoingFails(t *testing.T) {
+	root, staging := t.TempDir(), t.TempDir()
+	paths := []string{"a/one", "b/two"}
+	for _, p := range paths {
+		put(t, root, p+"/f", "live", 0o600)
+		put(t, staging, p+"/f", "staged", 0o600)
+	}
+	// b/two can't be put in place, and a/one can't be taken back out.
+	rename := func(from, to string) error {
+		if from == filepath.Join(staging, "b/two") || to == filepath.Join(staging, "a/one") {
+			return errors.New("refused")
+		}
+		return os.Rename(from, to)
+	}
+	_, err := swap(rename, root, staging, testID, paths)
+	old := filepath.Join(root, "a/one.old-"+testID)
+	if err == nil || !strings.Contains(err.Error(), "by hand") || !strings.Contains(err.Error(), old) {
+		t.Fatalf("err = %v, want it to name %s", err, old)
+	}
+	if got := readFile(t, filepath.Join(old, "f")); got != "live" {
+		t.Fatalf("the old state's copy = %q", got)
+	}
+	if got := readFile(t, filepath.Join(root, "b/two/f")); got != "live" {
+		t.Fatalf("b/two = %q, want it back", got)
+	}
+}
+
+func TestSwapKeepsGoingWhenAnOldCopyStays(t *testing.T) {
+	root, staging := t.TempDir(), t.TempDir()
+	put(t, root, "a/one/sub/f", "live", 0o600)
+	put(t, staging, "a/one/f", "staged", 0o600)
+	if err := os.Chmod(filepath.Join(root, "a/one/sub"), 0o555); err != nil { // its file can't be deleted
+		t.Fatal(err)
+	}
+	old := filepath.Join(root, "a/one.old-"+testID)
+	t.Cleanup(func() { os.Chmod(filepath.Join(old, "sub"), 0o755) })
+
+	left, err := Swap(root, staging, testID, []string{"a/one"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(left, []string{old}) {
+		t.Fatalf("left = %q, want %q", left, old)
+	}
+	if got := readFile(t, filepath.Join(root, "a/one/f")); got != "staged" {
+		t.Fatalf("a/one = %q", got)
+	}
+}
+
+func TestSwapRefusesOldCopiesLeft(t *testing.T) {
+	root, staging := t.TempDir(), t.TempDir()
+	put(t, root, "a/one/f", "live", 0o600)
+	put(t, root, "a/one.old-"+testID+"/f", "earlier", 0o600)
+	put(t, staging, "a/one/f", "staged", 0o600)
+	_, err := Swap(root, staging, testID, []string{"a/one"})
+	if err == nil || !strings.Contains(err.Error(), "a/one.old-"+testID) {
+		t.Fatalf("err = %v", err)
+	}
+	if got := readFile(t, filepath.Join(root, "a/one/f")); got != "live" {
+		t.Fatalf("a/one = %q", got)
+	}
+	if got := readFile(t, filepath.Join(staging, "a/one/f")); got != "staged" {
+		t.Fatalf("staged a/one = %q", got)
 	}
 }
 
@@ -409,8 +559,8 @@ func TestSwapInstallsWhereNothingWas(t *testing.T) {
 	put(t, staging, credentialFile, "sealed", 0o600)
 	put(t, staging, "var/lib/concierge/signins.db", "staged", 0o600)
 	put(t, root, "var/lib/concierge/signins.db", "live", 0o600)
-	if err := Swap(root, staging, []string{credentialFile, "var/lib/concierge"}); err != nil {
-		t.Fatal(err)
+	if left, err := Swap(root, staging, testID, []string{credentialFile, "var/lib/concierge"}); err != nil || left != nil {
+		t.Fatal(left, err)
 	}
 	if got := readFile(t, filepath.Join(root, credentialFile)); got != "sealed" {
 		t.Fatalf("credential = %q", got)
@@ -500,7 +650,7 @@ func TestInstallBuildRefusesOtherDaemons(t *testing.T) {
 			files := oldBuild()
 			c.edit(files)
 			sys := &fakeSystem{}
-			err := InstallBuild(sys, root, distOf(t, files))
+			_, err := InstallBuild(sys, root, distOf(t, files))
 			if err == nil || !strings.Contains(err.Error(), c.name) {
 				t.Fatalf("err = %v, want it to name %s", err, c.name)
 			}
@@ -520,11 +670,11 @@ func TestInstallBuildRefusesOtherDaemons(t *testing.T) {
 func TestInstallBuild(t *testing.T) {
 	root := deployed(t)
 	sys := &fakeSystem{}
-	if err := InstallBuild(sys, root, distOf(t, oldBuild())); err != nil {
-		t.Fatal(err)
+	if left, err := InstallBuild(sys, root, distOf(t, oldBuild())); err != nil || left != nil {
+		t.Fatal(left, err)
 	}
 	opt := filepath.Join(root, "opt/concierge")
-	if want := []string{"Calls", "Stop " + units(), "SyncVenv " + filepath.Join(opt, "browser")}; !reflect.DeepEqual(sys.calls, want) {
+	if want := []string{"Calls", "Calls", "Stop " + stops(), "SyncVenv " + filepath.Join(opt, "browser")}; !reflect.DeepEqual(sys.calls, want) {
 		t.Fatalf("calls = %q, want %q", sys.calls, want)
 	}
 	for p, f := range oldBuild() {
@@ -561,7 +711,7 @@ func TestInstallBuildRefusesEntriesOutsideTheBuild(t *testing.T) {
 	files := oldBuild()
 	files["etc/passwd"] = distFile{"x", 0o644}
 	sys := &fakeSystem{}
-	if err := InstallBuild(sys, root, distOf(t, files)); err == nil {
+	if _, err := InstallBuild(sys, root, distOf(t, files)); err == nil {
 		t.Fatal("no error")
 	}
 	if !reflect.DeepEqual(sys.calls, []string{"Calls"}) {
@@ -569,5 +719,35 @@ func TestInstallBuildRefusesEntriesOutsideTheBuild(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "etc/passwd")); err == nil {
 		t.Fatal("wrote outside the build")
+	}
+}
+
+func TestInstallBuildRechecksBusyBeforeStopping(t *testing.T) {
+	root := deployed(t)
+	sys := &fakeSystem{callsSeq: []string{"", busyCall}}
+	_, err := InstallBuild(sys, root, distOf(t, oldBuild()))
+	if err == nil || !strings.Contains(err.Error(), "a call is in progress") {
+		t.Fatalf("err = %v", err)
+	}
+	if want := []string{"Calls", "Calls"}; !reflect.DeepEqual(sys.calls, want) {
+		t.Fatalf("calls = %q, want %q", sys.calls, want)
+	}
+	if got := readFile(t, filepath.Join(root, "opt/concierge/bin/engine")); got != "new engine" {
+		t.Fatalf("engine = %q", got)
+	}
+	if es, _ := os.ReadDir(filepath.Join(root, "var/lib/concierge-backup")); len(es) != 0 {
+		t.Fatalf("staging left: %v", es)
+	}
+}
+
+func TestInstallBuildSaysWhatFailedAfterTheSwap(t *testing.T) {
+	root := deployed(t)
+	sys := &fakeSystem{syncErr: errors.New("uv refused")}
+	_, err := InstallBuild(sys, root, distOf(t, oldBuild()))
+	if err == nil || !strings.Contains(err.Error(), "installed, but") || !strings.Contains(err.Error(), "uv refused") {
+		t.Fatalf("err = %v", err)
+	}
+	if got := readFile(t, filepath.Join(root, "opt/concierge/bin/engine")); got != "old engine" {
+		t.Fatalf("engine = %q", got)
 	}
 }

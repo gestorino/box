@@ -9,13 +9,13 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 )
 
-// Marker holds the ID of the backup the box's services were stopped (and masked) for, relative to
-// the root. While it exists only a restore of that backup, or a resume, starts them again.
+// Marker holds the ID of the backup the box's services were stopped for, relative to the root.
+// Every Concierge unit has ConditionPathExists=! on it, so while it exists none starts, reboot
+// included; a restore of that backup, or a resume, removes it and starts them again.
 const Marker = "var/lib/concierge-backup/stopped-for"
 
 // backupDir holds the marker and a restore's staging directories, root's alone.
@@ -25,9 +25,9 @@ const backupDir = "var/lib/concierge-backup"
 const credentialFile = "etc/credstore.encrypted/concierge-secrets-master"
 
 // Create writes a backup of the box under root to out: it refuses while the box is busy, stops the
-// services (a stopped service's files are consistent), writes the archive, then starts them again
-// or, with stop, leaves them masked and records the backup's ID in Marker. The header returned is
-// the archive's but for its Paths, which Write fills in.
+// services (a stopped service's files are consistent), writes the archive, then starts the core
+// again or, with stop, leaves them all stopped and records the backup's ID in Marker. The header
+// returned is the archive's but for its Paths, which Write fills in.
 func Create(sys System, root string, out io.Writer, stop bool) (Header, error) {
 	if err := idle(sys, root); err != nil {
 		return Header{}, err
@@ -57,29 +57,27 @@ func Create(sys System, root string, out io.Writer, stop bool) (Header, error) {
 	}
 	if err := Write(out, h, root); err != nil {
 		// A failed backup leaves the box running, whatever was asked.
-		return Header{}, errors.Join(fmt.Errorf("writing the backup: %w", err), sys.Start(reversed(Units)))
+		return Header{}, errors.Join(fmt.Errorf("writing the backup: %w", err), sys.Start(CoreUnits))
 	}
 	if !stop {
-		return h, sys.Start(reversed(Units))
-	}
-	if err := sys.Mask(Units); err != nil {
-		return Header{}, fmt.Errorf("the backup is written, but masking the services failed (make backup-resume starts them): %w", err)
+		if err := sys.Start(CoreUnits); err != nil {
+			return Header{}, fmt.Errorf("the backup is written, but starting the services failed: %w", err)
+		}
+		return h, nil
 	}
 	if err := writeMarker(root, h.ID); err != nil {
-		return Header{}, err
+		return Header{}, fmt.Errorf("the backup is written and the services stopped, but recording the stop failed (they start again at a reboot): %w", err)
 	}
 	return h, nil
 }
 
-// Resume starts the services a backup with stop left masked, and forgets which backup that was.
+// Resume starts the services a backup with stop left stopped, and forgets which backup that was:
+// the marker goes first, or the units' condition on it keeps them from starting.
 func Resume(sys System, root string) error {
-	if err := sys.Unmask(Units); err != nil {
+	if err := removeMarker(root); err != nil {
 		return err
 	}
-	if err := sys.Start(reversed(Units)); err != nil {
-		return err
-	}
-	return removeMarker(root)
+	return sys.Start(CoreUnits)
 }
 
 // RecoveryCode makes a new recovery code and locks a copy of the TPM-sealed master key with it at
@@ -151,12 +149,6 @@ func newID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
-}
-
-func reversed(units []string) []string {
-	r := slices.Clone(units)
-	slices.Reverse(r)
-	return r
 }
 
 // stateDir makes root's backupDir, 0700, when it is missing.

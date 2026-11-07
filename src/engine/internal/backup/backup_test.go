@@ -22,8 +22,18 @@ func box(t *testing.T) string {
 	return root
 }
 
-func units() string     { return strings.Join(Units, " ") }
-func reverseds() string { return strings.Join(reversed(Units), " ") }
+func stops() string  { return strings.Join(Units, " ") }
+func starts() string { return strings.Join(CoreUnits, " ") }
+
+// markerGoneAtStart fails t when Start finds the marker still there: the units' condition on it
+// would keep them from starting.
+func markerGoneAtStart(t *testing.T, sys *fakeSystem, root string) {
+	sys.onStart = func() {
+		if _, err := os.Stat(filepath.Join(root, Marker)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the marker is still there when the services start: %v", err)
+		}
+	}
+}
 
 func readFile(t *testing.T, path string) string {
 	t.Helper()
@@ -58,10 +68,10 @@ func TestCreateStopsWritesStarts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"Calls", "Stop " + units()}; !reflect.DeepEqual(out.seen, want) {
+	if want := []string{"Calls", "Stop " + stops()}; !reflect.DeepEqual(out.seen, want) {
 		t.Fatalf("calls when the archive was written = %q, want %q", out.seen, want)
 	}
-	if want := []string{"Calls", "Stop " + units(), "Start " + reverseds()}; !reflect.DeepEqual(sys.calls, want) {
+	if want := []string{"Calls", "Stop " + stops(), "Start " + starts()}; !reflect.DeepEqual(sys.calls, want) {
 		t.Fatalf("calls = %q, want %q", sys.calls, want)
 	}
 	got, err := ReadHeader(&out.Buffer)
@@ -102,14 +112,16 @@ func TestCreateRefusesWhenBusy(t *testing.T) {
 	}
 }
 
-func TestCreateStopLeavesMasked(t *testing.T) {
+// With stop the services stay stopped: the marker's condition on every unit keeps them so, reboot
+// included.
+func TestCreateStopLeavesStopped(t *testing.T) {
 	root := box(t)
 	sys := &fakeSystem{}
 	h, err := Create(sys, root, &bytes.Buffer{}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"Calls", "Stop " + units(), "Mask " + units()}; !reflect.DeepEqual(sys.calls, want) {
+	if want := []string{"Calls", "Stop " + stops()}; !reflect.DeepEqual(sys.calls, want) {
 		t.Fatalf("calls = %q, want %q", sys.calls, want)
 	}
 	m := filepath.Join(root, Marker)
@@ -149,10 +161,11 @@ func TestResume(t *testing.T) {
 	root := box(t)
 	put(t, root, Marker, header().ID, 0o600)
 	sys := &fakeSystem{}
+	markerGoneAtStart(t, sys, root)
 	if err := Resume(sys, root); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"Unmask " + units(), "Start " + reverseds()}; !reflect.DeepEqual(sys.calls, want) {
+	if want := []string{"Start " + starts()}; !reflect.DeepEqual(sys.calls, want) {
 		t.Fatalf("calls = %q, want %q", sys.calls, want)
 	}
 	if _, err := os.Stat(filepath.Join(root, Marker)); !errors.Is(err, os.ErrNotExist) {
