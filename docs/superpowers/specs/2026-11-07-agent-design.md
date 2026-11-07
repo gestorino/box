@@ -22,15 +22,16 @@ console, from a card the owner picked. The conversation that led here (2026-11-0
 - **Its own daemon with its own interface**, "so we can reimplement it easily".
 - **A conversation stays on its channel.** A question that comes after the owner hung up is "the
   same channel — it can be a new call".
-- **The exact place first.** "We should exact know the place." Google Places confirms it exists.
+- **The exact place first.** "We should exact know the place." Google Places confirms it exists,
+  and the agent goes on without asking. Only a business it can't find goes back to the owner.
   Then the box checks "over existing accounts like thefork, booksy to arrange on that". Nothing about
   the place is kept ("we actually no need to keep it").
 - **The box's identity for sites, always** ("Always box data"): the owner's Contacts only reach the
   owner and never go to a site.
 
 **Success:** the owner sends the box on WhatsApp "book Cervejaria Ramiro for 4 on Friday at 20:00".
-The box answers "Cervejaria Ramiro, Av. Almirante Reis 1, Lisbon, is that the one?". The owner says
-yes. The box says "It's on TheFork, where I have an account. Booking." It passes on TheFork's
+The box answers "Found Cervejaria Ramiro, Av. Almirante Reis 1, Lisbon. It's on TheFork, where I
+have an account. Booking." It passes on TheFork's
 questions ("19:30 or 21:00?") and its "Confirm: …?" in that chat, and finally says "Booked: Friday
 21:00, 4 people." The appointment is on `/appointments`. The same works by calling the box, or by
 emailing it, and the owner never opens the console.
@@ -178,13 +179,17 @@ Each tool is a plain call into the engine's own services. Every gate stays where
   Remove.
 - Without it, `find_place` answers "no Google key", and agentd says so.
 
-**The agent confirms the business with the owner, always** (the owner, 2026-11-07: "Agent confirms
-the business and if it's not exists — ask user what to do"):
-- **Found:** agentd says the candidates (one or up to five) and waits for the owner's pick. Nothing
-  goes further on a business the owner hasn't confirmed.
-- **Not found,** or the owner says none of them is it: agentd **asks the owner what to do**. It never
+**Places confirms the business; the agent goes on without asking** (the owner, 2026-11-07: "Agent
+confirms the business and if it's not exists — ask user what to do"; "Agents just confirms and do
+next without approval"):
+- **Found:** agentd takes the candidate that matches the name the owner gave (Places' first one when
+  several do) and goes straight on to `find_routes`. In the same turn it tells the owner which one, in
+  passing ("Found Cervejaria Ramiro, Av. Almirante Reis 1, Lisbon. Looking where to book."), so the
+  owner can say "not that one" at any time.
+- **Not found,** or no candidate matches the name: agentd **asks the owner what to do**. It never
   guesses a business, drops the request by itself, or books somewhere else. Whatever the owner says
   next is a new turn: another name or area, a link, a site from `list_accounts`, or leave it.
+- This only covers the place. The errand's final Confirm is still the owner's (§2).
 
 The field mask is only the fields above. *The builder notes the SKU's current price and free monthly
 cap here.* Places is used to **confirm the place exists**. Nothing of it outlives the conversation
