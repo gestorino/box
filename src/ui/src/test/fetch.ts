@@ -11,10 +11,11 @@ export const ALL_ADDED = {
 /** The OpenRouter key is set: what a page test gets unless it stubs GET /api/v1/ai. */
 export const AI_SET = { set: true, masked: 'sk-or-…test' }
 
-/** No agent signed in, none chosen: what a page test gets unless it stubs the agents. */
+/** No agent signed in, none chosen: what a page test gets unless it stubs the agents. An agent not
+ *  added runs no daemon, so it is not reachable either. */
 export const AGENTS_NONE = [
-  { name: 'claude', signed_in: false, account: '', cli_version: '', model: '', reachable: true },
-  { name: 'codex', signed_in: false, account: '', cli_version: '', model: '', reachable: true },
+  { name: 'claude', signed_in: false, account: '', cli_version: '', model: '', reachable: false, state: 'not_added' },
+  { name: 'codex', signed_in: false, account: '', cli_version: '', model: '', reachable: false, state: 'not_added' },
 ]
 export const AGENT_SETTINGS = { agent: '', answer: { whatsapp: false } }
 

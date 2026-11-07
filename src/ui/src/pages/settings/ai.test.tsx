@@ -131,7 +131,9 @@ describe('AI settings', () => {
 const AGENTS = 'GET /api/v1/agents'
 const SETTINGS = 'GET /api/v1/settings/agent'
 const PUT_SETTINGS = 'PUT /api/v1/settings/agent'
-const agent = (name: string, o: object = {}) => ({ name, signed_in: false, account: '', cli_version: '', model: '', reachable: true, ...o })
+const agent = (name: string, o: object = {}) => ({ name, signed_in: false, account: '', cli_version: '', model: '', reachable: true, state: 'added', ...o })
+/** An agent never signed in, or signed out: hostd stopped its daemon. */
+const NOT_ADDED = { state: 'not_added', reachable: false }
 const IN = { signed_in: true, account: 'owner@example.test', cli_version: '2.1.0' }
 const row = (name: string) => screen.getByRole('heading', { level: 3, name }).closest('[data-slot="card"]') as HTMLElement
 const connectorList = (whatsapp: string) => ({ body: { sim: true, connectors: [{ name: 'whatsapp', kind: 'channel', state: whatsapp, needs_sim: false }, { name: 'claude', kind: 'agent', state: 'added', needs_sim: false }] } })
@@ -148,6 +150,66 @@ describe('the agent', () => {
     expect(claude.getByRole('button', { name: 'Sign out' })).toBeInTheDocument()
     expect(within(row('Codex')).getByText('Unreachable')).toBeInTheDocument()
     expect(within(row('Codex')).getByText('Unreachable').closest('p')?.querySelector('svg')).not.toBeNull()
+  })
+
+  it('an agent not added is Not signed in, and Sign in starts it; only one set up or added is Unreachable', async () => {
+    stubFetch({
+      [G]: SET,
+      [AGENTS]: { body: [agent('claude', { state: 'setting_up', reachable: false }), agent('codex', NOT_ADDED)] },
+      [SETTINGS]: { body: { agent: '', answer: { whatsapp: false } } },
+    })
+    show()
+    await screen.findByRole('heading', { level: 3, name: 'Codex' })
+    const codex = within(row('Codex'))
+    expect(codex.getByText('Not signed in')).toBeInTheDocument()
+    expect(codex.queryByText('Unreachable')).not.toBeInTheDocument()
+    expect(codex.getByRole('button', { name: 'Sign in' })).toBeEnabled()
+    const claude = within(row('Claude'))
+    expect(claude.getByText('Unreachable')).toBeInTheDocument()
+    expect(claude.getByRole('button', { name: 'Sign in' })).toBeDisabled()
+  })
+
+  it('a Codex sign-in waits for the owner as long as the CLI does, never cut short', async () => {
+    const { calls } = stubFetch({
+      [G]: SET,
+      [AGENTS]: [{ body: [agent('claude', NOT_ADDED), agent('codex', NOT_ADDED)] }, { body: [agent('claude', NOT_ADDED), agent('codex', IN)] }],
+      [SETTINGS]: { body: { agent: '', answer: { whatsapp: false } } },
+      'POST /api/v1/connectors/codex': { status: 204 },
+      'POST /api/v1/agents/codex/login': { body: { url: 'https://device.example.test/', code: 'ABCD-1234', needs_code: false } },
+      'POST /api/v1/agents/codex/login/finish': { status: 204 },
+      'POST /api/v1/connectors/codex/confirm': { status: 204 },
+    })
+    let release = () => {}
+    let finishSignal: AbortSignal | null | undefined
+    let finishes = 0
+    const stubbed = globalThis.fetch
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/codex/login/finish')) {
+        finishSignal = init?.signal
+        finishes++
+        await new Promise<void>((r) => (release = r))
+      }
+      return stubbed(url, init)
+    })
+    show()
+    await screen.findByRole('heading', { level: 3, name: 'Codex' })
+    await userEvent.click(within(row('Codex')).getByRole('button', { name: 'Sign in' }))
+    const dialog = within(await screen.findByRole('dialog'))
+    expect(await dialog.findByText(/Waiting/)).toBeInTheDocument()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      await vi.advanceTimersByTimeAsync(14 * 60_000) // the owner takes their time on the device page
+      expect(dialog.getByText(/Waiting/)).toBeInTheDocument()
+      expect(dialog.queryByRole('alert')).not.toBeInTheDocument()
+      expect(finishSignal ?? undefined).toBeUndefined() // nothing in the console aborts the wait
+      expect(finishes).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+    release()
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(calls.find((c) => c.key === 'POST /api/v1/agents/codex/login/finish')?.body).toEqual({ code: '' })
+    await waitFor(() => expect(within(row('Codex')).getByText('Signed in')).toBeInTheDocument())
   })
 
   it('TestSignInClaudeAsksForTheCode', async () => {
@@ -213,10 +275,10 @@ describe('the agent', () => {
     await waitFor(() => expect(within(row('Codex')).getByText('Signed in')).toBeInTheDocument())
   })
 
-  it('Sign out asks first, then logs out and removes the connector', async () => {
+  it('Sign out asks first, then logs out and removes the connector, and ends Not signed in', async () => {
     const { calls } = stubFetch({
       [G]: SET,
-      [AGENTS]: [{ body: [agent('claude', IN), agent('codex')] }, { body: [agent('claude'), agent('codex')] }],
+      [AGENTS]: [{ body: [agent('claude', IN), agent('codex')] }, { body: [agent('claude', NOT_ADDED), agent('codex')] }],
       [SETTINGS]: { body: { agent: 'claude', answer: { whatsapp: false } } },
       'POST /api/v1/agents/claude/logout': { status: 204 },
       'DELETE /api/v1/connectors/claude': { status: 204 },

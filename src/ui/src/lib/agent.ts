@@ -12,7 +12,9 @@ export const AGENTS: { name: AgentName; label: string }[] = [
 ]
 export const agentLabel = (name: string) => AGENTS.find((a) => a.name === name)?.label ?? name
 
-export interface AgentStatus { name: AgentName; signed_in: boolean; account: string; cli_version: string; model: string; reachable: boolean }
+/** Its connector in hostd; '' when hostd can't say. An agent not added runs no daemon: not reachable, and no fault. */
+export type AgentConnectorState = 'not_added' | 'setting_up' | 'added' | ''
+export interface AgentStatus { name: AgentName; signed_in: boolean; account: string; cli_version: string; model: string; reachable: boolean; state: AgentConnectorState }
 /** Which agent answers (none: ""), and on which channels. */
 export interface AgentSettings { agent: AgentName | ''; answer: { whatsapp: boolean } }
 /** needs_code: Claude (the owner pastes the code the page shows); otherwise Codex shows the code itself. */
@@ -22,7 +24,8 @@ export const getAgents = (signal?: AbortSignal) => request<AgentStatus[]>('GET',
 export const getAgentSettings = (signal?: AbortSignal) => request<AgentSettings>('GET', '/api/v1/settings/agent', undefined, signal)
 export const setAgentSettings = (s: AgentSettings) => request<void>('PUT', '/api/v1/settings/agent', s)
 export const startAgentLogin = (name: string) => request<AgentLogin>('POST', `/api/v1/agents/${name}/login`)
-/** Claude: the pasted code. Codex: "" (waits for the device login). */
+/** Claude: the pasted code. Codex: "" (waits for the device login, as long as the CLI does: no
+ *  timeout here; the box ends the wait). */
 export const finishAgentLogin = (name: string, code: string) => request<void>('POST', `/api/v1/agents/${name}/login/finish`, { code })
 export const agentLogout = (name: string) => request<void>('POST', `/api/v1/agents/${name}/logout`)
 

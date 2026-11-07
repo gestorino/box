@@ -121,11 +121,14 @@ export function AgentSection() {
   )
 }
 
+/** An agent never signed in, or signed out: the box runs nothing for it, and that is no fault. */
+const notAdded = (a: AgentStatus) => a.state === 'not_added'
+
 /** The agent's state, as icon and word. */
 function Status({ a }: { a: AgentStatus }) {
-  const [Icon, words, tone] = !a.reachable
+  const [Icon, words, tone] = !a.reachable && !notAdded(a)
     ? [CircleX, 'Unreachable', 'text-status-failed-foreground']
-    : a.signed_in
+    : a.signed_in && !notAdded(a)
       ? [CircleCheck, 'Signed in', 'text-status-done-foreground']
       : [CircleAlert, 'Not signed in', 'text-status-attention-foreground']
   return (
@@ -173,7 +176,7 @@ function AgentCard({ a, current, onChanged, onSignedOut }: { a: AgentStatus; cur
           {a.signed_in ? (
             <Button size="sm" variant="outline" onClick={() => { setError(undefined); setSigningOut(true) }}>Sign out</Button>
           ) : (
-            <Button size="sm" disabled={!a.reachable} onClick={() => setSigningIn(true)}>Sign in</Button>
+            <Button size="sm" disabled={!a.reachable && !notAdded(a)} onClick={() => setSigningIn(true)}>Sign in</Button>
           )}
         </div>
       </CardContent>
