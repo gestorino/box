@@ -76,6 +76,9 @@ message ErrandEvent {
   string text = 3;
   // The choices the site offers, for a question.
   repeated string options = 4;
+  // The errand's wait a question or confirm is (signins' Question.Wait): an answer reaches the
+  // errand only while that wait is its current one. 0 for every other kind.
+  int64 wait = 5;
 }
 
 message Tool {

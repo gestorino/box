@@ -18,6 +18,8 @@ type RunEvent struct {
 	// Text is the question, the captcha's reason, the run's end reason, or the report on done and not_done.
 	Text    string
 	Options []string
+	// Wait is a question's or a confirm's wait (Question.Wait), what AnswerWait names; 0 for the rest.
+	Wait int64
 }
 
 // isConfirm is a question the errand asks before the press that finally does the action.

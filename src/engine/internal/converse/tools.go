@@ -1,16 +1,19 @@
 package converse
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"slices"
 	"strings"
 	"unicode"
 
 	agentv1 "concierge/engine/internal/gen/agent/v1"
+	"concierge/engine/internal/secrets"
 	"concierge/engine/internal/signins"
 )
 
@@ -19,7 +22,7 @@ type Errands interface {
 	Cards(ctx context.Context) ([]signins.Card, error)
 	Registered(ctx context.Context, key string) (bool, error)
 	StartErrand(ctx context.Context, e signins.Errand) (int64, error)
-	Answer(run int64, answer string) error
+	AnswerWait(run, wait int64, answer string) error
 	Stop(run int64) error
 	AgentRun(ctx context.Context, run int64) (signins.AgentRunDetail, bool, error)
 	Waiting(run int64) (string, *signins.Question)
@@ -104,6 +107,50 @@ func (t *Tools) Specs() []*agentv1.Tool {
 	return out
 }
 
+// refusal is a tool's own refusal, in plain words the agent reads.
+type refusal string
+
+func (r refusal) Error() string { return string(r) }
+
+func refuse(format string, args ...any) error { return refusal(fmt.Sprintf(format, args...)) }
+
+// serviceWords are the services' errors whose own words are plain enough for the agent; "" keeps
+// the error's text (the signins errors wrapped with %w carry plain words of their own).
+var serviceWords = []struct {
+	err   error
+	words string
+}{
+	{signins.ErrNotWaiting, "the errand is not waiting for an answer"},
+	{signins.ErrWaitChanged, "the errand now waits on something else: wait until it is told"},
+	{signins.ErrBadAnswer, ""},
+	{signins.ErrBusy, ""},
+	{signins.ErrNoKey, ""},
+	{signins.ErrShuttingDown, ""},
+	{signins.ErrBadErrand, ""},
+	{signins.ErrNoPassword, ""},
+	{signins.ErrNoAccount, ""},
+	{signins.ErrUnknownSite, ""},
+	{signins.ErrWaitingForWiFi, ""},
+	{signins.ErrNoAppointment, ""},
+	{secrets.ErrUnavailable, ""},
+}
+
+// plainWords is what a failed call says: its refusal, a service's plain error, or, for anything
+// else (logged), that something went wrong.
+func plainWords(name string, err error) string {
+	var r refusal
+	if errors.As(err, &r) {
+		return string(r)
+	}
+	for _, w := range serviceWords {
+		if errors.Is(err, w.err) {
+			return cmp.Or(w.words, err.Error())
+		}
+	}
+	slog.Error("converse: a tool failed", "tool", name, "err", err)
+	return "something went wrong"
+}
+
 // Call runs one tool call of the conversation's agent and returns its result: compact JSON, an error
 // a result of its own, {"error": "<plain words>"}.
 func (t *Tools) Call(ctx context.Context, conv int64, call *agentv1.ToolCall) string {
@@ -111,7 +158,7 @@ func (t *Tools) Call(ctx context.Context, conv int64, call *agentv1.ToolCall) st
 	if err != nil {
 		result = struct {
 			Error string `json:"error"`
-		}{err.Error()}
+		}{plainWords(call.GetName(), err)}
 	}
 	raw, err := json.Marshal(result)
 	if err != nil {
@@ -122,14 +169,14 @@ func (t *Tools) Call(ctx context.Context, conv int64, call *agentv1.ToolCall) st
 
 func (t *Tools) call(ctx context.Context, conv int64, call *agentv1.ToolCall) (any, error) {
 	if call == nil {
-		return nil, errors.New("no tool was called")
+		return nil, refuse("no tool was called")
 	}
 	for _, tl := range t.tools {
 		if tl.spec.GetName() == call.GetName() {
 			return tl.run(t, ctx, conv, call.GetArgumentsJson())
 		}
 	}
-	return nil, fmt.Errorf("there is no tool %q", call.GetName())
+	return nil, refuse("there is no tool %q", call.GetName())
 }
 
 // field is one argument of a call: its name, where it is decoded and the words for its type.
@@ -145,10 +192,10 @@ func parseObject(raw []byte, where string, fields ...field) error {
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	var obj map[string]json.RawMessage
 	if err := dec.Decode(&obj); err != nil || obj == nil {
-		return fmt.Errorf("%s must be one JSON object", where)
+		return refuse("%s must be one JSON object", where)
 	}
 	if _, err := dec.Token(); err != io.EOF {
-		return fmt.Errorf("%s must be one JSON object", where)
+		return refuse("%s must be one JSON object", where)
 	}
 	keys := make([]string, 0, len(obj))
 	for k := range obj {
@@ -157,16 +204,16 @@ func parseObject(raw []byte, where string, fields ...field) error {
 	slices.Sort(keys)
 	for _, k := range keys {
 		if !slices.ContainsFunc(fields, func(f field) bool { return f.name == k }) {
-			return fmt.Errorf("%s: there is no argument %q", where, k)
+			return refuse("%s: there is no argument %q", where, k)
 		}
 	}
 	for _, f := range fields {
 		v, ok := obj[f.name]
 		if !ok {
-			return fmt.Errorf("%s: %s is missing", where, f.name)
+			return refuse("%s: %s is missing", where, f.name)
 		}
 		if string(v) == "null" || json.Unmarshal(v, f.into) != nil {
-			return fmt.Errorf("%s: %s must be %s", where, f.name, f.is)
+			return refuse("%s: %s must be %s", where, f.name, f.is)
 		}
 	}
 	return nil
@@ -190,7 +237,7 @@ func (t *Tools) runArg(ctx context.Context, conv int64, args string, more ...fie
 		return 0, err
 	}
 	if !ok || of != conv {
-		return 0, fmt.Errorf("run %d is not an errand of this conversation", run)
+		return 0, refuse("run %d is not an errand of this conversation", run)
 	}
 	return run, nil
 }
@@ -286,12 +333,12 @@ func (t *Tools) startErrand(ctx context.Context, conv int64, args string) (any, 
 	}
 	i := slices.IndexFunc(cards, func(c signins.Card) bool { return c.Key == site })
 	if i < 0 {
-		return nil, fmt.Errorf("%q is not a site of the box's accounts: list_accounts has them", site)
+		return nil, refuse("%q is not a site of the box's accounts: list_accounts has them", site)
 	}
 	card := cards[i]
 	j := slices.IndexFunc(card.Actions, func(a signins.Action) bool { return a.Text == strings.TrimSpace(action) })
 	if j < 0 {
-		return nil, fmt.Errorf("%q is not an action of %s: list_accounts has its actions", action, site)
+		return nil, refuse("%q is not an action of %s: list_accounts has its actions", action, site)
 	}
 	act := card.Actions[j]
 	values := map[string]string{}
@@ -301,15 +348,15 @@ func (t *Tools) startErrand(ctx context.Context, conv int64, args string) (any, 
 			return nil, err
 		}
 		if !slices.Contains(act.Params, name) {
-			return nil, fmt.Errorf("%q is not a detail of %q: its details are %s", name, act.Text, strings.Join(act.Params, ", "))
+			return nil, refuse("%q is not a detail of %q: its details are %s", name, act.Text, strings.Join(act.Params, ", "))
 		}
 		if _, twice := values[name]; twice {
-			return nil, fmt.Errorf("the detail %q is given twice", name)
+			return nil, refuse("the detail %q is given twice", name)
 		}
 		values[name] = value
 	}
 	if appointment < 0 {
-		return nil, errors.New("appointment is an appointment's id, or 0 for none")
+		return nil, refuse("appointment is an appointment's id, or 0 for none")
 	}
 	run, err := t.errands.StartErrand(ctx, signins.Errand{URL: card.Link, Action: withDetails(act, values),
 		Effect: act.Effect, Appointment: appointment})
@@ -323,8 +370,9 @@ func (t *Tools) startErrand(ctx context.Context, conv int64, args string) (any, 
 // event of it could reach the owner.
 func (t *Tools) linked(ctx context.Context, conv, run int64) (any, error) {
 	if err := t.store.LinkRun(ctx, conv, run); err != nil {
+		slog.Error("converse: linking a run", "conversation", conv, "run", run, "err", err)
 		t.errands.Stop(run)
-		return nil, fmt.Errorf("the errand could not be kept with this conversation, so it was stopped: %w", err)
+		return nil, refuse("the errand could not be kept with this conversation, so it was stopped")
 	}
 	return runOut{run}, nil
 }
@@ -341,26 +389,30 @@ func (t *Tools) answerErrand(ctx context.Context, conv int64, args string) (any,
 	if err != nil {
 		return nil, err
 	}
-	switch kind, _ := t.errands.Waiting(run); kind {
+	kind, q := t.errands.Waiting(run)
+	if (kind == "question" || kind == "confirm") && (q == nil || q.Wait == 0) {
+		return nil, refuse("run %d is not waiting for an answer", run)
+	}
+	switch kind {
 	case "confirm":
-		return t.answerConfirm(ctx, conv, run, answer, ownerEvent)
+		return t.answerConfirm(ctx, conv, run, q.Wait, answer, ownerEvent)
 	case "question":
 		if (answer == "") == (ownerEvent == 0) {
-			return nil, errors.New("a question takes either answer or owner_event, not both and not neither")
+			return nil, refuse("a question takes either answer or owner_event, not both and not neither")
 		}
 		if ownerEvent != 0 {
 			if answer, err = t.ownerWords(ctx, conv, ownerEvent); err != nil {
 				return nil, err
 			}
 		}
-		if err := t.errands.Answer(run, answer); err != nil {
+		if err := t.errands.AnswerWait(run, q.Wait, answer); err != nil {
 			return nil, err
 		}
 		return answered, nil
 	case "human_check":
-		return nil, fmt.Errorf("run %d waits for a human check, which the owner does in the console, not for an answer", run)
+		return nil, refuse("run %d waits for a human check, which the owner does in the console, not for an answer", run)
 	}
-	return nil, fmt.Errorf("run %d is not waiting for an answer", run)
+	return nil, refuse("run %d is not waiting for an answer", run)
 }
 
 // ownerWords is the text of the owner's message #id in this conversation.
@@ -371,40 +423,42 @@ func (t *Tools) ownerWords(ctx context.Context, conv, id int64) (string, error) 
 	}
 	o, ok := e.GetKind().(*agentv1.Event_Owner)
 	if !found || !ok {
-		return "", fmt.Errorf("#%d is not a message of the owner's in this conversation", id)
+		return "", refuse("#%d is not a message of the owner's in this conversation", id)
 	}
 	return o.Owner, nil
 }
 
 // answerConfirm is the Confirm gate: only the owner's own message, sent after the Confirm was told in
-// this conversation, answers it, verbatim and once.
-func (t *Tools) answerConfirm(ctx context.Context, conv, run int64, answer string, ownerEvent int64) (any, error) {
+// this conversation, answers it, verbatim and once, and only while that Confirm (its wait) is the one
+// the errand waits on.
+func (t *Tools) answerConfirm(ctx context.Context, conv, run, wait int64, answer string, ownerEvent int64) (any, error) {
 	if answer != "" || ownerEvent <= 0 {
-		return nil, errors.New("a Confirm takes no answer of yours: answer must be \"\" and owner_event the # of the " +
+		return nil, refuse("a Confirm takes no answer of yours: answer must be \"\" and owner_event the # of the " +
 			"owner's own message that answers it")
 	}
-	confirm, ok, err := t.store.pendingConfirm(ctx, conv, run)
+	confirm, told, ok, err := t.store.pendingConfirm(ctx, conv, run)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
-		return nil, fmt.Errorf("run %d's Confirm was not told in this conversation, or was answered already", run)
+		return nil, refuse("run %d's Confirm was not told in this conversation, or was answered already", run)
+	}
+	if told != wait {
+		return nil, refuse("the Confirm told (#%d) is no longer the one run %d waits on: wait until its new one is told", confirm, run)
 	}
 	if ownerEvent <= confirm {
-		return nil, fmt.Errorf("#%d came before the Confirm (#%d): only the owner's message after it answers it", ownerEvent, confirm)
+		return nil, refuse("#%d came before the Confirm (#%d): only the owner's message after it answers it", ownerEvent, confirm)
 	}
 	words, err := t.ownerWords(ctx, conv, ownerEvent)
 	if err != nil {
 		return nil, err
 	}
-	if ok, err := t.store.claimConfirm(ctx, conv, run, confirm, ownerEvent); err != nil {
+	if err := t.store.claimConfirm(ctx, conv, run, confirm, ownerEvent); err != nil {
 		return nil, err
-	} else if !ok {
-		return nil, fmt.Errorf("#%d answered a Confirm already: each Confirm takes a message of its own", ownerEvent)
 	}
-	if err := t.errands.Answer(run, words); err != nil {
+	if err := t.errands.AnswerWait(run, wait, words); err != nil {
 		if uerr := t.store.unclaimConfirm(ctx, conv, run, ownerEvent); uerr != nil {
-			return nil, errors.Join(err, uerr)
+			slog.Error("converse: letting go of a Confirm's claim", "conversation", conv, "run", run, "err", uerr)
 		}
 		return nil, err
 	}
@@ -442,7 +496,7 @@ func (t *Tools) errandStatus(ctx context.Context, conv int64, args string) (any,
 		return nil, err
 	}
 	if !found {
-		return nil, fmt.Errorf("run %d is not kept", run)
+		return nil, refuse("run %d is not kept", run)
 	}
 	out := statusOut{State: d.State, Options: []string{}, Report: d.Report}
 	var q *signins.Question

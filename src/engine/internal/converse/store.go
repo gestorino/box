@@ -52,8 +52,9 @@ type Store struct {
 // migrations[v] brings agent.db from version v to v+1.
 //
 // conversation_events.event is the event as protojson, its id the row's. confirm_run is the run of a
-// confirm errand event (0 for every other event), answered_by the owner's event that answered it (0
-// while unanswered): the Confirm gate's state (tools.go).
+// confirm errand event (0 for every other event), confirm_wait its wait (signins' Question.Wait), and
+// answered_by the owner's event that answered it (0 while unanswered): the Confirm gate's state
+// (tools.go).
 var migrations = []string{`
 CREATE TABLE conversations (
 	id INTEGER PRIMARY KEY, channel TEXT NOT NULL, thread TEXT NOT NULL, state TEXT NOT NULL,
@@ -63,7 +64,8 @@ CREATE TABLE conversations (
 CREATE UNIQUE INDEX conversations_open ON conversations (channel, thread) WHERE state = 'open';
 CREATE TABLE conversation_events (
 	id INTEGER PRIMARY KEY, conversation INTEGER NOT NULL REFERENCES conversations (id), at TEXT NOT NULL,
-	event TEXT NOT NULL, confirm_run INTEGER NOT NULL DEFAULT 0, answered_by INTEGER NOT NULL DEFAULT 0);
+	event TEXT NOT NULL, confirm_run INTEGER NOT NULL DEFAULT 0, confirm_wait INTEGER NOT NULL DEFAULT 0,
+	answered_by INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX conversation_events_by_conversation ON conversation_events (conversation, id);
 CREATE INDEX conversation_events_confirms ON conversation_events (conversation, confirm_run) WHERE confirm_run <> 0;
 CREATE TABLE conversation_runs (
@@ -148,9 +150,9 @@ func (s *Store) Append(ctx context.Context, conv int64, e *agentv1.Event, at tim
 	if err != nil {
 		return 0, err
 	}
-	var confirmRun int64
+	var confirmRun, confirmWait int64
 	if x := e.GetErrand(); x != nil && x.GetKind() == "confirm" {
-		confirmRun = x.GetRun()
+		confirmRun, confirmWait = x.GetRun(), x.GetWait()
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -166,8 +168,8 @@ func (s *Store) Append(ctx context.Context, conv int64, e *agentv1.Event, at tim
 	} else if n == 0 {
 		return 0, ErrNoConversation
 	}
-	res, err = tx.ExecContext(ctx, `INSERT INTO conversation_events (conversation, at, event, confirm_run) VALUES (?, ?, ?, ?)`,
-		conv, ts(at), string(raw), confirmRun)
+	res, err = tx.ExecContext(ctx, `INSERT INTO conversation_events (conversation, at, event, confirm_run, confirm_wait)
+		VALUES (?, ?, ?, ?, ?)`, conv, ts(at), string(raw), confirmRun, confirmWait)
 	if err != nil {
 		return 0, err
 	}
@@ -287,8 +289,8 @@ func (s *Store) runsOf(ctx context.Context, conv int64) ([]int64, error) {
 // CloseIdle closes each open conversation whose last event is IdleAfter or more before now and none
 // of whose runs is running.
 func (s *Store) CloseIdle(ctx context.Context, now time.Time, running func(run int64) bool) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM conversations WHERE state = 'open' AND last <= ?`,
-		ts(now.Add(-IdleAfter)))
+	cutoff := ts(now.Add(-IdleAfter))
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM conversations WHERE state = 'open' AND last <= ?`, cutoff)
 	if err != nil {
 		return err
 	}
@@ -316,7 +318,9 @@ next:
 				continue next
 			}
 		}
-		if _, err := s.db.ExecContext(ctx, `UPDATE conversations SET state = 'closed' WHERE id = ?`, id); err != nil {
+		// Still idle: an event appended since the look keeps it open.
+		if _, err := s.db.ExecContext(ctx, `UPDATE conversations SET state = 'closed' WHERE id = ? AND last <= ?`,
+			id, cutoff); err != nil {
 			return err
 		}
 	}
@@ -362,48 +366,55 @@ func (s *Store) One(ctx context.Context, id int64) (Conversation, []*agentv1.Eve
 	return c, events, runs, nil
 }
 
-// pendingConfirm is the newest unanswered confirm the conversation was told for the run; false when
-// there is none.
-func (s *Store) pendingConfirm(ctx context.Context, conv, run int64) (int64, bool, error) {
-	var id int64
-	err := s.db.QueryRowContext(ctx, `SELECT id FROM conversation_events WHERE conversation = ? AND confirm_run = ?
-		AND answered_by = 0 ORDER BY id DESC LIMIT 1`, conv, run).Scan(&id)
+// pendingConfirm is the newest unanswered confirm the conversation was told for the run, and its
+// wait; false when there is none.
+func (s *Store) pendingConfirm(ctx context.Context, conv, run int64) (id, wait int64, ok bool, err error) {
+	err = s.db.QueryRowContext(ctx, `SELECT id, confirm_wait FROM conversation_events WHERE conversation = ?
+		AND confirm_run = ? AND answered_by = 0 ORDER BY id DESC LIMIT 1`, conv, run).Scan(&id, &wait)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, false, nil
+		return 0, 0, false, nil
 	}
-	return id, err == nil, err
+	return id, wait, err == nil, err
 }
 
+// The refusals of a claim on a Confirm.
+var (
+	errConfirmAnswered = refusal("that Confirm was answered already")
+	errMessageUsed     = refusal("that message of the owner's answered a Confirm already: each Confirm takes a message of its own")
+)
+
 // claimConfirm marks the run's confirms in the conversation up to the confirm event as answered by
-// the owner's event, once: false when the confirm was answered already, or the owner's event has
-// answered a confirm before.
-func (s *Store) claimConfirm(ctx context.Context, conv, run, confirm, ownerEvent int64) (bool, error) {
+// the owner's event, once: errConfirmAnswered when it was answered already, errMessageUsed when the
+// owner's event answered a confirm before.
+func (s *Store) claimConfirm(ctx context.Context, conv, run, confirm, ownerEvent int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return false, err
+		return err
 	}
 	defer tx.Rollback()
 	var used int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM conversation_events WHERE answered_by = ?`, ownerEvent).Scan(&used); err != nil {
-		return false, err
+		return err
 	}
 	if used > 0 {
-		return false, nil
+		return errMessageUsed
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE conversation_events SET answered_by = ? WHERE id = ? AND conversation = ?
 		AND confirm_run = ? AND answered_by = 0`, ownerEvent, confirm, conv, run)
 	if err != nil {
-		return false, err
+		return err
 	}
-	if n, err := res.RowsAffected(); err != nil || n != 1 {
-		return false, err
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n != 1 {
+		return errConfirmAnswered
 	}
 	// The older ones the newest stood for are answered with it: none can open again.
 	if _, err := tx.ExecContext(ctx, `UPDATE conversation_events SET answered_by = ? WHERE conversation = ?
 		AND confirm_run = ? AND answered_by = 0 AND id < ?`, ownerEvent, conv, run, confirm); err != nil {
-		return false, err
+		return err
 	}
-	return true, tx.Commit()
+	return tx.Commit()
 }
 
 // unclaimConfirm takes back a claim whose answer the errand refused.

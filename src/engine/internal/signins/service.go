@@ -73,6 +73,8 @@ type Service struct {
 	current map[string]int64
 	// agents holds each agent run in flight by run id: its stop, and the question it waits on.
 	agents map[int64]*agentRun
+	// waitSeq numbers the questions the runs wait on (Question.Wait).
+	waitSeq int64
 	// runs counts the background runs in flight.
 	runs sync.WaitGroup
 }

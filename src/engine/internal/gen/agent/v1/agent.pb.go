@@ -376,7 +376,10 @@ type ErrandEvent struct {
 	Kind string `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
 	Text string `protobuf:"bytes,3,opt,name=text,proto3" json:"text,omitempty"`
 	// The choices the site offers, for a question.
-	Options       []string `protobuf:"bytes,4,rep,name=options,proto3" json:"options,omitempty"`
+	Options []string `protobuf:"bytes,4,rep,name=options,proto3" json:"options,omitempty"`
+	// The errand's wait a question or confirm is (signins' Question.Wait): an answer reaches the
+	// errand only while that wait is its current one. 0 for every other kind.
+	Wait          int64 `protobuf:"varint,5,opt,name=wait,proto3" json:"wait,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -437,6 +440,13 @@ func (x *ErrandEvent) GetOptions() []string {
 		return x.Options
 	}
 	return nil
+}
+
+func (x *ErrandEvent) GetWait() int64 {
+	if x != nil {
+		return x.Wait
+	}
+	return 0
 }
 
 type Tool struct {
@@ -1074,12 +1084,13 @@ const file_concierge_agent_v1_agent_proto_rawDesc = "" +
 	"ToolResult\x12\x17\n" +
 	"\acall_id\x18\x01 \x01(\tR\x06callId\x12\x1f\n" +
 	"\vresult_json\x18\x02 \x01(\tR\n" +
-	"resultJson\"a\n" +
+	"resultJson\"u\n" +
 	"\vErrandEvent\x12\x10\n" +
 	"\x03run\x18\x01 \x01(\x03R\x03run\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x12\n" +
 	"\x04text\x18\x03 \x01(\tR\x04text\x12\x18\n" +
-	"\aoptions\x18\x04 \x03(\tR\aoptions\"e\n" +
+	"\aoptions\x18\x04 \x03(\tR\aoptions\x12\x12\n" +
+	"\x04wait\x18\x05 \x01(\x03R\x04wait\"e\n" +
 	"\x04Tool\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12'\n" +

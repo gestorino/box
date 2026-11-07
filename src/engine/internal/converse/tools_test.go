@@ -4,29 +4,33 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	agentv1 "concierge/engine/internal/gen/agent/v1"
 	"concierge/engine/internal/signins"
 )
 
-// fakeErrands stands in for signins.Service.
+// fakeErrands stands in for signins.Service, safe for calls from many goroutines.
 type fakeErrands struct {
+	mu         sync.Mutex
 	cards      []signins.Card
 	registered map[string]bool
 	started    []signins.Errand
 	nextRun    int64
 	startErr   error
 	answers    map[int64][]string
-	answerErr  error
-	stopped    []int64
-	waiting    map[int64]string
-	questions  map[int64]*signins.Question
-	runs       map[int64]signins.AgentRunDetail
-	appts      []signins.Appointment
-	checked    []int64
+	// beforeAnswer, when set, runs inside AnswerWait before it looks at the wait: a wait changing then.
+	beforeAnswer func()
+	stopped      []int64
+	waiting      map[int64]string
+	questions    map[int64]*signins.Question
+	runs         map[int64]signins.AgentRunDetail
+	appts        []signins.Appointment
+	checked      []int64
 }
 
 func newFake() *fakeErrands {
@@ -49,11 +53,24 @@ func newFake() *fakeErrands {
 	}
 }
 
+// wait makes the run wait on kind, its question's wait the given one (none for a human check).
+func (f *fakeErrands) wait(run int64, kind string, wait int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.waiting[run] = kind
+	f.questions[run] = nil
+	if wait != 0 {
+		f.questions[run] = &signins.Question{Text: kind + "?", Options: []string{}, Wait: wait}
+	}
+}
+
 func (f *fakeErrands) Cards(context.Context) ([]signins.Card, error) { return f.cards, nil }
 func (f *fakeErrands) Registered(_ context.Context, key string) (bool, error) {
 	return f.registered[key], nil
 }
 func (f *fakeErrands) StartErrand(_ context.Context, e signins.Errand) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.startErr != nil {
 		return 0, f.startErr
 	}
@@ -61,25 +78,51 @@ func (f *fakeErrands) StartErrand(_ context.Context, e signins.Errand) (int64, e
 	f.nextRun++
 	return f.nextRun, nil
 }
-func (f *fakeErrands) Answer(run int64, answer string) error {
-	if f.answerErr != nil {
-		return f.answerErr
+
+// AnswerWait answers as the service does: only the run's current wait. It leaves the run waiting, as
+// a Waiting read just before the answer still would.
+func (f *fakeErrands) AnswerWait(run, wait int64, answer string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.beforeAnswer != nil {
+		f.beforeAnswer()
+	}
+	q := f.questions[run]
+	if f.waiting[run] != "question" && f.waiting[run] != "confirm" {
+		return signins.ErrNotWaiting
+	}
+	if q == nil || q.Wait != wait {
+		return signins.ErrWaitChanged
 	}
 	f.answers[run] = append(f.answers[run], answer)
 	return nil
 }
-func (f *fakeErrands) Stop(run int64) error { f.stopped = append(f.stopped, run); return nil }
+func (f *fakeErrands) answered(run int64) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.answers[run]...)
+}
+func (f *fakeErrands) Stop(run int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopped = append(f.stopped, run)
+	return nil
+}
 func (f *fakeErrands) AgentRun(_ context.Context, run int64) (signins.AgentRunDetail, bool, error) {
 	d, ok := f.runs[run]
 	return d, ok, nil
 }
 func (f *fakeErrands) Waiting(run int64) (string, *signins.Question) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.waiting[run], f.questions[run]
 }
 func (f *fakeErrands) Appointments(context.Context, string) ([]signins.Appointment, error) {
 	return f.appts, nil
 }
 func (f *fakeErrands) CheckAppointment(_ context.Context, id int64) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.checked = append(f.checked, id)
 	f.nextRun++
 	return f.nextRun, nil
@@ -157,13 +200,39 @@ func TestStartErrandTakesOnlyACardsAction(t *testing.T) {
 		t.Fatalf("a cancel: %+v", f.started[1])
 	}
 
-	f.startErr = errors.New("the box is already working on this site")
+	f.startErr = signins.ErrBusy
 	if msg := refused(t, call(t, tools, conv, "start_errand", `{"site":"example.com","action":"Cancel a visit","details":[],"appointment":0}`)); !strings.Contains(msg, "already working") {
 		t.Fatalf("refusal %q", msg)
 	}
 }
 
-// confirmAt fills a conversation up to a confirm for run 41 at event #10, the run waiting on it.
+func TestAFailureIsSaidInPlainWords(t *testing.T) {
+	f, s := newFake(), openStore(t)
+	tools, conv := NewTools(f, s), open(t, s, "chat")
+	f.startErr = errors.New("sqlite: SQL logic error: no such table: sites (1)")
+	args := `{"site":"example.com","action":"Cancel a visit","details":[],"appointment":0}`
+	if msg := refused(t, call(t, tools, conv, "start_errand", args)); msg != "something went wrong" {
+		t.Fatalf("an internal failure said %q", msg)
+	}
+	f.startErr = fmt.Errorf("%w: only a change or a cancel names an appointment", signins.ErrBadErrand)
+	if msg := refused(t, call(t, tools, conv, "start_errand", args)); !strings.HasSuffix(msg, "only a change or a cancel names an appointment") {
+		t.Fatalf("the service's own words: %q", msg)
+	}
+	f.startErr = nil
+	if err := s.LinkRun(context.Background(), conv, 41); err != nil {
+		t.Fatal(err)
+	}
+	if msg := refused(t, call(t, tools, conv, "answer_errand", `{"run":41,"answer":"x","owner_event":0}`)); msg != "run 41 is not waiting for an answer" {
+		t.Fatalf("not waiting: %q", msg)
+	}
+}
+
+// confirmEvent is the errand's Confirm told, its wait wait.
+func confirmEvent(run, wait int64, text string) *agentv1.Event {
+	return &agentv1.Event{Kind: &agentv1.Event_Errand{Errand: &agentv1.ErrandEvent{Run: run, Kind: "confirm", Text: text, Wait: wait}}}
+}
+
+// confirmAt fills a conversation up to a confirm for run 41 at event #10 (wait 1), the run waiting on it.
 func confirmAt(t *testing.T, f *fakeErrands, s *Store, conv int64) {
 	t.Helper()
 	for i := 1; i < 10; i++ {
@@ -172,11 +241,10 @@ func confirmAt(t *testing.T, f *fakeErrands, s *Store, conv int64) {
 	if err := s.LinkRun(context.Background(), conv, 41); err != nil {
 		t.Fatal(err)
 	}
-	if id := appendEvent(t, s, conv, errandEvent(41, "confirm", "Confirm: Fri 21:00 for 4?")); id != 10 {
+	if id := appendEvent(t, s, conv, confirmEvent(41, 1, "Confirm: Fri 21:00 for 4?")); id != 10 {
 		t.Fatalf("the confirm is #%d", id)
 	}
-	f.waiting[41] = "confirm"
-	f.questions[41] = &signins.Question{Text: "Confirm: Fri 21:00 for 4?", Options: []string{}}
+	f.wait(41, "confirm", 1)
 }
 
 func TestConfirmTakesOnlyALaterOwnerMessage(t *testing.T) {
@@ -218,8 +286,9 @@ func TestConfirmIsAnsweredOnce(t *testing.T) {
 func TestAnAnsweredConfirmAnswersTheOnesItStoodFor(t *testing.T) {
 	f, s := newFake(), openStore(t)
 	tools, conv := NewTools(f, s), open(t, s, "chat")
-	confirmAt(t, f, s, conv)                                               // #10, never answered
-	appendEvent(t, s, conv, errandEvent(41, "confirm", "Confirm: again?")) // #11, the newest
+	confirmAt(t, f, s, conv)                                        // #10, never answered
+	appendEvent(t, s, conv, confirmEvent(41, 2, "Confirm: again?")) // #11, the newest
+	f.wait(41, "confirm", 2)
 	yes := appendEvent(t, s, conv, owner("yes"))
 	call(t, tools, conv, "answer_errand", `{"run":41,"answer":"","owner_event":`+itoa(yes)+`}`)
 	again := appendEvent(t, s, conv, owner("yes again"))
@@ -251,7 +320,7 @@ func TestConfirmNeedsTheConfirmToldInThisConversation(t *testing.T) {
 	if err := s.LinkRun(context.Background(), conv, 41); err != nil {
 		t.Fatal(err)
 	}
-	f.waiting[41] = "confirm" // the run waits, but the conversation was never told
+	f.wait(41, "confirm", 1) // the run waits, but the conversation was never told
 	yes := appendEvent(t, s, conv, owner("yes"))
 	refusedSaying(t, `not told`, call(t, tools, conv, "answer_errand", `{"run":41,"answer":"","owner_event":`+itoa(yes)+`}`))
 	if len(f.answers[41]) != 0 {
@@ -266,8 +335,8 @@ func TestOneOwnerMessageAnswersOneConfirm(t *testing.T) {
 	if err := s.LinkRun(context.Background(), conv, 42); err != nil {
 		t.Fatal(err)
 	}
-	appendEvent(t, s, conv, errandEvent(42, "confirm", "Confirm: Sat?"))
-	f.waiting[42] = "confirm"
+	appendEvent(t, s, conv, confirmEvent(42, 2, "Confirm: Sat?"))
+	f.wait(42, "confirm", 2)
 	yes := appendEvent(t, s, conv, owner("yes"))
 	call(t, tools, conv, "answer_errand", `{"run":41,"answer":"","owner_event":`+itoa(yes)+`}`)
 	refusedSaying(t, `answered a Confirm already`, call(t, tools, conv, "answer_errand", `{"run":42,"answer":"","owner_event":`+itoa(yes)+`}`))
@@ -276,16 +345,70 @@ func TestOneOwnerMessageAnswersOneConfirm(t *testing.T) {
 	}
 }
 
-func TestAConfirmTheErrandRefusedStaysOpen(t *testing.T) {
+func TestAConfirmToldIsTheOneAnswered(t *testing.T) {
+	f, s := newFake(), openStore(t)
+	tools, conv := NewTools(f, s), open(t, s, "chat")
+	confirmAt(t, f, s, conv) // #10, wait 1, left unanswered here (answered in the console, say)
+	f.wait(41, "confirm", 2) // a new Confirm the conversation is not told yet
+	yes := appendEvent(t, s, conv, owner("sure"))
+	refusedSaying(t, `no longer the one`, call(t, tools, conv, "answer_errand", `{"run":41,"answer":"","owner_event":`+itoa(yes)+`}`))
+	if got := f.answered(41); len(got) != 0 {
+		t.Fatalf("answered %q", got)
+	}
+}
+
+func TestAWaitThatChangesBeforeTheAnswerIsRefused(t *testing.T) {
 	f, s := newFake(), openStore(t)
 	tools, conv := NewTools(f, s), open(t, s, "chat")
 	confirmAt(t, f, s, conv)
 	yes := appendEvent(t, s, conv, owner("yes"))
-	f.answerErr = errors.New("the run is not waiting for an answer")
-	refusedSaying(t, `not waiting`, call(t, tools, conv, "answer_errand", `{"run":41,"answer":"","owner_event":`+itoa(yes)+`}`))
-	f.answerErr = nil
+	f.beforeAnswer = func() { f.questions[41] = &signins.Question{Text: "Confirm: other?", Wait: 2}; f.beforeAnswer = nil }
+	refusedSaying(t, `now waits on something else`, call(t, tools, conv, "answer_errand", `{"run":41,"answer":"","owner_event":`+itoa(yes)+`}`))
+	if got := f.answered(41); len(got) != 0 {
+		t.Fatalf("answered %q", got)
+	}
+	// The claim was let go: with the told Confirm current again, the same message answers it.
+	f.wait(41, "confirm", 1)
 	if m := call(t, tools, conv, "answer_errand", `{"run":41,"answer":"","owner_event":`+itoa(yes)+`}`); m["error"] != nil {
-		t.Fatalf("refused after a failed answer: %v", m)
+		t.Fatalf("refused after the wait changed: %v", m)
+	}
+
+	// A question likewise: the wait it checked, or nothing.
+	f.wait(41, "question", 3)
+	f.beforeAnswer = func() {
+		f.questions[41] = &signins.Question{Text: "Confirm: now?", Wait: 4}
+		f.waiting[41] = "confirm"
+		f.beforeAnswer = nil
+	}
+	refusedSaying(t, `now waits on something else`, call(t, tools, conv, "answer_errand", `{"run":41,"answer":"21:00","owner_event":0}`))
+	if got := f.answered(41); len(got) != 1 {
+		t.Fatalf("answered %q", got)
+	}
+}
+
+func TestTwoAnswersRacingOnAConfirmAnswerItOnce(t *testing.T) {
+	for range 20 {
+		f, s := newFake(), openStore(t)
+		tools, conv := NewTools(f, s), open(t, s, "chat")
+		confirmAt(t, f, s, conv)
+		first, second := appendEvent(t, s, conv, owner("yes")), appendEvent(t, s, conv, owner("yes!"))
+		results := make([]string, 2)
+		var wg sync.WaitGroup
+		for i, id := range []int64{first, second} {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				results[i] = tools.Call(context.Background(), conv, &agentv1.ToolCall{Name: "answer_errand",
+					ArgumentsJson: `{"run":41,"answer":"","owner_event":` + itoa(id) + `}`})
+			}()
+		}
+		wg.Wait()
+		if got := f.answered(41); len(got) != 1 {
+			t.Fatalf("answered %q: %v", got, results)
+		}
+		if errs := strings.Count(results[0]+results[1], `"error"`); errs != 1 {
+			t.Fatalf("results %v", results)
+		}
 	}
 }
 
@@ -295,7 +418,7 @@ func TestAQuestionTakesTheAgentsAnswer(t *testing.T) {
 	if err := s.LinkRun(context.Background(), conv, 41); err != nil {
 		t.Fatal(err)
 	}
-	f.waiting[41] = "question"
+	f.wait(41, "question", 5)
 	if m := call(t, tools, conv, "answer_errand", `{"run":41,"answer":"21:00","owner_event":0}`); m["error"] != nil {
 		t.Fatalf("refused: %v", m)
 	}
@@ -317,7 +440,7 @@ func TestErrandToolsActOnlyOnThisConversationsRuns(t *testing.T) {
 	if err := s.LinkRun(context.Background(), other, 41); err != nil {
 		t.Fatal(err)
 	}
-	f.waiting[41] = "question"
+	f.wait(41, "question", 5)
 	f.runs[41] = signins.AgentRunDetail{}
 	refusedSaying(t, `not an errand of this conversation`, call(t, tools, conv, "answer_errand", `{"run":41,"answer":"yes","owner_event":0}`))
 	refusedSaying(t, `not an errand of this conversation`, call(t, tools, conv, "stop_errand", `{"run":41}`))
@@ -335,7 +458,7 @@ func TestAnswerRefusesARunNotWaiting(t *testing.T) {
 		t.Fatal(err)
 	}
 	refusedSaying(t, `not waiting`, call(t, tools, conv, "answer_errand", `{"run":41,"answer":"yes","owner_event":0}`))
-	f.waiting[41] = "human_check"
+	f.wait(41, "human_check", 0)
 	refusedSaying(t, `human check`, call(t, tools, conv, "answer_errand", `{"run":41,"answer":"yes","owner_event":0}`))
 	if len(f.answers) != 0 {
 		t.Fatalf("answered %v", f.answers)

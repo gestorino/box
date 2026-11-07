@@ -31,12 +31,12 @@ type ownerWait struct {
 }
 
 // Done is the owner's "solved it": the run's ask answers "done" and the model looks again.
-func (s *Service) Done(site string) error { return s.answerWait(site, true) }
+func (s *Service) Done(site string) error { return s.endOwnerWait(site, true) }
 
 // GiveUp answers the run's ask no: the run ends at warn, "the captcha wasn't solved".
-func (s *Service) GiveUp(site string) error { return s.answerWait(site, false) }
+func (s *Service) GiveUp(site string) error { return s.endOwnerWait(site, false) }
 
-func (s *Service) answerWait(site string, done bool) error {
+func (s *Service) endOwnerWait(site string, done bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	w := s.waits[site]

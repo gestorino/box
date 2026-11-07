@@ -184,6 +184,28 @@ func TestCloseIdleKeepsOneWithARunningErrand(t *testing.T) {
 	}
 }
 
+func TestCloseIdleKeepsOneThatHeardMeanwhile(t *testing.T) {
+	s, ctx := openStore(t), context.Background()
+	conv := open(t, s, "chat")
+	if err := s.LinkRun(ctx, conv, 7); err != nil {
+		t.Fatal(err)
+	}
+	later := t0.Add(2*time.Hour + time.Minute)
+	// An event arrives between CloseIdle's look and its close.
+	err := s.CloseIdle(ctx, later, func(int64) bool {
+		if _, err := s.Append(ctx, conv, owner("still here"), later); err != nil {
+			t.Error(err)
+		}
+		return false
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, _, _, _ := s.One(ctx, conv); c.State != "open" {
+		t.Fatal("closed with an event just in")
+	}
+}
+
 func TestUsageAddsUp(t *testing.T) {
 	s, ctx := openStore(t), context.Background()
 	conv := open(t, s, "chat")

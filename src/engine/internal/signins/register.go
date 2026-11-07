@@ -133,7 +133,7 @@ func (s *Service) startAccount(ctx context.Context, key, mailbox string, owner O
 		"full_name": owner.FirstName + " " + owner.LastName, "phone": owner.Phone, "secret:password": password}, a, nil
 }
 
-// registered records how a registration ended. Only the model's word that it was done counts: then
+// registrationEnded records how a registration ended. Only the model's word that it was done counts: then
 // the account is the box's, and a sign-in check follows once the site is free (its model sign-in
 // leaves the account's first footprint). Cut short (Stop, the engine or the worker going), nothing is known of the
 // site's side: the account stays interrupted with its profile, and Register starts over. Otherwise

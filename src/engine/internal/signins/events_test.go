@@ -47,13 +47,14 @@ func TestAQuestionIsAnEvent(t *testing.T) {
 	f.worker.onAgent = asks("question", "Which time?", "19:30", "21:00")
 	id := f.errand(t, "https://shop.test/a")
 	soon(t, "the question event", func() bool { return len(ev.all()) == 1 })
-	want := RunEvent{Run: id, Kind: "question", Text: "Which time?", Options: []string{"19:30", "21:00"}}
+	// Told after the question is recorded: Waiting already reports it, with the wait the event names.
+	kind, q := f.svc.Waiting(id)
+	if kind != "question" || q == nil || q.Text != "Which time?" || q.Wait == 0 {
+		t.Fatalf("waiting = %q %+v", kind, q)
+	}
+	want := RunEvent{Run: id, Kind: "question", Text: "Which time?", Options: []string{"19:30", "21:00"}, Wait: q.Wait}
 	if got := ev.all()[0]; !reflect.DeepEqual(got, want) {
 		t.Fatalf("event = %+v", got)
-	}
-	// Told after the question is recorded: Waiting already reports it.
-	if kind, q := f.svc.Waiting(id); kind != "question" || q == nil || q.Text != "Which time?" {
-		t.Fatalf("waiting = %q %+v", kind, q)
 	}
 	if err := f.svc.Answer(id, "21:00"); err != nil {
 		t.Fatal(err)
@@ -61,6 +62,43 @@ func TestAQuestionIsAnEvent(t *testing.T) {
 	f.svc.runs.Wait()
 	if kind, q := f.svc.Waiting(id); kind != "" || q != nil {
 		t.Fatalf("waiting after = %q %+v", kind, q)
+	}
+}
+
+func TestAnswerWaitAnswersOnlyTheWaitItNames(t *testing.T) {
+	f := errandFixture(t, "registered")
+	ev := f.events()
+	f.worker.onAgent = func(ctx context.Context, _ browser.Message, ask browser.Ask) (browser.Message, error) {
+		ask(ctx, browser.AskRequest{Name: "question", Why: "Which time?"})
+		ask(ctx, browser.AskRequest{Name: "question", Why: "Confirm: 21:00?"})
+		return browser.Message{"outcome": "done", "success": true, "report": "done"}, nil
+	}
+	id := f.errand(t, "https://shop.test/a")
+	soon(t, "the question", func() bool { return len(ev.all()) == 1 })
+	_, first := f.svc.Waiting(id)
+	if err := f.svc.AnswerWait(id, first.Wait+1000, "x"); !errors.Is(err, ErrWaitChanged) {
+		t.Fatalf("a wait not current: %v", err)
+	}
+	if kind, q := f.svc.Waiting(id); kind != "question" || q.Wait != first.Wait {
+		t.Fatalf("still waiting = %q %+v", kind, q)
+	}
+	if err := f.svc.AnswerWait(id, first.Wait, "21:00"); err != nil {
+		t.Fatal(err)
+	}
+	soon(t, "the confirm", func() bool { return len(ev.all()) == 2 })
+	kind, second := f.svc.Waiting(id)
+	if kind != "confirm" || second.Wait == first.Wait || ev.all()[1].Wait != second.Wait {
+		t.Fatalf("the confirm = %q %+v, event %+v", kind, second, ev.all()[1])
+	}
+	if err := f.svc.AnswerWait(id, first.Wait, "yes"); !errors.Is(err, ErrWaitChanged) {
+		t.Fatalf("the question's wait answered the confirm: %v", err)
+	}
+	if err := f.svc.AnswerWait(id, second.Wait, "yes"); err != nil {
+		t.Fatal(err)
+	}
+	f.svc.runs.Wait()
+	if err := f.svc.AnswerWait(id, second.Wait, "yes"); !errors.Is(err, ErrNotWaiting) {
+		t.Fatalf("after the run: %v", err)
 	}
 }
 
