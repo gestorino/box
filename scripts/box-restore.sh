@@ -46,24 +46,46 @@ push() {
 # build: leaves the backup's own build in $build.
 build() {
 	local name=concierge-$version-linux-amd64.tar.gz
-	if [[ $version =~ ^[0-9]+\.[0-9]+\.0$ ]] && gh release view "v$version" --repo "$repo" >/dev/null 2>&1; then
+	local published=no err
+	if [[ $version =~ ^[0-9]+\.[0-9]+\.0$ ]]; then
+		if err=$(gh release view "v$version" --repo "$repo" 2>&1 >/dev/null); then
+			published=yes
+		else
+			case $err in
+			*"release not found"*) ;;
+			*) echo "can't tell whether release v$version is published: $err" >&2; exit 1 ;;
+			esac
+		fi
+	fi
+	if [ $published = yes ]; then
 		mkdir "$tmp/release"
 		gh release download "v$version" --repo "$repo" --dir "$tmp/release"
 		for f in "$tmp/release/$name" "$tmp/release/manifest.json"; do
 			gh attestation verify "$f" --repo "$repo" --signer-workflow "$repo/.github/workflows/release.yml"
 		done
+		local built
+		built=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["revision"])' "$tmp/release/manifest.json")
+		same_revision "$built" ||
+			{ echo "release v$version was built from $built, the backup was taken on $revision: refusing" >&2; exit 1; }
 		build=$tmp/release/$name
+		echo "published release v$version, verified"
 		return
 	fi
-	local tagged
-	tagged=$(git -C "$root" rev-parse --short "v$version^{commit}" 2>/dev/null) ||
+	local full
+	full=$(git -C "$root" rev-parse --verify -q "v$version^{commit}") ||
 		{ echo "no release and no local tag v$version: can't get the backup's build" >&2; exit 1; }
-	[ "$tagged" = "$revision" ] ||
-		{ echo "local tag v$version is $tagged, the backup was taken on $revision: refusing" >&2; exit 1; }
+	[ ${#revision} -ge 7 ] && [[ $full == "$revision"* ]] ||
+		{ echo "local tag v$version is ${full:0:7}, the backup was taken on $revision: refusing" >&2; exit 1; }
 	wt=$tmp/worktree
 	git -C "$root" worktree add --detach "$wt" "v$version"
 	make -C "$wt" dist V="$version" R="$revision"
 	build=$wt/dist/$name
+	echo "local tag v$version, built here"
+}
+
+# same_revision OTHER: the other revision is the backup's, one an abbreviation of the other (7 or more characters).
+same_revision() {
+	[ ${#1} -ge 7 ] && [ ${#revision} -ge 7 ] && { [[ $1 == "$revision"* ]] || [[ $revision == "$1"* ]]; }
 }
 
 have=$(ssh "$box" 'cat /opt/concierge/VERSION /opt/concierge/REVISION' | tr -d '[:blank:]')

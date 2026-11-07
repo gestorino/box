@@ -24,10 +24,11 @@ archive() { # FILE VERSION REVISION RECOVERY
 cat >"$work/bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 echo "ssh $*" >>"$LOG"
+[ -n "${FAKE_SSH_FAIL:-}" ] && [[ "$*" == *"$FAKE_SSH_FAIL"* ]] && exit 1
 case "$*" in
 *"cat /opt/concierge/VERSION /opt/concierge/REVISION"*) printf '%s\n%s\n' "$FAKE_VERSION" "$FAKE_REVISION" ;;
 *"cat /opt/concierge/VERSION"*) echo "$FAKE_VERSION" ;;
-*mktemp*) echo "/home/u/concierge-fake.$RANDOM" ;;
+*mktemp*) echo "/srv/u/concierge-fake.$RANDOM" ;;
 *" create"*) cat "$FAKE_ARCHIVE" ;;
 esac
 EOF
@@ -39,7 +40,19 @@ cat >"$work/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "gh $*" >>"$LOG"
 case "$1 $2" in
-"release view") [ "${FAKE_RELEASE:-}" = yes ] ;;
+"release view")
+	case "${FAKE_RELEASE:-}" in
+	yes) ;;
+	error) echo "error connecting to api.github.com" >&2; exit 1 ;;
+	*) echo "release not found" >&2; exit 1 ;;
+	esac
+	;;
+"attestation verify")
+	if [ -n "${FAKE_ATTEST_FAIL:-}" ] && [[ "$3" == *"$FAKE_ATTEST_FAIL" ]]; then
+		echo "verification failed" >&2
+		exit 1
+	fi
+	;;
 "release download")
 	while [ $# -gt 0 ]; do
 		[ "$1" = --dir ] && dir=$2
@@ -47,7 +60,7 @@ case "$1 $2" in
 	done
 	v=${FAKE_VERSION_WANTED}
 	: >"$dir/concierge-$v-linux-amd64.tar.gz"
-	: >"$dir/manifest.json"
+	printf '{"version":"%s","revision":"%s"}\n' "$v" "${FAKE_MANIFEST_REV:-bbb2222}" >"$dir/manifest.json"
 	;;
 esac
 EOF
@@ -55,7 +68,7 @@ cat >"$work/bin/git" <<'EOF'
 #!/usr/bin/env bash
 echo "git $*" >>"$LOG"
 case "$*" in
-*rev-parse*) [ -n "${FAKE_TAG_REV:-}" ] && echo "$FAKE_TAG_REV" ;;
+*"rev-parse --verify"*) [ -n "${FAKE_TAG_REV:-}" ] && echo "$FAKE_TAG_REV" ;;
 *"worktree add"*) mkdir -p "${@: -2:1}" ;;
 esac
 EOF
@@ -116,9 +129,9 @@ archive "$work/same.tar.gz" 0.4.1 aaa1111 true
 run box-restore.sh "$work/same.tar.gz"
 [ $code -eq 0 ] && ok "restore same build: succeeds" || fail "restore same build: succeeds" "$out"
 [ "$(logged '^scp ')" = 1 ] && ok "restore same build: copies once" || fail "restore same build: copies once" "$(cat "$LOG")"
-grep -q '^ssh -t testbox sudo -n /opt/concierge/bin/backup restore -from /home/u/concierge-fake\.[0-9]*$' "$LOG" && ok "restore: runs restore over ssh -t" || fail "restore: runs restore over ssh -t" "$(cat "$LOG")"
+grep -q '^ssh -t testbox sudo -n /opt/concierge/bin/backup restore -from /srv/u/concierge-fake\.[0-9]*$' "$LOG" && ok "restore: runs restore over ssh -t" || fail "restore: runs restore over ssh -t" "$(cat "$LOG")"
 [ "$(logged install-build)" = 0 ] && [ "$(logged '^gh ')" = 0 ] && ok "restore same build: no install-build, no gh" || fail "restore same build: no install-build, no gh"
-grep -q 'rm -f /home/u/concierge-fake' "$LOG" && ok "restore: removes the box's copy" || fail "restore: removes the box's copy"
+grep -q 'rm -f /srv/u/concierge-fake' "$LOG" && ok "restore: removes the box's copy" || fail "restore: removes the box's copy"
 case $out in *"make deploy"*) fail "restore same build: no deploy hint" "$out" ;; *) ok "restore same build: no deploy hint" ;; esac
 
 # --- restore: FORCE / NEW_BOX ---
@@ -143,17 +156,64 @@ case $out in *"Now run make deploy"*) ok "restore published: says to deploy" ;; 
 # --- restore: a local patch version ---
 export FAKE_RELEASE=no FAKE_VERSION_WANTED=0.5.1
 archive "$work/patch.tar.gz" 0.5.1 ccc3333 true
-FAKE_TAG_REV=ccc3333 run box-restore.sh "$work/patch.tar.gz"
+full=ccc3333eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+FAKE_TAG_REV=$full run box-restore.sh "$work/patch.tar.gz"
 [ $code -eq 0 ] && ok "restore patch: succeeds" || fail "restore patch: succeeds" "$out"
+case $out in *"local tag v0.5.1, built here"*) ok "restore patch: says the local path" ;; *) fail "restore patch: says the local path" "$out" ;; esac
+archive "$work/patch8.tar.gz" 0.5.1 ccc33334 true
+FAKE_TAG_REV=ccc33334eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee run box-restore.sh "$work/patch8.tar.gz"
+[ $code -eq 0 ] && grep -q 'dist V=0.5.1 R=ccc33334$' "$LOG" && ok "restore patch: an 8-character revision matches the full commit" || fail "restore patch: 8-character revision" "$out"
+FAKE_TAG_REV=ccc3333eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee run box-restore.sh "$work/patch8.tar.gz"
+[ $code -ne 0 ] && [ "$(logged '^scp ')" = 0 ] && ok "restore patch: a longer revision that differs is refused" || fail "restore patch: longer revision mismatch" "$(cat "$LOG")"
+FAKE_TAG_REV=$full run box-restore.sh "$work/patch.tar.gz"
+[ $code -eq 0 ] && ok "restore patch: succeeds again" || fail "restore patch: succeeds" "$out"
 [ "$(logged 'gh release download')" = 0 ] && ok "restore patch: no release download" || fail "restore patch: no release download"
 grep -q 'worktree add --detach [^ ]* v0.5.1$' "$LOG" && ok "restore patch: worktree at the tag" || fail "restore patch: worktree at the tag" "$(cat "$LOG")"
 grep -q 'make -C [^ ]* dist V=0.5.1 R=ccc3333' "$LOG" && ok "restore patch: make dist V= R=" || fail "restore patch: make dist" "$(cat "$LOG")"
 grep -q 'worktree remove --force' "$LOG" && ok "restore patch: worktree removed" || fail "restore patch: worktree removed" "$(cat "$LOG")"
 [ "$(logged install-build)" = 1 ] && ok "restore patch: installs the build" || fail "restore patch: installs the build"
-FAKE_TAG_REV=ddd4444 run box-restore.sh "$work/patch.tar.gz"
+FAKE_TAG_REV=ddd4444eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee run box-restore.sh "$work/patch.tar.gz"
 [ $code -ne 0 ] && [ "$(logged '^scp ')" = 0 ] && [ "$(logged 'worktree add')" = 0 ] && ok "restore patch: refuses a tag at another commit" || fail "restore patch: refuses a tag at another commit" "code $code: $(cat "$LOG")"
 FAKE_TAG_REV= run box-restore.sh "$work/patch.tar.gz"
 [ $code -ne 0 ] && [ "$(logged '^scp ')" = 0 ] && ok "restore patch: refuses a missing tag" || fail "restore patch: refuses a missing tag"
+
+# nothing_sent: no copy, no install-build and no restore reached the box.
+nothing_sent() { [ "$(logged '^scp ')" = 0 ] && [ "$(logged install-build)" = 0 ] && [ "$(logged ' restore -from')" = 0 ]; }
+# all_removed: every file copied to the box has its rm -f.
+all_removed() {
+	n=0
+	for p in $(grep '^scp ' "$LOG" | sed 's/.*testbox://'); do
+		n=1
+		grep -q "rm -f .*$p" "$LOG" || return 1
+	done
+	[ $n = 1 ]
+}
+
+# --- the published path's safety rules ---
+export FAKE_RELEASE=yes FAKE_VERSION_WANTED=0.5.0
+FAKE_ATTEST_FAIL=tar.gz run box-restore.sh "$work/pub.tar.gz"
+[ $code -ne 0 ] && nothing_sent && ok "restore published: a failed archive attestation sends nothing" || fail "restore published: archive attestation failure" "code $code: $(cat "$LOG")"
+FAKE_ATTEST_FAIL=manifest.json run box-restore.sh "$work/pub.tar.gz"
+[ $code -ne 0 ] && nothing_sent && ok "restore published: a failed manifest attestation sends nothing" || fail "restore published: manifest attestation failure" "code $code: $(cat "$LOG")"
+FAKE_MANIFEST_REV=fff9999 run box-restore.sh "$work/pub.tar.gz"
+[ $code -ne 0 ] && nothing_sent && ok "restore published: a manifest of another revision sends nothing" || fail "restore published: manifest revision mismatch" "code $code: $(cat "$LOG")"
+FAKE_MANIFEST_REV=bbb2222eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee run box-restore.sh "$work/pub.tar.gz"
+[ $code -eq 0 ] && ok "restore published: a manifest with the full revision matches" || fail "restore published: full manifest revision" "$out"
+case $out in *"published release v0.5.0, verified"*) ok "restore published: says the published path" ;; *) fail "restore published: says the path" "$out" ;; esac
+FAKE_RELEASE=error run box-restore.sh "$work/pub.tar.gz"
+[ $code -ne 0 ] && nothing_sent && [ "$(logged 'worktree add')" = 0 ] && ok "restore: a gh error is refused, not a fall-through" || fail "restore: gh error" "code $code: $(cat "$LOG")"
+# a vX.Y.0 never published falls through to its local tag
+export FAKE_VERSION_WANTED=0.6.0
+archive "$work/unpub.tar.gz" 0.6.0 eee5555 true
+FAKE_RELEASE=no FAKE_TAG_REV=eee5555eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee run box-restore.sh "$work/unpub.tar.gz"
+[ $code -eq 0 ] && [ "$(logged 'gh release download')" = 0 ] && grep -q 'worktree add --detach [^ ]* v0.6.0$' "$LOG" && ok "restore: a vX.Y.0 not published falls through to its local tag" || fail "restore: unpublished vX.Y.0" "code $code: $(cat "$LOG")"
+
+# --- the box's copies are removed whatever fails ---
+FAKE_SSH_FAIL=" restore -from" run box-restore.sh "$work/same.tar.gz"
+[ $code -ne 0 ] && all_removed && ok "restore: a failing box restore removes the box's copy" || fail "restore: failing restore cleanup" "code $code: $(cat "$LOG")"
+export FAKE_VERSION_WANTED=0.5.0
+FAKE_SSH_FAIL="install-build" run box-restore.sh "$work/pub.tar.gz"
+[ $code -ne 0 ] && all_removed && [ "$(logged ' restore -from')" = 0 ] && ok "restore: a failing install-build removes the box's copy and stops" || fail "restore: failing install-build cleanup" "code $code: $(cat "$LOG")"
 
 # --- recovery-code and resume ---
 : >"$LOG"

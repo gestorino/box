@@ -80,7 +80,7 @@ path is tracked) at exit 0 once the tree is public.
 **Backup and restore** (`src/engine/cmd/backup` on the box; `scripts/box-backup.sh`, `box-restore.sh`,
 `box-recovery-code.sh`, `box-backup-resume.sh` here, over SSH): `make backup` keeps the box's state in
 `~/Backups/concierge/<stamp>-<version>.tar.gz` (0600, directory 0700). `STOP=1` holds the services down
-by a marker file and a start condition on the box (nothing is masked) until `make backup-resume`. The
+by a marker file and a start condition on the box until `make backup-resume`. The
 secrets move to another box only with the **recovery code** (`make recovery-code`; the owner types it on
 the box's own tty over `ssh -t`, the Mac scripts never read, store or pass it). `make restore` installs
 the backup's own build first when the box's differs: a published release, attestation-verified here, or a
@@ -98,7 +98,7 @@ src/ui/        TypeScript — Vite + React UI, served by the engine from src/ui/
 testdata/      site-names.txt: the sites the box has had cards for, read only by the "no site named" guards
 infra/         how to rebuild the mini-PC host (local only, not in the public repo)
 ansible/       how to deploy to it: the concierge-engine systemd service (a private repo of its own)
-scripts/       developer tools run from this computer against the box (box-browser.sh, box-test.sh), and the public-tree audit
+scripts/       developer tools run from this computer against the box (box-browser.sh, box-test.sh, box-backup.sh, box-restore.sh, box-recovery-code.sh, box-backup-resume.sh), and the public-tree audit
 docs/specs/    the spec stack (product source of truth)
 docs/superpowers/  current design docs (specs/); implementation plans (plans/) are kept locally, untracked
 ```
