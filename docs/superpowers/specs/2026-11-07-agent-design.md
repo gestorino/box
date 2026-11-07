@@ -178,6 +178,14 @@ Each tool is a plain call into the engine's own services. Every gate stays where
   Remove.
 - Without it, `find_place` answers "no Google key", and agentd says so.
 
+**The agent confirms the business with the owner, always** (the owner, 2026-11-07: "Agent confirms
+the business and if it's not exists — ask user what to do"):
+- **Found:** agentd says the candidates (one or up to five) and waits for the owner's pick. Nothing
+  goes further on a business the owner hasn't confirmed.
+- **Not found,** or the owner says none of them is it: agentd **asks the owner what to do**. It never
+  guesses a business, drops the request by itself, or books somewhere else. Whatever the owner says
+  next is a new turn: another name or area, a link, a site from `list_accounts`, or leave it.
+
 The field mask is only the fields above. *The builder notes the SKU's current price and free monthly
 cap here.* Places is used to **confirm the place exists**. Nothing of it outlives the conversation
 but the place ID.
