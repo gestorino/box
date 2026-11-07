@@ -1,0 +1,238 @@
+package claude
+
+import (
+	"bytes"
+	"context"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"connectrpc.com/connect"
+
+	"concierge/engine/internal/agent"
+)
+
+// fakeCLI writes a `claude` shell script into a short temp dir and returns the dir, the script and
+// the file it records argv, env and stdin in.
+func fakeCLI(t *testing.T, body string) (dir, bin string) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "cl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	bin = filepath.Join(dir, "claude")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir, bin
+}
+
+func homeWithToken(t *testing.T, token string) string {
+	t.Helper()
+	home, err := os.MkdirTemp("", "ch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(home) })
+	if token != "" {
+		os.WriteFile(filepath.Join(home, "token"), []byte(token), 0o600)
+	}
+	return home
+}
+
+func read(t *testing.T, p string) string {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func recordingScript(dir string) string {
+	return `{ for a in "$@"; do printf 'ARG:%s\n' "$a"; done; env | sed 's/^/ENV:/'; printf 'STDIN:'; cat; printf '\nPWD:%s\n' "$PWD"; } > ` + dir + `/rec
+cat ` + filepath.Join("testdata", "claude-reply.json") + "\n"
+}
+
+func TestRunPassesTheSchemaAndNoTools(t *testing.T) {
+	dir, bin := fakeCLI(t, "")
+	wd, _ := os.Getwd()
+	os.WriteFile(bin, []byte("#!/bin/sh\n"+strings.Replace(recordingScript(dir), "testdata", wd+"/testdata", 1)), 0o755)
+	home := homeWithToken(t, "sk-ant-oat01-secret\n")
+	t.Setenv("ANTHROPIC_API_KEY", "must-not-pass")
+
+	schema := []byte(`{"type":"object"}`)
+	if _, _, err := NewRunner(bin, home, "sonnet").Run(context.Background(), agent.Rules, "the owner's words", schema); err != nil {
+		t.Fatal(err)
+	}
+	rec := read(t, filepath.Join(dir, "rec"))
+	for _, want := range []string{
+		"ARG:-p\n", "ARG:--output-format\nARG:json\n", "ARG:--json-schema\nARG:" + string(schema) + "\n",
+		"ARG:--system-prompt\nARG:" + agent.Rules, "ARG:--model\nARG:sonnet\n",
+		"ARG:--tools\nARG:\n", "ARG:--strict-mcp-config\n", "ARG:--setting-sources\nARG:\n",
+		"ARG:--no-session-persistence\n", "ARG:--disable-slash-commands\n",
+		"ENV:CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-secret\n", "ENV:DISABLE_AUTOUPDATER=1\n",
+		"STDIN:the owner's words\n",
+	} {
+		if !strings.Contains(rec, want) {
+			t.Errorf("record lacks %q:\n%s", want, rec)
+		}
+	}
+	if strings.Contains(rec, "ANTHROPIC_API_KEY") {
+		t.Error("ANTHROPIC_API_KEY reached the CLI")
+	}
+	args := rec[:strings.Index(rec, "ENV:")]
+	if strings.Contains(args, "the owner's words") || strings.Contains(args, "sk-ant") {
+		t.Errorf("input or token in argv:\n%s", args)
+	}
+	if !strings.Contains(rec, "PWD:") || !strings.Contains(rec, filepath.Join(home, "work")) {
+		t.Errorf("not run in home/work:\n%s", rec)
+	}
+}
+
+func TestRunReadsStructuredOutputAndUsage(t *testing.T) {
+	wd, _ := os.Getwd()
+	_, bin := fakeCLI(t, "cat >/dev/null; cat "+wd+"/testdata/claude-reply.json\n")
+	raw, u, err := NewRunner(bin, homeWithToken(t, "sk-ant-oat01-x"), "sonnet").Run(context.Background(), "s", "in", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"say"`)) || bytes.Contains(raw, []byte("total_cost_usd")) {
+		t.Errorf("raw = %s", raw)
+	}
+	if u.Model != "claude-sonnet-4-5" || u.InputTokens != 460 || u.OutputTokens != 35 || u.CostUsd != 0.0123 || !u.CostKnown {
+		t.Errorf("usage = %v", u)
+	}
+}
+
+func TestRunFailures(t *testing.T) {
+	for name, body := range map[string]string{
+		"exit":      "echo 'boom: bad thing' >&2; echo second >&2; exit 3\n",
+		"is_error":  "echo '{\"is_error\":true,\"result\":\"x\"}'; echo 'oops' >&2\n",
+		"no output": "echo '{\"is_error\":false,\"result\":\"hi\"}'; echo 'oops' >&2\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, bin := fakeCLI(t, "cat >/dev/null\n"+body)
+			_, _, err := NewRunner(bin, homeWithToken(t, "sk-ant-oat01-tok"), "m").Run(context.Background(), "s", "private words", []byte(`{}`))
+			if err == nil {
+				t.Fatal("no error")
+			}
+			if connect.CodeOf(err) == connect.CodeFailedPrecondition {
+				t.Errorf("code = %v", connect.CodeOf(err))
+			}
+			if strings.Contains(err.Error(), "private words") || strings.Contains(err.Error(), "sk-ant") {
+				t.Errorf("error leaks: %v", err)
+			}
+		})
+	}
+	_, bin := fakeCLI(t, "cat >/dev/null\necho 'boom: bad thing' >&2; echo second >&2; exit 3\n")
+	_, _, err := NewRunner(bin, homeWithToken(t, "sk-ant-oat01-tok"), "m").Run(context.Background(), "s", "i", []byte(`{}`))
+	if !strings.Contains(err.Error(), "boom: bad thing") || strings.Contains(err.Error(), "second") {
+		t.Errorf("want stderr's first line only: %v", err)
+	}
+}
+
+func TestRunSaysNotSignedIn(t *testing.T) {
+	dir, bin := fakeCLI(t, "")
+	os.WriteFile(bin, []byte("#!/bin/sh\ntouch "+dir+"/ran\n"), 0o755)
+	_, _, err := NewRunner(bin, homeWithToken(t, ""), "m").Run(context.Background(), "s", "i", []byte(`{}`))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "not signed in") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, e := os.Stat(filepath.Join(dir, "ran")); e == nil {
+		t.Error("the CLI ran")
+	}
+}
+
+const setupTokenScript = `if [ "$1" = "--version" ]; then echo "2.1.319 (Claude Code)"; exit 0; fi
+[ "$1" = "setup-token" ] || exit 9
+echo "Open this URL to sign in:"
+echo "https://claude.ai/oauth/authorize?code=true&client_id=x"
+printf "Paste code here: "
+read code
+[ "$code" = "abc" ] || { echo "bad code"; exit 1; }
+echo "Your token:"
+echo "sk-ant-oat01-x"
+`
+
+func TestLoginStartGivesTheLinkAndFinishKeepsTheToken(t *testing.T) {
+	var logs bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	_, bin := fakeCLI(t, setupTokenScript)
+	home := filepath.Join(homeWithToken(t, ""), "agent")
+	l := NewLogin(bin, home)
+	ctx := context.Background()
+	start, err := l.Start(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if start.Url != "https://claude.ai/oauth/authorize?code=true&client_id=x" || !start.NeedsCode {
+		t.Fatalf("start = %v", start)
+	}
+	if err := l.Finish(ctx, "bad"); err == nil || strings.Contains(err.Error(), "sk-ant") {
+		t.Fatalf("bad code: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "token")); err == nil {
+		t.Fatal("a token after a bad code")
+	}
+	if _, err := l.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Finish(ctx, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(home, "token")
+	if got := read(t, p); got != "sk-ant-oat01-x" {
+		t.Errorf("token file = %q", got)
+	}
+	if fi, _ := os.Stat(p); fi.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %v", fi.Mode().Perm())
+	}
+	if fi, _ := os.Stat(home); fi.Mode().Perm() != 0o700 {
+		t.Errorf("home mode = %v", fi.Mode().Perm())
+	}
+	if strings.Contains(logs.String(), "sk-ant") {
+		t.Error("the token reached the log")
+	}
+	if err := l.Finish(ctx, "abc"); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Errorf("finish with nothing pending: %v", err)
+	}
+}
+
+func TestLogoutDeletesTheToken(t *testing.T) {
+	home := homeWithToken(t, "sk-ant-oat01-x")
+	_, bin := fakeCLI(t, "")
+	l := NewLogin(bin, home)
+	if err := l.Logout(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "token")); err == nil {
+		t.Error("token still there")
+	}
+	if err := l.Logout(context.Background()); err != nil {
+		t.Errorf("logout when signed out: %v", err)
+	}
+}
+
+func TestStatusReadsVersion(t *testing.T) {
+	_, bin := fakeCLI(t, setupTokenScript)
+	home := homeWithToken(t, "")
+	l := NewLogin(bin, home)
+	s, err := l.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.CliVersion != "2.1.319 (Claude Code)" || s.SignedIn {
+		t.Errorf("status = %v", s)
+	}
+	os.WriteFile(filepath.Join(home, "token"), []byte("t"), 0o600)
+	if s, _ = l.Status(context.Background()); !s.SignedIn {
+		t.Error("not signed in with a token")
+	}
+}

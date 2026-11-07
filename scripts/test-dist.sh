@@ -30,7 +30,7 @@ tar -tzf "$archive" | sed 's|/$||' | sort >"$work/list"
 mkdir "$work/x"
 tar -xzf "$archive" -C "$work/x" || { fail "the archive extracts"; exit 1; }
 
-for p in bin/engine bin/secretd bin/hostd bin/smsd bin/calld bin/emaild bin/whatsappd bin/telegramd bin/sensord \
+for p in bin/engine bin/secretd bin/hostd bin/smsd bin/calld bin/emaild bin/whatsappd bin/claudd bin/telegramd bin/sensord \
 	ui/index.html browser/pyproject.toml browser/uv.lock VERSION REVISION; do
 	grep -qxF "$p" "$work/list" && ok "lists $p" || fail "lists $p"
 done
