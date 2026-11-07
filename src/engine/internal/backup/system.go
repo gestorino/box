@@ -28,16 +28,15 @@ type System interface {
 	SyncVenv(browserDir string) error
 }
 
-// Units are the box's services and sockets, stopped engine first and secretd
-// last, started in reverse.
+// Units are the box's services and sockets in stop order: the engine first and
+// secretd (its service, then its socket) last, so nothing that reads secrets
+// outlives it. Starting goes in reverse: secretd first, the engine last.
 var Units = []string{
 	"concierge-engine.service",
 	"concierge-worker.service",
 	"concierge-hostd.service",
 	"concierge-hostd.socket",
 	"concierge-hostd-settings.socket",
-	"concierge-secrets.service",
-	"concierge-secrets.socket",
 	"concierge-sms.service",
 	"concierge-sms.socket",
 	"concierge-calls.service",
@@ -48,6 +47,8 @@ var Units = []string{
 	"concierge-telegram.socket",
 	"concierge-email.service",
 	"concierge-email.socket",
+	"concierge-secrets.service",
+	"concierge-secrets.socket",
 }
 
 const credName = "--name=concierge-secrets-master"
