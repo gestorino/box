@@ -82,8 +82,9 @@ deploy: check
 box-browser:
 	CONCIERGE_BOX="$(CONCIERGE_BOX)" scripts/box-browser.sh $(FLAGS)
 
-# A backup of the box into ~/Backups/concierge. STOP=1 holds the services down while it is taken
-# (a marker file and a start condition on the box, until `make backup-resume`).
+# A backup of the box into ~/Backups/concierge. Every backup stops the services while it is taken;
+# STOP=1 keeps them stopped afterwards (a marker file and a start condition on the box, until
+# `make backup-resume`).
 backup:
 	CONCIERGE_BOX="$(CONCIERGE_BOX)" STOP="$(STOP)" scripts/box-backup.sh
 

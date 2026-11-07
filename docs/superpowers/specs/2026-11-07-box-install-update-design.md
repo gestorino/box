@@ -94,7 +94,7 @@ is its summary; that design is the one to build from.
   taken before a wipe: anything arriving later (an SMS smsd would clear from the modem, WhatsApp and
   Telegram moving their sessions ahead) waits on the service side instead of being lost. WhatsApp and
   Telegram keep a linked device that is offline for a while.
-- Kept on the Mac outside the repo (*my call*: `~/Backups/concierge/<date>-<version>.tar.zst`, mode
+- Kept on the Mac outside the repo (*my call*: `~/Backups/concierge/<date>-<version>.tar.gz`, mode
   0600). It holds personal data in the clear (archives, the browser profiles' cookies); its secrets
   stay sealed. Encrypting the whole backup comes with customer backups, later.
 - **Restore** (`make restore B=<file>`): onto a box with a release installed, before or after its

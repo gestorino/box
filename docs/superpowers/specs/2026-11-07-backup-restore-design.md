@@ -56,7 +56,7 @@ the recovery code, the same backup can also be restored onto another box, its se
   marker file, and every Concierge unit has a start condition that refuses while it exists (not
   `systemctl mask`, which refuses units whose files live in `/etc/systemd/system`). Only a restore, or `make backup-resume`, starts them again; a deploy
   refuses while they are. WhatsApp and Telegram keep a linked device that is offline for a while.
-- **On the Mac**: outside the repo (*my call*: `~/Backups/concierge/<date>-<version>.tar.zst`, the
+- **On the Mac**: outside the repo (*my call*: `~/Backups/concierge/<date>-<version>.tar.gz`, the
   directory 0700, the file 0600). It holds personal data in the clear (archives, the profiles'
   cookies); its secrets stay sealed. Encrypting whole backups comes with customer backups, later.
 

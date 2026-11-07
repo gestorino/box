@@ -29,8 +29,8 @@ make deploy                # build + ship to the box with Ansible (ansible/, a p
 make test-box              # opt-in: the per-run screen (Xvnc, openbox, tint2, websockify, Chrome) on the box, over SSH ($CONCIERGE_BOX)
 make dist V=… R=…          # the release archive (scripts/dist.sh); make test-dist tests it
 make release               # cut the next minor release locally (below); pushes nothing
-make backup [STOP=1]       # a backup of the box into ~/Backups/concierge (STOP=1 holds the services down until backup-resume)
-make restore B=FILE [FORCE=1] [NEW_BOX=1]  # restore a backup onto the box (installs the backup's build first when it differs)
+make backup [STOP=1]       # a backup of the box into ~/Backups/concierge (STOP=1 keeps the services stopped after it, until backup-resume)
+make restore B=FILE [FORCE=1] [NEW_BOX=1]  # restore a backup onto the box (installs the backup's build first when it differs, FORCE=1 then)
 make backup-resume         # start the services after `make backup STOP=1`
 make recovery-code         # make or replace the recovery code (shown once, on the box's tty)
 make test-box-backup       # the Mac side of the above against fakes (part of check)
@@ -79,8 +79,9 @@ path is tracked) at exit 0 once the tree is public.
 
 **Backup and restore** (`src/engine/cmd/backup` on the box; `scripts/box-backup.sh`, `box-restore.sh`,
 `box-recovery-code.sh`, `box-backup-resume.sh` here, over SSH): `make backup` keeps the box's state in
-`~/Backups/concierge/<stamp>-<version>.tar.gz` (0600, directory 0700). `STOP=1` holds the services down
-by a marker file and a start condition on the box until `make backup-resume`. The
+`~/Backups/concierge/<stamp>-<version>.tar.gz` (0600, directory 0700). Every backup stops the services
+while it is taken; `STOP=1` keeps them stopped afterwards, by a marker file and a start condition on the
+box, until `make backup-resume` (a restore holds them by the same marker until its swap is through). The
 secrets move to another box only with the **recovery code** (`make recovery-code`; the owner types it on
 the box's own tty over `ssh -t`, the Mac scripts never read, store or pass it). `make restore` installs
 the backup's own build first when the box's differs: a published release, attestation-verified here, or a
@@ -173,9 +174,13 @@ docs/superpowers/  current design docs (specs/); implementation plans (plans/) a
   nothing. The browser worker, Chrome and ffmpeg run as `concierge-worker`, in no
   secretd group, and cannot reach it. Its master key (`-master-key-file`) is a systemd
   credential: 32 bytes made once on the box by Ansible and encrypted to its TPM, no PCRs
-  (`/etc/credstore.encrypted/concierge-secrets-master`, `LoadCredentialEncrypted=`); no backup by the
-  owner's choice — a lost TPM loses the secrets (starting over: `ansible/README.md`, in the private `ansible/` repo). `make run` starts one with a key file. Design:
-  `docs/superpowers/specs/2026-11-04-secrets-service-design.md`.
+  (`/etc/credstore.encrypted/concierge-secrets-master`, `LoadCredentialEncrypted=`). It has a
+  recovery-locked copy (`make recovery-code`: `var/lib/concierge-secrets/master-key.recovery`, locked
+  with a code shown once on the owner's terminal), which every backup carries: with the code, a backup
+  restores onto another box, its key sealed to that box's TPM; without one, a lost TPM loses the secrets
+  (starting over: `ansible/README.md`, in the private `ansible/` repo). `make run` starts one with a key file. Design:
+  `docs/superpowers/specs/2026-11-04-secrets-service-design.md`; the recovery code:
+  `docs/superpowers/specs/2026-11-07-backup-restore-design.md`.
 - **`src/engine/cmd/hostd` + `internal/hostd/`** — the host service: the ONLY process that may
   change the box's network. Own user `concierge-host`, no root, no capabilities; its rights are one
   polkit rule (four NetworkManager actions, and start/stop of the ten connector units). Logic in `internal/hostd` (tested with fakes), D-Bus in
