@@ -54,6 +54,11 @@ func run() error {
 	callsSocket := flag.String("calls-socket", "", "calld's Unix socket; empty leaves /api/v1/calls answering 503")
 	signinsDB := flag.String("signins-db", "", "the sign-ins catalog database; empty leaves /api/v1/signins answering 503")
 	prometheusURL := flag.String("prometheus-url", "", "Prometheus's base URL, where the Health page reads its history; empty leaves /api/v1/health answering 503")
+	claudeSocket := flag.String("claude-socket", "", "the Claude agent daemon's Unix socket; empty leaves that agent out")
+	codexSocket := flag.String("codex-socket", "", "the Codex agent daemon's Unix socket; empty leaves that agent out")
+	agentDB := flag.String("agent-db", "", "the owner's agent conversations database; empty runs no agent and no WhatsApp listener")
+	timeZone := flag.String("time-zone", localZone(), "the owner's time zone, told to the agent")
+	consoleURL := flag.String("console-url", "", "the console's address, for the links the agent sends (empty: the path alone)")
 	metricsAddr := flag.String("metrics-addr", "", "serve the running runs to Prometheus at /metrics on this address, with no login (keep it on 127.0.0.1); empty serves none")
 	login := api.Login{User: os.Getenv("CONCIERGE_CONSOLE_USER"), PasswordHash: os.Getenv("CONCIERGE_CONSOLE_PASSWORD_HASH")}
 	flag.Parse()
@@ -79,11 +84,12 @@ func run() error {
 	w := browser.New()
 	signInsHandler, runsHandler := api.SocketProxy("", "accounts"), api.SocketProxy("", "runs")
 	var signInsSvc *signins.Service
+	events := &eventForwarder{}
 	var running health.RunLister
 	var runStore health.RunStore // nil without a sign-ins database: Health's bands go unlabelled
 	if *signinsDB != "" {
 		svc, store, err := openSignIns(ctx, *signinsDB, w, sc, *screensDir, *recordingsDir, *noVNCDir,
-			*smsSocket, *emailSocket, *hostdSocket)
+			*smsSocket, *emailSocket, *hostdSocket, events.Event)
 		if err != nil {
 			return err
 		}
@@ -112,6 +118,13 @@ func run() error {
 			calls = health.NewCallLister(*callsSocket)
 		}
 		healthHandler = health.Handler(q, runStore, calls)
+	}
+
+	// The hub exists, and the forwarder has it, before the server or any run can start.
+	waitConverse, err := startConverse(ctx, converseConfig{DB: *agentDB, ClaudeSocket: *claudeSocket, CodexSocket: *codexSocket,
+		TimeZone: *timeZone, ConsoleURL: *consoleURL, WhatsAppSocket: *whatsappSocket, HostdSocket: *hostdSocket}, signInsSvc, events)
+	if err != nil {
+		return fmt.Errorf("-agent-db: %w", err)
 	}
 
 	srv := newServer(ctx, *addr, api.New(api.Config{
@@ -155,6 +168,7 @@ func run() error {
 		if metricsSrv != nil {
 			metricsSrv.Shutdown(shutdown)
 		}
+		waitConverse()
 		if signInsSvc != nil {
 			idle := make(chan struct{})
 			go func() { signInsSvc.Wait(); close(idle) }()
@@ -202,7 +216,7 @@ func hasKey(sc *secrets.Client) func(context.Context) (bool, error) {
 // API. The accounts' passwords and the OpenRouter key that gates every run are in secretd (sc). base is
 // what background runs live under.
 func openSignIns(base context.Context, db string, worker signins.Runner, sc *secrets.Client, screensDir, recordingsDir, noVNCDir string,
-	smsSocket, emailSocket, hostdSocket string) (*signins.Service, *signins.Store, error) {
+	smsSocket, emailSocket, hostdSocket string, events func(signins.RunEvent)) (*signins.Service, *signins.Store, error) {
 	store, err := signins.OpenStore(db)
 	if err != nil {
 		return nil, nil, fmt.Errorf("-signins-db: %w", err)
@@ -217,5 +231,6 @@ func openSignIns(base context.Context, db string, worker signins.Runner, sc *sec
 		Uplink: hostd,
 		Owner:  hostd,
 		HasKey: hasKey(sc),
+		Events: events,
 	}), store, nil
 }

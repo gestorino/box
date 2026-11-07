@@ -13,7 +13,21 @@ import (
 
 	"concierge/engine/internal/secrets"
 	"concierge/engine/internal/secrets/secretstest"
+	"concierge/engine/internal/signins"
 )
+
+// A run's event before the hub is set is dropped, not a crash; -agent-db needs what the hub reads.
+func TestTheForwarderDropsEventsBeforeTheHub(t *testing.T) {
+	(&eventForwarder{}).Event(signins.RunEvent{Run: 1, Kind: "done"})
+	if _, err := startConverse(context.Background(), converseConfig{DB: "x.db"}, nil, &eventForwarder{}); err == nil {
+		t.Fatal("-agent-db without its sockets started")
+	}
+	wait, err := startConverse(context.Background(), converseConfig{}, nil, &eventForwarder{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wait()
+}
 
 // No secretd, no engine: it never falls back to keeping a secret anywhere else.
 func TestTheEngineNeedsSecretd(t *testing.T) {
@@ -91,7 +105,7 @@ func TestOpenSignInsStartsWithTheStoresOwnCards(t *testing.T) {
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	svc, store, err := openSignIns(context.Background(), filepath.Join(dir, "s.db"), nil,
-		secretstest.Start(t, "engine"), "", "", "", "", "", "")
+		secretstest.Start(t, "engine"), "", "", "", "", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -60,7 +60,9 @@ func TestHostdClientOwner(t *testing.T) {
 		case "/uplink":
 			w.Write([]byte(`{"uplink":"mobile"}`))
 		case "/settings/account":
-			w.Write([]byte(`{"owner_first_name":"Alex","owner_last_name":"Sample","phone":"+351912345678","address":{"city":"Lisboa"},"card":null}`))
+			w.Write([]byte(`{"owner_first_name":"Alex","owner_last_name":"Sample","phone":"+351912345678","contacts":{"phone":"+351900111222","email":"o@x.org"},"address":{"city":"Lisboa"},"card":null}`))
+		case "/settings/agent":
+			w.Write([]byte(`{"agent":"codex","answer":{"whatsapp":true}}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -69,9 +71,12 @@ func TestHostdClientOwner(t *testing.T) {
 	if got, err := host.Uplink(context.Background()); err != nil || got != "mobile" {
 		t.Fatalf("uplink = %q, %v", got, err)
 	}
-	want := Owner{FirstName: "Alex", LastName: "Sample", Phone: "+351912345678"}
+	want := Owner{FirstName: "Alex", LastName: "Sample", Phone: "+351912345678", ContactPhone: "+351900111222"}
 	if got, err := host.Owner(context.Background()); err != nil || got != want {
 		t.Fatalf("owner = %+v, %v", got, err)
+	}
+	if agent, wa, err := host.AgentSettings(context.Background()); err != nil || agent != "codex" || !wa {
+		t.Fatalf("agent = %q, %v, %v", agent, wa, err)
 	}
 }
 

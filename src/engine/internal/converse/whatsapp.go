@@ -1,0 +1,151 @@
+package converse
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"strings"
+	"time"
+
+	listenv1 "concierge/engine/internal/gen/listen/v1"
+	"concierge/engine/internal/h2c"
+	"concierge/engine/internal/listen"
+)
+
+const (
+	// phonePoll is how often the owner's Contacts phone is read again for the listener.
+	phonePoll = 30 * time.Second
+	// maxAge is how old a message may be when it arrives: a box that was offline for long must not act
+	// on requests it was sent meanwhile.
+	maxAge = 10 * time.Minute
+)
+
+// WhatsAppChannel sends to the owner's WhatsApp: whatsappd's send, to the owner's Contacts phone read
+// fresh for each send, never to a chat anyone else names.
+type WhatsAppChannel struct {
+	settings Settings
+	http     *http.Client
+}
+
+func NewWhatsAppChannel(socket string, s Settings) *WhatsAppChannel {
+	return &WhatsAppChannel{settings: s, http: &http.Client{Transport: h2c.Transport(socket), Timeout: 30 * time.Second}}
+}
+
+var _ Channel = (*WhatsAppChannel)(nil)
+
+var errNoPhone = errors.New("the owner's phone is not set in Contacts")
+
+func (c *WhatsAppChannel) Send(ctx context.Context, text string) error {
+	phone, err := c.settings.OwnerPhone(ctx)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(phone) == "" {
+		return errNoPhone
+	}
+	body, _ := json.Marshal(map[string]string{"chat": phone, "text": text})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://whatsappd/whatsapp/send", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNoContent && res.StatusCode != http.StatusOK {
+		return fmt.Errorf("whatsapp send: %s", res.Status)
+	}
+	return nil
+}
+
+// owners is the hub, as the listener uses it.
+type owners interface {
+	Owner(ctx context.Context, channel, thread, text string)
+}
+
+// ListenWhatsApp gives the hub the owner's WhatsApp messages until ctx ends: it reads the owner's
+// Contacts phone every 30 s and keeps one live listener of whatsappd open for that phone's digits,
+// re-opening it when the phone changes and closing it with no phone. A message reaches the hub only
+// while the WhatsApp switch is on, and only when fresh. Message text is never logged.
+func ListenWhatsApp(ctx context.Context, l listen.Listener, h *Hub, s Settings) {
+	listenWhatsApp(ctx, l, h, s, time.Now, phonePoll)
+}
+
+func listenWhatsApp(ctx context.Context, l listen.Listener, h owners, s Settings, now func() time.Time, every time.Duration) {
+	var (
+		current string // the digits listened for
+		stop    context.CancelFunc
+		done    chan struct{}
+	)
+	closeListener := func() {
+		if stop != nil {
+			stop()
+			<-done
+			stop, done = nil, nil
+		}
+	}
+	defer closeListener()
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	for {
+		phone, err := s.OwnerPhone(ctx)
+		if err != nil {
+			slog.Warn("converse: reading the owner's phone", "err", err)
+		} else if d := digits(phone); d != current {
+			closeListener()
+			current = d
+			if d != "" {
+				lctx, cancel := context.WithCancel(ctx)
+				fin := make(chan struct{})
+				stop, done = cancel, fin
+				go func() {
+					defer close(fin)
+					for e := range l.Listen(lctx, &listenv1.ListenRequest{From: d}) {
+						if m := e.GetMessage(); m != nil {
+							deliver(lctx, h, s, now, m.GetWhatsapp())
+						}
+					}
+				}()
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+func deliver(ctx context.Context, h owners, s Settings, now func() time.Time, w *listenv1.WhatsApp) {
+	if w == nil {
+		return
+	}
+	if w.GetSentAt() != nil && now().Sub(w.GetSentAt().AsTime()) > maxAge {
+		slog.Info("converse: dropped a WhatsApp message sent more than 10 minutes ago")
+		return
+	}
+	_, on, err := s.Agent(ctx)
+	if err != nil {
+		slog.Warn("converse: reading the WhatsApp switch", "err", err)
+		return
+	}
+	if !on {
+		return
+	}
+	h.Owner(ctx, "whatsapp", w.GetChat(), w.GetText())
+}
+
+func digits(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, s)
+}
