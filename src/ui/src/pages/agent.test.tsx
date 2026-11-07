@@ -43,8 +43,15 @@ describe('Agent conversations', () => {
     expect(screen.queryByText(/\$0/)).not.toBeInTheDocument()
   })
 
-  it('says it cannot read the conversations', async () => {
+  it('an agent not set up on the box is said plainly, not as an error', async () => {
     stubFetch({ 'GET /api/v1/conversations': { status: 503, body: { error: 'agent unavailable' } } })
+    list()
+    expect(await screen.findByText("The agent isn't set up on this box yet.")).toBeInTheDocument()
+    expect(screen.queryByText("Couldn't read the conversations")).not.toBeInTheDocument()
+  })
+
+  it('says it cannot read the conversations', async () => {
+    stubFetch({ 'GET /api/v1/conversations': { status: 500, body: { error: 'boom' } } })
     list()
     expect(await screen.findByText("Couldn't read the conversations")).toBeInTheDocument()
   })

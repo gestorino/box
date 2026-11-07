@@ -56,7 +56,12 @@ export function AgentSection() {
 
   const signedIn = (agents.data ?? []).filter((a) => a.signed_in)
   const whatsapp = isAdded('whatsapp')
-  const reason = whatsapp !== true ? 'Add WhatsApp in Connectors first.' : !settings?.agent ? 'Choose an agent first.' : undefined
+  // One reason, the first one that stands in the way.
+  const reason =
+    whatsapp !== true ? 'Add WhatsApp in Connectors first.'
+    : agents.data && signedIn.length === 0 ? 'Sign in an agent first.'
+    : !settings?.agent ? 'Choose an agent first.'
+    : undefined
   const on = settings?.answer.whatsapp ?? false
 
   return (
@@ -100,7 +105,6 @@ export function AgentSection() {
                 ))}
               </div>
             </div>}
-            {agents.data && signedIn.length === 0 && <p className="text-sm text-muted-foreground">Sign in an agent first.</p>}
             <div className="space-y-1">
               <div className="flex items-center gap-3">
                 <Switch

@@ -309,10 +309,11 @@ describe('the agent', () => {
     await waitFor(() => expect(calls.find((c) => c.key === PUT_SETTINGS)?.body).toEqual({ agent: 'claude', answer: { whatsapp: false } }))
   })
 
-  it('with no one signed in, the choice says so', async () => {
-    stubFetch({ [G]: SET, [AGENTS]: { body: [agent('claude'), agent('codex')] }, [SETTINGS]: { body: { agent: '', answer: { whatsapp: false } } } })
+  it('with no one signed in, the switch gives that one reason', async () => {
+    stubFetch({ [G]: SET, [AGENTS]: { body: [agent('claude'), agent('codex')] }, [SETTINGS]: { body: { agent: '', answer: { whatsapp: false } } }, 'GET /api/v1/connectors': connectorList('added') })
     show()
-    expect(await screen.findByText('Sign in an agent first.')).toBeInTheDocument()
+    expect(await screen.findAllByText('Sign in an agent first.')).toHaveLength(1)
+    expect(screen.queryByText('Choose an agent first.')).not.toBeInTheDocument()
   })
 
   it('TestAnswerMeOnWhatsAppSaysWhyItIsOff', async () => {

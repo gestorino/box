@@ -6,6 +6,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
 import { usePoll } from '@/hooks/use-poll'
 import { channelLabel, type Conversation, CONVERSATIONS_POLL_MS, conversationPath, getConversations, usageLine } from '@/lib/agent'
+import { NetworkError } from '@/lib/http'
 import { whenShort } from '@/lib/runs'
 
 /** What the box could not read, said plainly (a 503 here is the agent's store, not the host). */
@@ -17,6 +18,11 @@ export function ReadError({ error, what }: { error: Error; what: string }) {
       <AlertDescription>{error.message}</AlertDescription>
     </Alert>
   )
+}
+
+/** The engine answers 503 when the box runs no agent (no conversation store): a state, not a fault. */
+function notSetUp(error: Error): boolean {
+  return error instanceof NetworkError && error.status === 503
 }
 
 /** A conversation's state, as icon and word. */
@@ -36,7 +42,10 @@ export function AgentPage() {
   return (
     <div className="space-y-6">
       <PageHeader title="Agent" description="What you asked your agent, and what it answered." />
-      {error && !data && <ReadError error={error} what="the conversations" />}
+      {error && !data && notSetUp(error) && (
+        <EmptyState icon={MessageCircle} title="The agent isn't set up on this box yet." />
+      )}
+      {error && !data && !notSetUp(error) && <ReadError error={error} what="the conversations" />}
       {!data && !error && <Skeleton className="h-32 w-full" />}
       {data?.length === 0 && (
         <EmptyState icon={MessageCircle} title="No conversations yet. Turn on Answer me on WhatsApp in Settings → AI." />
