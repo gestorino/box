@@ -152,7 +152,7 @@ var serviceWords = []struct {
 	{signins.ErrUnknownSite, ""},
 	{signins.ErrWaitingForWiFi, ""},
 	{signins.ErrNoAppointment, ""},
-	{secrets.ErrUnavailable, ""},
+	{secrets.ErrUnavailable, "secrets unavailable"}, // its wrapped text may name a secret
 }
 
 // plainWords is what a failed call says: its refusal, a service's plain error, or, for anything

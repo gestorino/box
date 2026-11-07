@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	agentv1 "concierge/engine/internal/gen/agent/v1"
+	"concierge/engine/internal/secrets"
 	"concierge/engine/internal/signins"
 )
 
@@ -217,6 +218,10 @@ func TestAFailureIsSaidInPlainWords(t *testing.T) {
 	f.startErr = fmt.Errorf("%w: only a change or a cancel names an appointment", signins.ErrBadErrand)
 	if msg := refused(t, call(t, tools, conv, "start_errand", args)); !strings.HasSuffix(msg, "only a change or a cancel names an appointment") {
 		t.Fatalf("the service's own words: %q", msg)
+	}
+	f.startErr = fmt.Errorf("%w: secretd refused %q: status 500", secrets.ErrUnavailable, "signins/example.com/password")
+	if msg := refused(t, call(t, tools, conv, "start_errand", args)); msg != "secrets unavailable" {
+		t.Fatalf("secretd away said %q", msg)
 	}
 	f.startErr = nil
 	if err := s.LinkRun(context.Background(), conv, 41); err != nil {
