@@ -327,6 +327,32 @@ next:
 	return nil
 }
 
+// End closes the conversation, as the agent's end asks, unless one of its runs is running: it stays
+// open while an errand it started runs.
+func (s *Store) End(ctx context.Context, conv int64, running func(run int64) bool) error {
+	runs, err := s.runsOf(ctx, conv)
+	if err != nil {
+		return err
+	}
+	for _, run := range runs {
+		if running(run) {
+			return nil
+		}
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE conversations SET state = 'closed' WHERE id = ?`, conv)
+	return err
+}
+
+// conversation is one conversation, without its events; ErrNoConversation when there is none of
+// that id.
+func (s *Store) conversation(ctx context.Context, id int64) (Conversation, error) {
+	c, err := scanConversation(s.db.QueryRowContext(ctx, `SELECT `+conversationCols+` FROM conversations WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Conversation{}, ErrNoConversation
+	}
+	return c, err
+}
+
 // List is every conversation, the latest last event first.
 func (s *Store) List(ctx context.Context) ([]Conversation, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+conversationCols+` FROM conversations ORDER BY last DESC, id DESC`)
@@ -348,10 +374,7 @@ func (s *Store) List(ctx context.Context) ([]Conversation, error) {
 // One is a conversation with all its events and the runs it started; ErrNoConversation when there is
 // none of that id.
 func (s *Store) One(ctx context.Context, id int64) (Conversation, []*agentv1.Event, []int64, error) {
-	c, err := scanConversation(s.db.QueryRowContext(ctx, `SELECT `+conversationCols+` FROM conversations WHERE id = ?`, id))
-	if errors.Is(err, sql.ErrNoRows) {
-		return Conversation{}, nil, nil, ErrNoConversation
-	}
+	c, err := s.conversation(ctx, id)
 	if err != nil {
 		return Conversation{}, nil, nil, err
 	}
