@@ -112,7 +112,9 @@ func Restore(sys System, root, from string, o RestoreOptions) (Report, error) {
 	if err := sys.Stop(Units); err != nil {
 		return Report{}, err
 	}
-	left, err := Swap(root, staging, h.ID, staged.Paths)
+	// What the backup lacks goes too: a restore replaces the box's state, it never merges into it.
+	absent := slices.DeleteFunc(slices.Clone(Paths), func(p string) bool { return slices.Contains(staged.Paths, p) })
+	left, err := Swap(root, staging, h.ID, staged.Paths, absent)
 	if err != nil {
 		return Report{}, fmt.Errorf("%w (the services are stopped: make backup-resume starts them)", err)
 	}
@@ -214,20 +216,21 @@ func waitActive(sys System, sleep func(time.Duration)) error {
 var parentModes = map[string]fs.FileMode{"etc/credstore.encrypted": 0o700}
 
 // Swap puts each of paths (relative, a directory or a file) from staging in place under root: the
-// live one, if any, is renamed aside to <path>.old-<id>, the staged one renamed in. It refuses,
-// changing nothing, while a copy aside with that id is left from an earlier run. A failure undoes
-// every path already done, and the error says whether that worked or which copies aside hold the
-// old state. After a swap that went through, the copies aside are removed; those that can't be are
-// returned, the swap still done. Staging and root must be on one filesystem.
-func Swap(root, staging, id string, paths []string) (leftovers []string, err error) {
-	return swap(os.Rename, root, staging, id, paths)
+// live one, if any, is renamed aside to <path>.old-<id>, the staged one renamed in. Each of absent
+// (paths the staging lacks) that is live is renamed aside the same way, and nothing comes in its
+// place. It refuses, changing nothing, while a copy aside with that id is left from an earlier run.
+// A failure undoes every path already done, and the error says whether that worked or which copies
+// aside hold the old state. After a swap that went through, the copies aside are removed; those
+// that can't be are returned, the swap still done. Staging and root must be on one filesystem.
+func Swap(root, staging, id string, paths, absent []string) (leftovers []string, err error) {
+	return swap(os.Rename, root, staging, id, paths, absent)
 }
 
-func swap(rename func(from, to string) error, root, staging, id string, paths []string) ([]string, error) {
+func swap(rename func(from, to string) error, root, staging, id string, paths, absent []string) ([]string, error) {
 	aside := func(p string) string { return filepath.Join(root, p) + ".old-" + id }
 	asideNow := func() ([]string, error) {
 		var found []string
-		for _, p := range paths {
+		for _, p := range slices.Concat(absent, paths) {
 			if ok, err := exists(aside(p)); err != nil {
 				return nil, err
 			} else if ok {
@@ -246,27 +249,44 @@ func swap(rename func(from, to string) error, root, staging, id string, paths []
 
 	type move struct {
 		path  string
+		in    bool // the staged one was moved in
 		aside bool // a live one was moved aside
 	}
 	var done []move
 	fail := func(p string, err error, undoErrs ...error) error {
 		for _, m := range slices.Backward(done) {
 			live := filepath.Join(root, m.path)
-			undoErrs = append(undoErrs, rename(live, filepath.Join(staging, m.path)))
+			if m.in {
+				undoErrs = append(undoErrs, rename(live, filepath.Join(staging, m.path)))
+			}
 			if m.aside {
 				undoErrs = append(undoErrs, rename(aside(m.path), live))
 			}
 		}
 		undoErr := errors.Join(undoErrs...)
 		if undoErr == nil {
-			return fmt.Errorf("putting %s in place: %w; undone, nothing changed", p, err)
+			return fmt.Errorf("swapping %s: %w; undone, nothing changed", p, err)
 		}
 		olds, _ := asideNow()
 		if olds == nil {
-			return fmt.Errorf("putting %s in place: %w; undoing it partly failed (%v), though the old state is back in place", p, err, undoErr)
+			return fmt.Errorf("swapping %s: %w; undoing it partly failed (%v), though the old state is back in place", p, err, undoErr)
 		}
-		return fmt.Errorf("putting %s in place: %w; and undoing it failed (%v): the box's old state is in %s: put it back by hand",
+		return fmt.Errorf("swapping %s: %w; and undoing it failed (%v): the box's old state is in %s: put it back by hand",
 			p, err, undoErr, strings.Join(olds, ", "))
+	}
+	for _, p := range absent {
+		live := filepath.Join(root, p)
+		was, err := exists(live)
+		if err != nil {
+			return nil, fail(p, err)
+		}
+		if !was {
+			continue
+		}
+		if err := rename(live, aside(p)); err != nil {
+			return nil, fail(p, err)
+		}
+		done = append(done, move{path: p, aside: true})
 	}
 	for _, p := range paths {
 		live := filepath.Join(root, p)
@@ -289,7 +309,7 @@ func swap(rename func(from, to string) error, root, staging, id string, paths []
 			}
 			return nil, fail(p, err, back)
 		}
-		done = append(done, move{p, was})
+		done = append(done, move{path: p, in: true, aside: was})
 	}
 	var left []string
 	for _, m := range done {
@@ -373,7 +393,7 @@ func InstallBuild(sys System, root, archive string) (leftovers []string, err err
 	if err := sys.Stop(Units); err != nil {
 		return nil, err
 	}
-	left, err := Swap(opt, staging, id, buildPaths)
+	left, err := Swap(opt, staging, id, buildPaths, nil)
 	if err != nil {
 		return nil, fmt.Errorf("installing the build: %w (the services are stopped: make backup-resume starts them)", err)
 	}

@@ -439,10 +439,87 @@ func TestRestoreSwapsOnlyTheBackupsPaths(t *testing.T) {
 	if got := readFile(t, filepath.Join(root, "var/lib/concierge/signins.db")); got != "x" {
 		t.Fatalf("signins.db = %q", got)
 	}
-	if got := readFile(t, filepath.Join(root, "var/lib/concierge-telegram/telegram.db")); got != "live" {
-		t.Fatalf("a path outside the backup's was swapped: %q", got)
+	// The backup holds no var/lib/concierge-telegram: the box's goes, and what the link steered into
+	// staging never comes in.
+	if _, err := os.Stat(filepath.Join(root, "var/lib/concierge-telegram")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("var/lib/concierge-telegram: %v, want it gone", err)
 	}
 	assertNoLeftovers(t, root)
+}
+
+// A connector never started when the backup was taken has no state in it: restoring onto a box
+// where it has some since must not leave that next to a settings.db that says it isn't added.
+func TestRestoreRemovesWhatTheBackupLacks(t *testing.T) {
+	root := stoppedBox(t)
+	put(t, root, "var/lib/concierge-telegram/telegram.db", "live", 0o600)
+	put(t, root, "var/lib/concierge-whatsapp/wa.db", "live", 0o600)
+	if _, err := Restore(&fakeSystem{key: masterKey()}, root, backupFile(t, nil), RestoreOptions{sleep: noSleep(new(int))}); err != nil {
+		t.Fatal(err)
+	}
+	assertState(t, root, restored)
+	for _, p := range []string{"var/lib/concierge-telegram", "var/lib/concierge-whatsapp"} {
+		if _, err := os.Stat(filepath.Join(root, p)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s: %v, want it gone: the backup holds none of it", p, err)
+		}
+	}
+	assertNoLeftovers(t, root)
+}
+
+func TestSwapMovesAsideTheAbsent(t *testing.T) {
+	root, staging := t.TempDir(), t.TempDir()
+	put(t, root, "a/one/f", "live", 0o600)
+	put(t, staging, "a/one/f", "staged", 0o600)
+	put(t, root, "b/two/f", "live", 0o600)
+	if left, err := Swap(root, staging, testID, []string{"a/one"}, []string{"b/two", "c/never"}); err != nil || left != nil {
+		t.Fatal(left, err)
+	}
+	if got := readFile(t, filepath.Join(root, "a/one/f")); got != "staged" {
+		t.Fatalf("a/one = %q", got)
+	}
+	for _, p := range []string{"b/two", "b/two.old-" + testID, "c/never"} {
+		if _, err := os.Stat(filepath.Join(root, p)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s: %v, want it gone", p, err)
+		}
+	}
+}
+
+func TestSwapPutsTheAbsentBackOnFailure(t *testing.T) {
+	root, staging := t.TempDir(), t.TempDir()
+	put(t, root, "b/two/f", "live", 0o600)
+	for _, p := range []string{"a/one", "c/three"} {
+		put(t, root, p+"/f", "live", 0o600)
+		put(t, staging, p+"/f", "staged", 0o600)
+	}
+	ro := filepath.Join(root, "c") // c/three cannot be moved aside
+	if err := os.Chmod(ro, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(ro, 0o755) })
+	_, err := Swap(root, staging, testID, []string{"a/one", "c/three"}, []string{"b/two"})
+	if err == nil || !strings.Contains(err.Error(), "undone") {
+		t.Fatalf("err = %v, want it undone", err)
+	}
+	for _, p := range []string{"a/one", "b/two", "c/three"} {
+		if got := readFile(t, filepath.Join(root, p, "f")); got != "live" {
+			t.Fatalf("%s = %q, want it back as it was", p, got)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "b/two.old-"+testID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("b/two's copy aside: %v", err)
+	}
+}
+
+func TestSwapRefusesAnAbsentPathsOldCopyLeft(t *testing.T) {
+	root, staging := t.TempDir(), t.TempDir()
+	put(t, root, "b/two/f", "live", 0o600)
+	put(t, root, "b/two.old-"+testID+"/f", "earlier", 0o600)
+	_, err := Swap(root, staging, testID, nil, []string{"b/two"})
+	if err == nil || !strings.Contains(err.Error(), "b/two.old-"+testID) {
+		t.Fatalf("err = %v", err)
+	}
+	if got := readFile(t, filepath.Join(root, "b/two/f")); got != "live" {
+		t.Fatalf("b/two = %q", got)
+	}
 }
 
 func TestSwapRollsBackOnFailure(t *testing.T) {
@@ -459,7 +536,7 @@ func TestSwapRollsBackOnFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chmod(ro, 0o755) })
 
-	_, err := Swap(root, staging, testID, paths)
+	_, err := Swap(root, staging, testID, paths, nil)
 	if err == nil || !strings.Contains(err.Error(), "undone") || strings.Contains(err.Error(), "by hand") {
 		t.Fatalf("err = %v, want it to say the swap was undone", err)
 	}
@@ -475,7 +552,7 @@ func TestSwapRollsBackOnFailure(t *testing.T) {
 	if err := os.Chmod(ro, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if left, err := Swap(root, staging, testID, paths); err != nil || left != nil {
+	if left, err := Swap(root, staging, testID, paths, nil); err != nil || left != nil {
 		t.Fatal(left, err)
 	}
 	for _, p := range paths {
@@ -502,7 +579,7 @@ func TestSwapSaysWhenUndoingFails(t *testing.T) {
 		}
 		return os.Rename(from, to)
 	}
-	_, err := swap(rename, root, staging, testID, paths)
+	_, err := swap(rename, root, staging, testID, paths, nil)
 	old := filepath.Join(root, "a/one.old-"+testID)
 	if err == nil || !strings.Contains(err.Error(), "by hand") || !strings.Contains(err.Error(), old) {
 		t.Fatalf("err = %v, want it to name %s", err, old)
@@ -525,7 +602,7 @@ func TestSwapKeepsGoingWhenAnOldCopyStays(t *testing.T) {
 	old := filepath.Join(root, "a/one.old-"+testID)
 	t.Cleanup(func() { os.Chmod(filepath.Join(old, "sub"), 0o755) })
 
-	left, err := Swap(root, staging, testID, []string{"a/one"})
+	left, err := Swap(root, staging, testID, []string{"a/one"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -542,7 +619,7 @@ func TestSwapRefusesOldCopiesLeft(t *testing.T) {
 	put(t, root, "a/one/f", "live", 0o600)
 	put(t, root, "a/one.old-"+testID+"/f", "earlier", 0o600)
 	put(t, staging, "a/one/f", "staged", 0o600)
-	_, err := Swap(root, staging, testID, []string{"a/one"})
+	_, err := Swap(root, staging, testID, []string{"a/one"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "a/one.old-"+testID) {
 		t.Fatalf("err = %v", err)
 	}
@@ -559,7 +636,7 @@ func TestSwapInstallsWhereNothingWas(t *testing.T) {
 	put(t, staging, credentialFile, "sealed", 0o600)
 	put(t, staging, "var/lib/concierge/signins.db", "staged", 0o600)
 	put(t, root, "var/lib/concierge/signins.db", "live", 0o600)
-	if left, err := Swap(root, staging, testID, []string{credentialFile, "var/lib/concierge"}); err != nil || left != nil {
+	if left, err := Swap(root, staging, testID, []string{credentialFile, "var/lib/concierge"}, nil); err != nil || left != nil {
 		t.Fatal(left, err)
 	}
 	if got := readFile(t, filepath.Join(root, credentialFile)); got != "sealed" {
