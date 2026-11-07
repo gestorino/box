@@ -195,6 +195,22 @@ func TestDeliverChecksTheMessageItself(t *testing.T) {
 	}
 }
 
+func TestASwitchThatCantBeReadStillKeepsTheMessage(t *testing.T) {
+	now := time.Now()
+	s := &fakeSettings{agent: "claude", whatsapp: true}
+	s.fail(1)
+	o := &fakeOwners{got: make(chan ownerMsg, 1)}
+	deliver(context.Background(), o, s, func() time.Time { return now }, "351912345678", wa("351912345678", "x", now).GetWhatsapp())
+	if len(o.got) != 1 {
+		t.Fatal("hostd away dropped the owner's message: the hub keeps it and decides once it can read the switch")
+	}
+	s.set("claude", false)
+	deliver(context.Background(), o, s, func() time.Time { return now }, "351912345678", wa("351912345678", "y", now).GetWhatsapp())
+	if len(o.got) != 1 {
+		t.Fatal("a message reached the hub with the switch off")
+	}
+}
+
 func TestNoPhoneNoListener(t *testing.T) {
 	r := newWARig(t, "", true)
 	time.Sleep(200 * time.Millisecond)

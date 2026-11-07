@@ -123,12 +123,32 @@ type fakeSettings struct {
 	mu       sync.Mutex
 	agent    string
 	whatsapp bool
+	// failing is how many of the next reads fail, as hostd away does; reads counts them all.
+	failing, reads int
 }
 
 func (s *fakeSettings) Agent(context.Context) (string, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.reads++
+	if s.failing > 0 {
+		s.failing--
+		return "", false, errors.New("hostd away")
+	}
 	return s.agent, s.whatsapp, nil
+}
+
+// fail makes the next n reads fail.
+func (s *fakeSettings) fail(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failing = n
+}
+
+func (s *fakeSettings) readCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reads
 }
 func (s *fakeSettings) set(agent string, whatsapp bool) {
 	s.mu.Lock()
@@ -682,6 +702,61 @@ func TestNoChosenAgentNoTurn(t *testing.T) {
 	r.channel.none(t)
 	if _, events := r.only(t); !equal(kinds(events), []string{"owner", "owner", "errand:human_check"}) {
 		t.Fatalf("events: %v", kinds(events))
+	}
+}
+
+func TestSettingsThatCantBeReadAreRetriedTheEventKeptPending(t *testing.T) {
+	r := newRig(t, openStore(t), func(_ int, req *agentv1.StepRequest) (*agentv1.StepResponse, error) {
+		if x := req.GetEvents()[len(req.GetEvents())-1].GetErrand(); x != nil {
+			return say("asked: " + x.GetText()), nil
+		}
+		last, _ := lastOwner(req)
+		return say("re: " + last), nil
+	})
+	r.hub.retryFirst, r.hub.retryMax = 20*time.Millisecond, 40*time.Millisecond
+	// An owner's message: kept at once, pending while hostd is away, answered once it is back.
+	r.settings.fail(3)
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "hello")
+	if pending, err := r.store.Pending(context.Background()); err != nil || len(pending) != 1 {
+		t.Fatalf("pending: %v %v", pending, err)
+	}
+	if got := r.channel.next(t); got != "re: hello" {
+		t.Fatalf("sent %q", got)
+	}
+	r.settle(t)
+	if n := r.settings.readCount(); n != 4 {
+		t.Fatalf("%d reads", n)
+	}
+	// An errand's question likewise: told once the settings read, never dropped as taken.
+	r.linked(t, 41)
+	r.errands.wait(41, "question", 7)
+	r.settings.fail(4)
+	r.hub.RunEvent(signins.RunEvent{Run: 41, Kind: "question", Text: "Pick a time", Wait: 7})
+	if got := r.channel.next(t); got != "asked: Pick a time" {
+		t.Fatalf("sent %q", got)
+	}
+	r.settle(t)
+	if pending, err := r.store.Pending(context.Background()); err != nil || len(pending) != 0 {
+		t.Fatalf("pending: %v %v", pending, err)
+	}
+}
+
+func TestAStopWhileSettingsCantBeReadLeavesTheEventPending(t *testing.T) {
+	r := newRig(t, openStore(t), func(int, *agentv1.StepRequest) (*agentv1.StepResponse, error) { return say("ok"), nil })
+	r.hub.retryFirst, r.hub.retryMax = 10*time.Millisecond, 10*time.Millisecond
+	r.settings.fail(1 << 30)
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "hello")
+	deadline := time.Now().Add(5 * time.Second)
+	for r.settings.readCount() < 3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the settings were read %d times, not retried", r.settings.readCount())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	r.stop()
+	r.channel.none(t)
+	if pending, err := r.store.Pending(context.Background()); err != nil || len(pending) != 1 {
+		t.Fatalf("pending: %v %v", pending, err)
 	}
 }
 

@@ -178,12 +178,15 @@ func deliver(ctx context.Context, h owners, s Settings, now func() time.Time, ow
 		slog.Info("converse: dropped a WhatsApp message sent too long ago or in the future")
 		return
 	}
+	// Switched off: dropped. A switch that can't be read is not off: the hub keeps the message and
+	// decides once it can read the settings.
 	_, on, err := s.Agent(ctx)
 	if err != nil {
-		slog.Warn("converse: reading the WhatsApp switch", "err", err)
+		slog.Warn("converse: reading the WhatsApp switch; the message is kept", "err", err)
+	} else if !on {
 		return
 	}
-	if !on || ctx.Err() != nil {
+	if ctx.Err() != nil {
 		return
 	}
 	h.Owner(ctx, "whatsapp", w.GetChat(), w.GetText())

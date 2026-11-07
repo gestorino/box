@@ -36,6 +36,10 @@ const (
 	stepTimeout     = 5 * time.Minute
 	sendTimeout     = 30 * time.Second
 	settingsTimeout = 10 * time.Second
+	// retryFirst and retryMax bound the wait between reads of settings that could not be read: from
+	// the first, doubling, up to the most, until a read succeeds or the hub stops.
+	retryFirst = time.Second
+	retryMax   = 30 * time.Second
 
 	// noConversationCap bounds the runs remembered as no conversation's: past it they are forgotten.
 	noConversationCap = 1024
@@ -91,6 +95,8 @@ type Hub struct {
 	base     context.Context
 	cancel   context.CancelFunc
 	linkWait time.Duration
+	// retryFirst and retryMax are the settings retry's bounds (the consts; tests shorten them).
+	retryFirst, retryMax time.Duration
 
 	// intake orders the events taken in: each is stored and queued under it, so the store's order is
 	// the queues'; and no idle conversation closes between its opening and its event.
@@ -114,7 +120,7 @@ func NewHub(cfg Config) *Hub {
 		cfg.Now = time.Now
 	}
 	base, cancel := context.WithCancel(context.Background())
-	h := &Hub{cfg: cfg, base: base, cancel: cancel, linkWait: linkWait,
+	h := &Hub{cfg: cfg, base: base, cancel: cancel, linkWait: linkWait, retryFirst: retryFirst, retryMax: retryMax,
 		convs: map[int64][]*agentv1.Event{}, runs: map[int64][]*agentv1.Event{}, orphans: map[int64]bool{}}
 	pending, err := cfg.Store.Pending(base)
 	if err != nil {
@@ -374,17 +380,26 @@ func (h *Hub) take(conv int64, e *agentv1.Event) {
 	}
 }
 
-// answer answers the event; false when the hub's stop cut it short. An errand's wait that ended
-// before its turn (answered in the console, or its run gone with a restart) is told nothing: it asks
-// nothing any more.
+// answer answers the event; false when the hub's stop cut it short. Settings that can't be read are
+// read again (the event waits, pending, in its queue), never taken for switched off. An errand's
+// wait that ended before its turn (answered in the console, or its run gone with a restart) is told
+// nothing: it asks nothing any more.
 func (h *Hub) answer(ctx context.Context, c Conversation, e *agentv1.Event) bool {
+	name, ch, err := h.answering(ctx, c)
+	for delay := h.retryFirst; err != nil; delay = min(2*delay, h.retryMax) {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(delay):
+		}
+		name, ch, err = h.answering(ctx, c)
+	}
 	if x := e.GetErrand(); waits[x.GetKind()] && !h.cfg.Tools.Waits(x.GetRun(), x.GetKind(), x.GetWait()) {
 		slog.Info("converse: an errand's wait that ended, not told", "conversation", c.ID, "run", x.GetRun(), "kind", x.GetKind())
 		return true
 	}
-	name, ch, ok := h.answering(ctx, c)
-	if !ok {
-		return ctx.Err() == nil
+	if name == "" {
+		return true
 	}
 	switch x := e.GetErrand(); x.GetKind() {
 	case "human_check":
@@ -410,24 +425,25 @@ func (h *Hub) relayConfirm(ctx context.Context, c Conversation, ch Channel, id i
 }
 
 // answering is the chosen agent and the conversation's channel, when the owner switched that
-// channel on and chose an agent.
-func (h *Hub) answering(ctx context.Context, c Conversation) (string, Channel, bool) {
+// channel on and chose an agent; "" when not. An error is settings that could not be read: not an
+// answer either way.
+func (h *Hub) answering(ctx context.Context, c Conversation) (string, Channel, error) {
 	sctx, cancel := context.WithTimeout(ctx, settingsTimeout)
 	defer cancel()
 	name, whatsapp, err := h.cfg.Settings.Agent(sctx)
 	if err != nil {
 		slog.Error("converse: reading the agent's settings", "conversation", c.ID, "err", err)
-		return "", nil, false
+		return "", nil, err
 	}
 	if name == "" || !switchedOn(c.Channel, whatsapp) {
-		return "", nil, false
+		return "", nil, nil
 	}
 	ch, ok := h.cfg.Channels[c.Channel]
 	if !ok {
 		slog.Error("converse: no such channel", "conversation", c.ID, "channel", c.Channel)
-		return "", nil, false
+		return "", nil, nil
 	}
-	return name, ch, true
+	return name, ch, nil
 }
 
 // switchedOn is the owner's "Answer me on" switch of the channel; WhatsApp has the only one yet.
