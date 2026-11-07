@@ -770,7 +770,7 @@ func TestInstallBuildRefusesOtherDaemons(t *testing.T) {
 			files := oldBuild()
 			c.edit(files)
 			sys := &fakeSystem{}
-			_, err := InstallBuild(sys, root, distOf(t, files))
+			_, err := InstallBuild(sys, root, distOf(t, files), buildFor)
 			if err == nil || !strings.Contains(err.Error(), c.name) {
 				t.Fatalf("err = %v, want it to name %s", err, c.name)
 			}
@@ -790,7 +790,7 @@ func TestInstallBuildRefusesOtherDaemons(t *testing.T) {
 func TestInstallBuild(t *testing.T) {
 	root := deployed(t)
 	sys := &fakeSystem{}
-	if left, err := InstallBuild(sys, root, distOf(t, oldBuild())); err != nil || left != nil {
+	if left, err := InstallBuild(sys, root, distOf(t, oldBuild()), buildFor); err != nil || left != nil {
 		t.Fatal(left, err)
 	}
 	opt := filepath.Join(root, "opt/concierge")
@@ -822,9 +822,59 @@ func TestInstallBuild(t *testing.T) {
 	if es, _ := filepath.Glob(filepath.Join(opt, "*.old-*")); len(es) != 0 {
 		t.Fatalf("old copies left: %v", es)
 	}
-	if es, _ := os.ReadDir(filepath.Join(root, "var/lib/concierge-backup")); len(es) != 0 {
+	// Only the marker stays (TestInstallBuildHoldsTheStopWithTheMarker); the staging is gone.
+	if es, _ := os.ReadDir(filepath.Join(root, "var/lib/concierge-backup")); len(es) != 1 || es[0].Name() != "stopped-for" {
 		t.Fatalf("staging left: %v", es)
 	}
+}
+
+// buildFor is the ID of the backup an install-build is for (the restore that follows).
+const buildFor = "0123456789abcdef0123456789abcdef"
+
+// The services stop for the install held by the marker, so a restore that then fails, or a reboot
+// before it, never starts the backup's build on the box's newer data.
+func TestInstallBuildHoldsTheStopWithTheMarker(t *testing.T) {
+	root := deployed(t)
+	var atStop string
+	sys := &fakeSystem{}
+	sys.onStop = func() { atStop, _ = readMarker(root) }
+	if _, err := InstallBuild(sys, root, distOf(t, oldBuild()), buildFor); err != nil {
+		t.Fatal(err)
+	}
+	if atStop != buildFor {
+		t.Fatalf("marker at Stop = %q, want %q", atStop, buildFor)
+	}
+	if got, _ := readMarker(root); got != buildFor {
+		t.Fatalf("marker after = %q, want %q (the restore removes it)", got, buildFor)
+	}
+
+	t.Run("a failed stop keeps it", func(t *testing.T) {
+		root := deployed(t)
+		sys := &fakeSystem{stopErr: errors.New("systemctl failed")}
+		_, err := InstallBuild(sys, root, distOf(t, oldBuild()), buildFor)
+		if err == nil || !strings.Contains(err.Error(), "make backup-resume") {
+			t.Fatalf("err = %v", err)
+		}
+		if got, _ := readMarker(root); got != buildFor {
+			t.Fatalf("marker = %q", got)
+		}
+	})
+
+	t.Run("not a backup's ID: nothing done", func(t *testing.T) {
+		for _, id := range []string{"", "xyz", "0123", "../../etc/x"} {
+			root := deployed(t)
+			sys := &fakeSystem{}
+			if _, err := InstallBuild(sys, root, distOf(t, oldBuild()), id); err == nil {
+				t.Fatalf("%q: no error", id)
+			}
+			if len(sys.calls) != 0 {
+				t.Fatalf("%q: calls = %q", id, sys.calls)
+			}
+			if _, err := os.Stat(filepath.Join(root, Marker)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("%q: marker written: %v", id, err)
+			}
+		}
+	})
 }
 
 func TestInstallBuildRefusesEntriesOutsideTheBuild(t *testing.T) {
@@ -832,7 +882,7 @@ func TestInstallBuildRefusesEntriesOutsideTheBuild(t *testing.T) {
 	files := oldBuild()
 	files["etc/passwd"] = distFile{"x", 0o644}
 	sys := &fakeSystem{}
-	if _, err := InstallBuild(sys, root, distOf(t, files)); err == nil {
+	if _, err := InstallBuild(sys, root, distOf(t, files), buildFor); err == nil {
 		t.Fatal("no error")
 	}
 	if !reflect.DeepEqual(sys.calls, []string{"Calls"}) {
@@ -846,7 +896,7 @@ func TestInstallBuildRefusesEntriesOutsideTheBuild(t *testing.T) {
 func TestInstallBuildRechecksBusyBeforeStopping(t *testing.T) {
 	root := deployed(t)
 	sys := &fakeSystem{callsSeq: []string{"", busyCall}}
-	_, err := InstallBuild(sys, root, distOf(t, oldBuild()))
+	_, err := InstallBuild(sys, root, distOf(t, oldBuild()), buildFor)
 	if err == nil || !strings.Contains(err.Error(), "a call is in progress") {
 		t.Fatalf("err = %v", err)
 	}
@@ -864,7 +914,7 @@ func TestInstallBuildRechecksBusyBeforeStopping(t *testing.T) {
 func TestInstallBuildSaysWhatFailedAfterTheSwap(t *testing.T) {
 	root := deployed(t)
 	sys := &fakeSystem{syncErr: errors.New("uv refused")}
-	_, err := InstallBuild(sys, root, distOf(t, oldBuild()))
+	_, err := InstallBuild(sys, root, distOf(t, oldBuild()), buildFor)
 	if err == nil || !strings.Contains(err.Error(), "installed, but") || !strings.Contains(err.Error(), "uv refused") {
 		t.Fatalf("err = %v", err)
 	}

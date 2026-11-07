@@ -17,9 +17,11 @@ repo=telepenin/concierge
 backup=/opt/concierge/bin/backup
 
 field() { tar -xzOf "$b" backup.json | python3 -I -c 'import json,sys; v=json.load(sys.stdin)[sys.argv[1]]; print(v if isinstance(v, str) else json.dumps(v))' "$1"; }
+id=$(field id)
 version=$(field version)
 revision=$(field revision)
 recovery=$(field recovery)
+[[ $id =~ ^[0-9a-f]{32}$ ]] || { echo "unexpected id in the backup: $id" >&2; exit 1; }
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "unexpected version in the backup: $version" >&2; exit 1; }
 [[ $revision =~ ^[0-9a-f]+$ ]] || { echo "unexpected revision in the backup: $revision" >&2; exit 1; }
 
@@ -45,7 +47,8 @@ cleanup() {
 	fi
 	rm -rf "$tmp"
 	if [ -n "$installed" ] && [ -z "$restored" ] && [ $status -ne 0 ]; then
-		echo "The box now runs the backup's build ($version, $revision) but the restore did not finish: make deploy returns it to main." >&2
+		echo "The box now runs the backup's build ($version, $revision) but the restore did not finish; its services are held down." \
+			"Run make restore again, or make backup-resume and then make deploy to return it to main." >&2
 	fi
 }
 trap cleanup EXIT
@@ -122,7 +125,8 @@ if [ "$have_version" != "$version" ] || [ "$have_revision" != "$revision" ]; the
 	fi
 	build
 	push "$build"
-	ssh "$box" "sudo -n $backup install-build -from $pushed"
+	# For this backup: the box holds its services down by the marker until the restore removes it.
+	ssh "$box" "sudo -n $backup install-build -from $pushed -for $id"
 	installed=1
 fi
 

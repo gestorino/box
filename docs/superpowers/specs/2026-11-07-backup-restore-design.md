@@ -70,7 +70,9 @@ the recovery code, the same backup can also be restored onto another box, its se
   a backup records its version, not binaries; old data needs no support in newer code). When the
   box already runs that version and revision, only the data goes back. Otherwise the restore gets
   that build first and installs it (its binaries, UI and worker, with the worker's venv), then the
-  data, so code and data always match:
+  data, so code and data always match. The services stop for the install held down by the marker
+  for that backup, so nothing starts the old build on the box's newer data (a reboot, a restore
+  that then fails) until the restore is done:
   - a published release (`vX.Y.0`, what customers' boxes run): downloaded from GitHub, its
     attestation checked;
   - one of the owner's local patch versions (not published): built on the Mac from its local tag,

@@ -121,6 +121,13 @@ func TestRestoreNeedsFrom(t *testing.T) {
 	}
 }
 
+func TestInstallBuildNeedsFor(t *testing.T) {
+	code, _, errs := runCmd([]string{"install-build", "-from", "/x.tar.gz"}, 0)
+	if code != 1 || !strings.Contains(errs, "-for ID") {
+		t.Fatalf("code %d, stderr %q", code, errs)
+	}
+}
+
 func TestVersionNeedsNoRoot(t *testing.T) {
 	code, out, _ := runCmd([]string{"-version"}, 1000)
 	if code != 0 || !strings.Contains(out, "dev") {

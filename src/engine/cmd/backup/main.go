@@ -34,7 +34,7 @@ const usage = `usage: backup <command>
   resume                                  start the services a stopped create left
   recovery-code                           make the recovery code that opens backups on another box
   restore -from FILE [-force] [-new-box]  put a backup back (the code is asked for on the terminal)
-  install-build -from FILE                install another build's archive
+  install-build -from FILE -for ID        install another build's archive for the backup ID's restore
   -version                                print the build`
 
 func main() {
@@ -137,13 +137,14 @@ func dispatch(cmd string, args []string, sys backup.System, stdout, stderr io.Wr
 		return nil
 	case "install-build":
 		from := fs.String("from", "", "the build's archive")
+		forID := fs.String("for", "", "the ID of the backup the restore that follows puts back")
 		if err := fs.Parse(args); err != nil {
 			return err
 		}
-		if *from == "" {
-			return errors.New("install-build needs -from FILE")
+		if *from == "" || *forID == "" {
+			return errors.New("install-build needs -from FILE -for ID")
 		}
-		left, err := backup.InstallBuild(sys, root, *from)
+		left, err := backup.InstallBuild(sys, root, *from, *forID)
 		if err != nil {
 			return err
 		}

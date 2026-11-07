@@ -366,10 +366,16 @@ var buildPaths = []string{"bin", "ui", "browser", "VERSION", "REVISION"}
 
 // InstallBuild installs the build in a dist archive (scripts/dist.sh's) in place of the box's: its
 // daemons must be the box's (the build runs under the box's units), the box keeps its own backup
-// command (the restore that follows is the box's), the services are stopped and the worker's venv
-// rebuilt. It starts nothing: the restore that follows does. Run as root, every file it writes is
+// command (the restore that follows is the box's), the services are stopped, held down by the
+// marker for the backup forID, and the worker's venv rebuilt. It starts nothing: the restore that
+// follows does (and removes the marker). Run as root, every file it writes is
 // root's, with the archive's modes. Leftovers are copies of the old build it could not delete.
-func InstallBuild(sys System, root, archive string) (leftovers []string, err error) {
+func InstallBuild(sys System, root, archive, forID string) (leftovers []string, err error) {
+	// forID is the backup the restore that follows puts back: the stop is recorded for it, so
+	// nothing starts the backup's build on the box's newer data before that restore is done.
+	if b, err := hex.DecodeString(forID); err != nil || len(b) != 16 {
+		return nil, fmt.Errorf("install-build: %q is not a backup's ID", forID)
+	}
 	if err := idle(sys, root); err != nil {
 		return nil, err
 	}
@@ -410,8 +416,13 @@ func InstallBuild(sys System, root, archive string) (leftovers []string, err err
 	// From the stop until it returns (the restore that follows starts them), no signal ends it.
 	release := sys.Hold()
 	defer release()
+	// The marker first: from here the units' start condition keeps them down, reboot included,
+	// until the restore (or make backup-resume) removes it.
+	if err := writeMarker(root, forID); err != nil {
+		return nil, fmt.Errorf("marking the stop: %w", err)
+	}
 	if err := sys.Stop(Units); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("stopping the services: %w (nothing installed: make backup-resume starts them)", err)
 	}
 	left, err := Swap(opt, staging, id, buildPaths, nil)
 	if err != nil {
