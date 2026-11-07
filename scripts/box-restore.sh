@@ -22,8 +22,11 @@ revision=$(field revision)
 
 tmp=$(mktemp -d)
 wt=
+installed=
+restored=
 remotes=()
 cleanup() {
+	local status=$?
 	if [ ${#remotes[@]} -gt 0 ]; then
 		ssh "$box" "rm -f $(printf '%q ' "${remotes[@]}")" || true
 	fi
@@ -31,6 +34,9 @@ cleanup() {
 		git -C "$root" worktree remove --force "$wt" >/dev/null 2>&1 || true
 	fi
 	rm -rf "$tmp"
+	if [ -n "$installed" ] && [ -z "$restored" ] && [ $status -ne 0 ]; then
+		echo "The box now runs the backup's build ($version, $revision) but the restore did not finish: make deploy returns it to main." >&2
+	fi
 }
 trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
@@ -65,15 +71,23 @@ build() {
 		done
 		local built
 		built=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["revision"])' "$tmp/release/manifest.json")
-		same_revision "$built" ||
-			{ echo "release v$version was built from $built, the backup was taken on $revision: refusing" >&2; exit 1; }
-		build=$tmp/release/$name
-		echo "published release v$version, verified"
-		return
+		# The box's restore compares its REVISION (the build's) with the backup's exactly: the release
+		# serves only when its revision is the backup's to the letter. One that differs only by length
+		# (an abbreviation of the other) is the same commit, built here so REVISION matches exactly.
+		if [ "$built" = "$revision" ]; then
+			build=$tmp/release/$name
+			echo "published release v$version, verified"
+			return
+		fi
+		if [ ${#built} -lt 7 ] || { [[ $built != "$revision"* ]] && [[ $revision != "$built"* ]]; }; then
+			echo "release v$version was built from $built, the backup was taken on $revision: refusing" >&2
+			exit 1
+		fi
+		echo "release v$version spells its revision $built, the backup $revision: building the tag here instead"
 	fi
 	local full
 	full=$(git -C "$root" rev-parse --verify -q "v$version^{commit}") ||
-		{ echo "no release and no local tag v$version: can't get the backup's build" >&2; exit 1; }
+		{ echo "no local tag v$version: can't get the backup's build" >&2; exit 1; }
 	[ ${#revision} -ge 7 ] && [[ $full == "$revision"* ]] ||
 		{ echo "local tag v$version is ${full:0:7}, the backup was taken on $revision: refusing" >&2; exit 1; }
 	wt=$tmp/worktree
@@ -83,16 +97,10 @@ build() {
 	echo "local tag v$version, built here"
 }
 
-# same_revision OTHER: the other revision is the backup's, one an abbreviation of the other (7 or more characters).
-same_revision() {
-	[ ${#1} -ge 7 ] && [ ${#revision} -ge 7 ] && { [[ $1 == "$revision"* ]] || [[ $revision == "$1"* ]]; }
-}
-
 have=$(ssh "$box" 'cat /opt/concierge/VERSION /opt/concierge/REVISION' | tr -d '[:blank:]')
 have_version=$(printf '%s\n' "$have" | sed -n 1p)
 have_revision=$(printf '%s\n' "$have" | sed -n 2p)
 
-installed=
 if [ "$have_version" != "$version" ] || [ "$have_revision" != "$revision" ]; then
 	build
 	push "$build"
@@ -105,6 +113,7 @@ flags=
 [ -n "${FORCE:-}" ] && flags="$flags -force"
 [ -n "${NEW_BOX:-}" ] && flags="$flags -new-box"
 ssh -t "$box" "sudo -n $backup restore -from $pushed$flags"
+restored=1
 
 if [ -n "$installed" ]; then
 	echo "Now run make deploy"

@@ -197,9 +197,12 @@ FAKE_ATTEST_FAIL=manifest.json run box-restore.sh "$work/pub.tar.gz"
 [ $code -ne 0 ] && nothing_sent && ok "restore published: a failed manifest attestation sends nothing" || fail "restore published: manifest attestation failure" "code $code: $(cat "$LOG")"
 FAKE_MANIFEST_REV=fff9999 run box-restore.sh "$work/pub.tar.gz"
 [ $code -ne 0 ] && nothing_sent && ok "restore published: a manifest of another revision sends nothing" || fail "restore published: manifest revision mismatch" "code $code: $(cat "$LOG")"
-FAKE_MANIFEST_REV=bbb2222eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee run box-restore.sh "$work/pub.tar.gz"
-[ $code -eq 0 ] && ok "restore published: a manifest with the full revision matches" || fail "restore published: full manifest revision" "$out"
-case $out in *"published release v0.5.0, verified"*) ok "restore published: says the published path" ;; *) fail "restore published: says the path" "$out" ;; esac
+FAKE_MANIFEST_REV=bbb2222eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee FAKE_TAG_REV=bbb2222eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee run box-restore.sh "$work/pub.tar.gz"
+[ $code -eq 0 ] && grep -q 'dist V=0.5.0 R=bbb2222$' "$LOG" && ok "restore published: a revision differing only by length builds the tag with the backup's R" || fail "restore published: prefix-only manifest revision" "code $code: $out"
+case $out in *"building the tag here instead"*"local tag v0.5.0, built here"*) ok "restore published: says it took the local path" ;; *) fail "restore published: says the local path" "$out" ;; esac
+[ "$(logged 'install-build')" = 1 ] && ok "restore published: the exact revision is what reaches the box" || fail "restore published: install-build once"
+run box-restore.sh "$work/pub.tar.gz"
+case $out in *"published release v0.5.0, verified"*) ok "restore published: an exact revision takes the release" ;; *) fail "restore published: says the path" "$out" ;; esac
 FAKE_RELEASE=error run box-restore.sh "$work/pub.tar.gz"
 [ $code -ne 0 ] && nothing_sent && [ "$(logged 'worktree add')" = 0 ] && ok "restore: a gh error is refused, not a fall-through" || fail "restore: gh error" "code $code: $(cat "$LOG")"
 # a vX.Y.0 never published falls through to its local tag
@@ -212,6 +215,10 @@ FAKE_RELEASE=no FAKE_TAG_REV=eee5555eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee run box-re
 FAKE_SSH_FAIL=" restore -from" run box-restore.sh "$work/same.tar.gz"
 [ $code -ne 0 ] && all_removed && ok "restore: a failing box restore removes the box's copy" || fail "restore: failing restore cleanup" "code $code: $(cat "$LOG")"
 export FAKE_VERSION_WANTED=0.5.0
+FAKE_SSH_FAIL=" restore -from" run box-restore.sh "$work/pub.tar.gz"
+case $out in *"The box now runs the backup's build (0.5.0, bbb2222)"*"make deploy"*) ok "restore: a failed restore after install-build says the box runs the backup's build" ;; *) fail "restore: failed restore after install-build says so" "$out" ;; esac
+FAKE_SSH_FAIL=" restore -from" run box-restore.sh "$work/same.tar.gz"
+case $out in *"The box now runs"*) fail "restore: no such note when no build was installed" "$out" ;; *) ok "restore: no such note when no build was installed" ;; esac
 FAKE_SSH_FAIL="install-build" run box-restore.sh "$work/pub.tar.gz"
 [ $code -ne 0 ] && all_removed && [ "$(logged ' restore -from')" = 0 ] && ok "restore: a failing install-build removes the box's copy and stops" || fail "restore: failing install-build cleanup" "code $code: $(cat "$LOG")"
 
