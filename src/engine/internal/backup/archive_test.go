@@ -297,6 +297,56 @@ func TestExtractConfinesToBackupPaths(t *testing.T) {
 	}
 }
 
+// Each of the header's paths must come out as what a backup holds there: the master key's
+// credential a regular file (systemd-creds, root and outside any os.Root, would follow a link),
+// every other path a directory, each reached through real directories alone.
+func TestExtractRefusesAPathOfTheWrongKind(t *testing.T) {
+	link := func(name, to string) tar.Header {
+		return tar.Header{Name: name, Typeflag: tar.TypeSymlink, Linkname: to}
+	}
+	dir := func(name string) tar.Header { return tar.Header{Name: name, Typeflag: tar.TypeDir} }
+	for name, c := range map[string]struct {
+		paths   []string
+		entries []tar.Header
+	}{
+		"the credential a link":      {[]string{credentialFile}, []tar.Header{link(credentialFile, "/etc/shadow")}},
+		"the credential a directory": {[]string{credentialFile}, []tar.Header{dir(credentialFile + "/")}},
+		"something beneath the credential": {[]string{credentialFile}, []tar.Header{
+			{Name: credentialFile + "/x"},
+		}},
+		"a directory path a link":         {[]string{"var/lib/concierge"}, []tar.Header{link("var/lib/concierge", "elsewhere")}},
+		"a directory path a regular file": {[]string{"etc/concierge"}, []tar.Header{{Name: "etc/concierge"}}},
+		"the credential a link made through another path": {[]string{"var/lib/concierge", credentialFile}, []tar.Header{
+			dir("var/lib/concierge/"),
+			link("var/lib/concierge/l", "../../../etc"),
+			link("var/lib/concierge/l/credstore.encrypted/concierge-secrets-master", "/etc/shadow"),
+		}},
+		"a path's parent a link made through another path": {[]string{"var/lib/concierge", "etc/concierge"}, []tar.Header{
+			dir("var/lib/concierge/"),
+			dir("var/lib/concierge/real/"),
+			link("var/lib/concierge/l", "../../.."),
+			link("var/lib/concierge/l/etc", "var/lib/concierge/real"),
+			dir("etc/concierge/"),
+		}},
+		"a path the header names but the archive lacks": {[]string{"var/lib/concierge", "etc/concierge"}, []tar.Header{
+			dir("var/lib/concierge/"),
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Extract(archiveOf(t, withPaths(c.paths...), c.entries...), shortDir(t), &fakeOwners{})
+			if err == nil {
+				t.Fatal("no error")
+			}
+			t.Log(err)
+		})
+	}
+	// The right kinds pass.
+	ok := archiveOf(t, withPaths("var/lib/concierge", credentialFile), dir("var/lib/concierge/"), tar.Header{Name: credentialFile})
+	if _, err := Extract(ok, shortDir(t), &fakeOwners{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestExtractRefusesEscapes(t *testing.T) {
 	for _, name := range []string{"../x", "var/../../x", "/etc/x"} {
 		outer := shortDir(t)

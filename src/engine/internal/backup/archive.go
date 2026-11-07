@@ -237,7 +237,7 @@ func Extract(r io.Reader, staging string, o Owners) (Header, error) {
 			if _, err := io.Copy(io.Discard, zr); err != nil {
 				return Header{}, err
 			}
-			return h, nil
+			return h, checkStaged(staging, h.Paths)
 		}
 		if err != nil {
 			return Header{}, err
@@ -258,6 +258,9 @@ func extractEntry(tr *tar.Reader, th *tar.Header, paths []string, root *os.Root,
 		return name == p || strings.HasPrefix(name, p+string(filepath.Separator))
 	}) {
 		return errors.New("not in the backup's paths")
+	}
+	if err := checkKind(name, th.Typeflag); err != nil {
+		return err
 	}
 	if err := root.MkdirAll(filepath.Dir(name), 0o755); err != nil {
 		return err
@@ -298,4 +301,49 @@ func extractEntry(tr *tar.Reader, th *tar.Header, paths []string, root *os.Root,
 		return err
 	}
 	return root.Lchown(name, uid, gid)
+}
+
+// checkKind refuses an entry that is one of Paths but not of its kind (the master key's credential
+// a regular file, the others directories), and anything beneath the credential.
+func checkKind(name string, typ byte) error {
+	cred := filepath.FromSlash(credentialFile)
+	switch {
+	case name == cred && typ != tar.TypeReg:
+		return errors.New("the master key's credential must be a regular file")
+	case strings.HasPrefix(name, cred+string(filepath.Separator)):
+		return errors.New("the master key's credential is a file: nothing is beneath it")
+	case name != cred && slices.Contains(Paths, filepath.ToSlash(name)) && typ != tar.TypeDir:
+		return errors.New("a backup path must be a directory")
+	}
+	return nil
+}
+
+// checkStaged refuses an extraction in which one of paths is missing or not of its kind, or is
+// reached through anything but real directories: a link made through another path's entries can
+// put one where checkKind never saw it, and what is swapped in, and what systemd-creds (root,
+// outside any os.Root) reads, must be the thing itself.
+func checkStaged(staging string, paths []string) error {
+	for _, p := range paths {
+		parts := strings.Split(p, "/")
+		at := staging
+		for i, part := range parts {
+			at = filepath.Join(at, part)
+			fi, err := os.Lstat(at)
+			if errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("the backup names %s but holds none of it", p)
+			}
+			if err != nil {
+				return err
+			}
+			switch {
+			case i == len(parts)-1 && p == credentialFile:
+				if !fi.Mode().IsRegular() {
+					return fmt.Errorf("%s: the master key's credential must be a regular file", p)
+				}
+			case !fi.IsDir():
+				return fmt.Errorf("%s: %s is not a directory", p, filepath.Join(parts[:i+1]...))
+			}
+		}
+	}
+	return nil
 }
