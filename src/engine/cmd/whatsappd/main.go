@@ -21,6 +21,7 @@ import (
 	waLog "go.mau.fi/whatsmeow/util/log"
 
 	"concierge/engine/internal/h2c"
+	"concierge/engine/internal/listen"
 	"concierge/engine/internal/whatsapp"
 )
 
@@ -39,7 +40,7 @@ func main() {
 
 func run() error {
 	dir := flag.String("dir", os.Getenv("STATE_DIRECTORY"), "where session.db and archive.db live")
-	listen := flag.String("listen", "", "a Unix socket path to listen on when not socket-activated (development)")
+	socket := flag.String("listen", "", "a Unix socket path to listen on when not socket-activated (development)")
 	flag.Parse()
 	if *dir == "" {
 		return errors.New("no state directory: run under systemd (StateDirectory) or pass -dir")
@@ -48,7 +49,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	ln, err := listener(*listen)
+	ln, err := listener(*socket)
 	if err != nil {
 		return err
 	}
@@ -62,13 +63,15 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	hub := listen.NewHub(listen.MatchWhatsApp)
+	archive.SetHub(hub)
 	svc := whatsapp.NewService(client, archive, time.Now)
 	if err := svc.Start(ctx); err != nil { // connects in the background, retrying
 		return err
 	}
 	defer client.Disconnect()
 
-	srv := &http.Server{Handler: whatsapp.NewHandler(svc), Protocols: h2c.Protocols(), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Handler: whatsapp.NewHandler(svc, whatsapp.NewListen(archive, hub)), Protocols: h2c.Protocols(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)

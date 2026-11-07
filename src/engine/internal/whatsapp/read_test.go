@@ -75,7 +75,7 @@ func TestLiveIncomingPrivateIsUnread(t *testing.T) {
 	if len(chats) != 1 || chats[0].Unread != 1 {
 		t.Fatalf("chats %+v", chats)
 	}
-	rec := call(NewHandler(s), "GET", "/whatsapp/unread", "")
+	rec := call(NewHandler(s, NewListen(s.archive, nil)), "GET", "/whatsapp/unread", "")
 	if strings.TrimSpace(rec.Body.String()) != `{"count":1}` {
 		t.Fatalf("unread %s", rec.Body)
 	}
@@ -115,7 +115,7 @@ func TestOpeningMarksAndTellsWhatsApp(t *testing.T) {
 	s, c, a := connected(t)
 	c.emit(incoming(ana, ana, "M1", t0))
 	c.emit(incoming(ana, ana, "M2", t0.Add(time.Second)))
-	rec := call(NewHandler(s), "POST", "/whatsapp/read", `{"chat":"`+ana.String()+`"}`)
+	rec := call(NewHandler(s, NewListen(s.archive, nil)), "POST", "/whatsapp/read", `{"chat":"`+ana.String()+`"}`)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("read: %d %s", rec.Code, rec.Body)
 	}
@@ -132,7 +132,7 @@ func TestOpeningMarksAndTellsWhatsApp(t *testing.T) {
 func TestOpeningAGroupTellsNothing(t *testing.T) {
 	s, c, _ := connected(t)
 	c.emit(incoming(group, ana, "G1", t0))
-	rec := call(NewHandler(s), "POST", "/whatsapp/read", `{"chat":"`+group.String()+`"}`)
+	rec := call(NewHandler(s, NewListen(s.archive, nil)), "POST", "/whatsapp/read", `{"chat":"`+group.String()+`"}`)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("read: %d %s", rec.Code, rec.Body)
 	}
@@ -329,7 +329,7 @@ func TestMigrationLeavesOldMessagesRead(t *testing.T) {
 	if n := unread(t, a); n != 0 {
 		t.Fatalf("unread %d", n)
 	}
-	if err := a.Save(ctx, Row{Account: me, ChatJID: ana.String(), ID: "M2", SenderJID: ana.String(), SentAt: t0, Kind: "text", Unread: true}); err != nil {
+	if _, _, err := a.Save(ctx, Row{Account: me, ChatJID: ana.String(), ID: "M2", SenderJID: ana.String(), SentAt: t0, Kind: "text", Unread: true}); err != nil {
 		t.Fatal(err)
 	}
 	if n := unread(t, a); n != 1 {

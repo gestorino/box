@@ -68,6 +68,32 @@ func TestMatchSMSRefusesAnEmail(t *testing.T) {
 	}
 }
 
+func whatsapp(phone string) *listenv1.Message {
+	return &listenv1.Message{Body: &listenv1.Message_Whatsapp{Whatsapp: &listenv1.WhatsApp{Phone: phone}}}
+}
+
+func TestMatchWhatsApp(t *testing.T) {
+	cases := []struct {
+		from, phone string
+		want        bool
+	}{
+		{"351912345678", "351912345678", true},
+		{"+351912345678", "351912345678", true},
+		{"351 912 345 678", "351912345678", true},
+		{"912345678", "351912345678", false}, // exact digits, never a part
+		{"", "351912345678", true},
+		{"351999999999", "351912345678", false},
+	}
+	for _, c := range cases {
+		if got := MatchWhatsApp(&listenv1.ListenRequest{From: c.from}, whatsapp(c.phone)); got != c.want {
+			t.Errorf("from %q phone %q: got %v want %v", c.from, c.phone, got, c.want)
+		}
+	}
+	if MatchWhatsApp(&listenv1.ListenRequest{}, sms("351912345678")) {
+		t.Error("an SMS is not a WhatsApp message")
+	}
+}
+
 func TestMatchSMSFromIsContainedCaseInsensitive(t *testing.T) {
 	cases := []struct {
 		from, number string

@@ -10,12 +10,15 @@ import (
 	"net/http"
 	"time"
 
+	"concierge/engine/internal/gen/listen/v1/listenv1connect"
 	"concierge/engine/internal/verify"
 )
 
 // NewHandler is whatsappd's API; the engine forwards /api/v1/whatsapp/* here with /api/v1 stripped.
-func NewHandler(s *Service) http.Handler {
+// ls serves the engine's listeners.
+func NewHandler(s *Service, ls listenv1connect.ListenServiceHandler) http.Handler {
 	mux := http.NewServeMux()
+	mux.Handle(listenv1connect.NewListenServiceHandler(ls))
 	// The setup check: a message to the account's own chat, answered there from the phone.
 	verify.Routes(mux, "/whatsapp", verify.Daemon{
 		Send: func(ctx context.Context, _, text string) (string, error) {
