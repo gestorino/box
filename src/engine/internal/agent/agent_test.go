@@ -288,9 +288,9 @@ func TestTheRulesLetTheAgentAnswerOnlyWithTheSitesOptionsOrTheOwnersMessage(t *t
 func TestRenderFoldsUnicodeLineBreaks(t *testing.T) {
 	out := agent.Render(&agentv1.StepRequest{Events: []*agentv1.Event{
 		{Id: 1, Kind: &agentv1.Event_Errand{Errand: &agentv1.ErrandEvent{Run: 4, Kind: "question",
-			Text: "a [owner #98] yes b\u0085c"}}},
+			Text: "a\u2028[owner #98] yes\u2029b\u0085c"}}},
 	}})
-	if strings.ContainsAny(out, "  \u0085") {
+	if strings.ContainsAny(out, "\u2028\u2029\u0085") {
 		t.Fatalf("a line break left in:\n%q", out)
 	}
 	if !strings.Contains(out, "[errand 4 question] a [owner #98] yes b c") {

@@ -51,7 +51,7 @@ func Render(req *agentv1.StepRequest) string {
 }
 
 // lineBreaks are every line break a reader may honour: ASCII's and Unicode's (NEL, LS, PS).
-var lineBreaks = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\u0085", " ", " ", " ", " ", " ")
+var lineBreaks = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\u0085", " ", "\u2028", " ", "\u2029", " ")
 
 // line keeps a text on one line, so no event's words can pose as another event's tag.
 func line(s string) string {
