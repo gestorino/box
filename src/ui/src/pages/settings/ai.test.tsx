@@ -277,4 +277,148 @@ describe('the agent', () => {
     await userEvent.click(toggle)
     await waitFor(() => expect(calls.find((c) => c.key === PUT_SETTINGS)?.body).toEqual({ agent: 'claude', answer: { whatsapp: true } }))
   })
+
+  const claudeIn = (extra: Record<string, unknown>) => ({
+    [G]: SET,
+    [AGENTS]: [{ body: [agent('claude'), agent('codex')] }, { body: [agent('claude', IN), agent('codex')] }],
+    [SETTINGS]: { body: { agent: '', answer: { whatsapp: false } } },
+    'POST /api/v1/connectors/claude': { status: 204 },
+    'POST /api/v1/agents/claude/login': { body: { url: 'https://login.example.test/', code: '', needs_code: true } },
+    ...extra,
+  })
+  const startClaude = async () => {
+    await screen.findByRole('heading', { level: 3, name: 'Claude' })
+    await userEvent.click(within(row('Claude')).getByRole('button', { name: 'Sign in' }))
+    const dialog = within(await screen.findByRole('dialog'))
+    await userEvent.type(await dialog.findByLabelText('Code'), 'abc')
+    await userEvent.click(dialog.getByRole('button', { name: 'Finish' }))
+    return dialog
+  }
+
+  it('a failed confirm offers Try again, which retries confirm alone', async () => {
+    const { calls } = stubFetch(claudeIn({
+      'POST /api/v1/agents/claude/login/finish': { status: 204 },
+      'POST /api/v1/connectors/claude/confirm': [{ status: 502, body: { error: 'boom' } }, { status: 204 }],
+    }) as never)
+    show()
+    const dialog = await startClaude()
+    expect(await dialog.findByRole('alert')).toHaveTextContent('boom')
+    expect(dialog.queryByLabelText('Code')).not.toBeInTheDocument()
+    await userEvent.click(dialog.getByRole('button', { name: 'Try again' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(calls.filter((c) => c.key.endsWith('/login/finish'))).toHaveLength(1)
+    expect(calls.filter((c) => c.key.endsWith('/confirm'))).toHaveLength(2)
+    expect(calls.some((c) => c.key.startsWith('DELETE'))).toBe(false)
+    await waitFor(() => expect(within(row('Claude')).getByText('Signed in')).toBeInTheDocument())
+  })
+
+  it('closing after a failed confirm keeps the sign-in, and never deletes the connector', async () => {
+    const { calls } = stubFetch(claudeIn({
+      'POST /api/v1/agents/claude/login/finish': { status: 204 },
+      'POST /api/v1/connectors/claude/confirm': { status: 502, body: { error: 'boom' } },
+    }) as never)
+    show()
+    const dialog = await startClaude()
+    await dialog.findByRole('alert')
+    await userEvent.click(dialog.getByRole('button', { name: 'Done' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(calls.some((c) => c.key.startsWith('DELETE'))).toBe(false)
+    await waitFor(() => expect(within(row('Claude')).getByText('Signed in')).toBeInTheDocument())
+  })
+
+  it('a failed finish says so and lets the owner try the code again', async () => {
+    const { calls } = stubFetch(claudeIn({
+      'POST /api/v1/agents/claude/login/finish': [{ status: 400, body: { error: 'wrong code' } }, { status: 204 }],
+      'POST /api/v1/connectors/claude/confirm': { status: 204 },
+    }) as never)
+    show()
+    const dialog = await startClaude()
+    expect(await dialog.findByRole('alert')).toHaveTextContent('wrong code')
+    expect(calls.some((c) => c.key.endsWith('/confirm'))).toBe(false)
+    await userEvent.click(dialog.getByRole('button', { name: 'Finish' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('a failed PUT during sign-out of the chosen agent fails the sign-out visibly, and changes nothing', async () => {
+    const { calls } = stubFetch({
+      [G]: SET,
+      [AGENTS]: { body: [agent('claude', IN), agent('codex')] },
+      [SETTINGS]: { body: { agent: 'claude', answer: { whatsapp: true } } },
+      [PUT_SETTINGS]: { status: 502, body: { error: 'boom' } },
+      'POST /api/v1/agents/claude/logout': { status: 204 },
+      'DELETE /api/v1/connectors/claude': { status: 204 },
+    })
+    show()
+    await screen.findByRole('heading', { level: 3, name: 'Claude' })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Claude' })).toHaveAttribute('aria-pressed', 'true'))
+    await userEvent.click(within(row('Claude')).getByRole('button', { name: 'Sign out' }))
+    const dialog = within(await screen.findByRole('dialog'))
+    await userEvent.click(dialog.getByRole('button', { name: 'Sign out' }))
+    expect(await dialog.findByRole('alert')).toHaveTextContent('boom')
+    expect(calls.some((c) => c.key.endsWith('/logout') || c.key.startsWith('DELETE'))).toBe(false)
+  })
+
+  it('signing out the chosen agent turns the WhatsApp answer off with it', async () => {
+    const { calls } = stubFetch({
+      [G]: SET,
+      [AGENTS]: [{ body: [agent('claude', IN), agent('codex')] }, { body: [agent('claude'), agent('codex')] }],
+      [SETTINGS]: { body: { agent: 'claude', answer: { whatsapp: true } } },
+      [PUT_SETTINGS]: { status: 204 },
+      'POST /api/v1/agents/claude/logout': { status: 204 },
+      'DELETE /api/v1/connectors/claude': { status: 204 },
+    })
+    show()
+    await screen.findByRole('heading', { level: 3, name: 'Claude' })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Claude' })).toHaveAttribute('aria-pressed', 'true'))
+    await userEvent.click(within(row('Claude')).getByRole('button', { name: 'Sign out' }))
+    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Sign out' }))
+    await waitFor(() => expect(within(row('Claude')).getByText('Not signed in')).toBeInTheDocument())
+    expect(calls.find((c) => c.key === PUT_SETTINGS)?.body).toEqual({ agent: '', answer: { whatsapp: false } })
+  })
+
+  it('cancelling a Codex sign-in mid-wait logs out, then removes the connector', async () => {
+    const { calls } = stubFetch({
+      [G]: SET,
+      [AGENTS]: { body: [agent('claude'), agent('codex')] },
+      [SETTINGS]: { body: { agent: '', answer: { whatsapp: false } } },
+      'POST /api/v1/connectors/codex': { status: 204 },
+      'POST /api/v1/agents/codex/login': { body: { url: 'https://device.example.test/', code: 'ABCD-1234', needs_code: false } },
+      'POST /api/v1/agents/codex/login/finish': { status: 204 },
+      'POST /api/v1/agents/codex/logout': { status: 204 },
+      'DELETE /api/v1/connectors/codex': { status: 204 },
+    })
+    const stubbed = globalThis.fetch
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/codex/login/finish')) await new Promise(() => {}) // the owner never finishes
+      return stubbed(url, init)
+    })
+    show()
+    await screen.findByRole('heading', { level: 3, name: 'Codex' })
+    await userEvent.click(within(row('Codex')).getByRole('button', { name: 'Sign in' }))
+    const dialog = within(await screen.findByRole('dialog'))
+    await dialog.findByText('ABCD-1234')
+    await userEvent.click(dialog.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    const keys = calls.map((c) => c.key)
+    expect(keys.indexOf('POST /api/v1/agents/codex/logout')).toBeGreaterThan(-1)
+    expect(keys.indexOf('POST /api/v1/agents/codex/logout')).toBeLessThan(keys.indexOf('DELETE /api/v1/connectors/codex'))
+  })
+
+  it('a failed cleanup after Cancel says so on the card', async () => {
+    stubFetch({
+      [G]: SET,
+      [AGENTS]: { body: [agent('claude'), agent('codex')] },
+      [SETTINGS]: { body: { agent: '', answer: { whatsapp: false } } },
+      'POST /api/v1/connectors/claude': { status: 204 },
+      'POST /api/v1/agents/claude/login': { body: { url: 'https://login.example.test/', code: '', needs_code: true } },
+      'POST /api/v1/agents/claude/logout': { status: 502, body: { error: 'boom' } },
+    })
+    show()
+    await screen.findByRole('heading', { level: 3, name: 'Claude' })
+    await userEvent.click(within(row('Claude')).getByRole('button', { name: 'Sign in' }))
+    const dialog = within(await screen.findByRole('dialog'))
+    await dialog.findByLabelText('Code')
+    await userEvent.click(dialog.getByRole('button', { name: 'Cancel' }))
+    expect(await within(row('Claude')).findByRole('alert')).toHaveTextContent("Couldn't cancel the sign-in: boom")
+  })
 })

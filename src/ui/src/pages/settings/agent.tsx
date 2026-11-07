@@ -72,7 +72,11 @@ export function AgentSection() {
             a={a}
             current={settings?.agent === a.name}
             onChanged={refresh}
-            onSignedOut={() => settings?.agent === a.name && save({ ...settings, agent: '' })}
+            onSignedOut={async () => {
+              const next: AgentSettings = { agent: '', answer: { whatsapp: false } }
+              await setAgentSettings(next)
+              setSettings(next)
+            }}
           />
         ))}
       </div>
@@ -132,7 +136,7 @@ function Status({ a }: { a: AgentStatus }) {
   )
 }
 
-function AgentCard({ a, current, onChanged, onSignedOut }: { a: AgentStatus; current: boolean; onChanged: () => void; onSignedOut: () => void }) {
+function AgentCard({ a, current, onChanged, onSignedOut }: { a: AgentStatus; current: boolean; onChanged: () => void; onSignedOut: () => Promise<void> }) {
   const [signingIn, setSigningIn] = useState(false)
   const [signingOut, setSigningOut] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -142,9 +146,9 @@ function AgentCard({ a, current, onChanged, onSignedOut }: { a: AgentStatus; cur
     setBusy(true)
     setError(undefined)
     try {
+      if (current) await onSignedOut() // first: a failure leaves the sign-in as it was
       await agentLogout(a.name)
       await stopConnector(a.name)
-      if (current) await onSignedOut()
       onChanged()
       setSigningOut(false)
     } catch (e) {
@@ -173,7 +177,8 @@ function AgentCard({ a, current, onChanged, onSignedOut }: { a: AgentStatus; cur
           )}
         </div>
       </CardContent>
-      {signingIn && <SignIn name={a.name} onClose={() => setSigningIn(false)} onDone={() => { setSigningIn(false); onChanged() }} />}
+      {signingIn && <SignIn name={a.name} onClose={(failed) => { setSigningIn(false); setError(failed); onChanged() }} onDone={() => { setSigningIn(false); onChanged() }} />}
+      {error && !signingOut && <p role="alert" className="px-(--card-spacing) text-sm text-destructive">{error}</p>}
       <Dialog open={signingOut} onOpenChange={(o) => !o && !busy && setSigningOut(false)}>
         <DialogContent>
           <DialogHeader>
@@ -193,19 +198,22 @@ function AgentCard({ a, current, onChanged, onSignedOut }: { a: AgentStatus; cur
 
 /** The sign-in: the box starts it, the owner finishes it on the provider's page. Claude gives a
  *  code to paste back (sent once, never kept); Codex shows a code to type there and finishes by itself. */
-function SignIn({ name, onClose, onDone }: { name: string; onClose: () => void; onDone: () => void }) {
+function SignIn({ name, onClose, onDone }: { name: string; onClose: (cleanupError?: string) => void; onDone: () => void }) {
   const [login, setLogin] = useState<AgentLogin>()
   const [code, setCode] = useState('')
   const [busy, setBusy] = useState(false)
+  const [finished, setFinished] = useState(false) // the provider accepted it: only the box's own confirm may be left
   const [error, setError] = useState<string>()
   const started = useRef(false)
   const cancelled = useRef(false)
+  const added = useRef<Promise<unknown>>(undefined)
+  const loginStarted = useRef<Promise<unknown>>(undefined)
+  const done = useRef(false)
 
-  const finish = useCallback(async (pasted: string) => {
+  const confirm = useCallback(async () => {
     setBusy(true)
     setError(undefined)
     try {
-      await finishAgentLogin(name, pasted)
       await confirmConnector(name)
       if (!cancelled.current) onDone()
     } catch (e) {
@@ -216,13 +224,34 @@ function SignIn({ name, onClose, onDone }: { name: string; onClose: () => void; 
     }
   }, [name, onDone])
 
+  const finish = useCallback(async (pasted: string) => {
+    setBusy(true)
+    setError(undefined)
+    try {
+      await finishAgentLogin(name, pasted)
+    } catch (e) {
+      if (!cancelled.current) {
+        setError(message(e))
+        setBusy(false)
+      }
+      return
+    }
+    done.current = true
+    setFinished(true)
+    if (!cancelled.current) await confirm()
+  }, [name, confirm])
+
   useEffect(() => {
     if (started.current) return
     started.current = true
     void (async () => {
       try {
-        await addConnector(name)
-        const l = await startAgentLogin(name)
+        added.current = addConnector(name)
+        await added.current
+        if (cancelled.current) return
+        const p = startAgentLogin(name)
+        loginStarted.current = p
+        const l = await p
         if (cancelled.current) return
         setLogin(l)
         if (!l.needs_code) await finish('')
@@ -232,18 +261,31 @@ function SignIn({ name, onClose, onDone }: { name: string; onClose: () => void; 
     })()
   }, [name, finish])
 
-  const close = () => {
+  const close = async () => {
     cancelled.current = true
-    void stopConnector(name).catch(() => {}) // not signed in: it is not set up either
-    onClose()
+    if (done.current) return onClose() // signed in: keep it; the card refreshes
+    setBusy(true)
+    let failed: string | undefined
+    try {
+      await added.current?.catch(() => {})
+      if (loginStarted.current) {
+        await loginStarted.current.catch(() => {})
+        await agentLogout(name) // also ends the login the box is still waiting on
+      }
+      if (added.current) await stopConnector(name)
+    } catch (e) {
+      failed = `Couldn't cancel the sign-in: ${message(e)}`
+    }
+    onClose(failed)
   }
   const submit = (e: FormEvent) => {
     e.preventDefault()
     void finish(code.trim())
   }
+  const waiting = login && !login.needs_code && !finished && !error
 
   return (
-    <Dialog open onOpenChange={(o) => !o && close()}>
+    <Dialog open onOpenChange={(o) => !o && void close()}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Sign in to {agentLabel(name)}</DialogTitle>
@@ -254,8 +296,8 @@ function SignIn({ name, onClose, onDone }: { name: string; onClose: () => void; 
         )}
         {login && (
           <div className="space-y-3 text-sm">
-            <p><ExternalLink href={login.url}>Open the sign-in page</ExternalLink></p>
-            {login.needs_code ? (
+            {!finished && <p><ExternalLink href={login.url}>Open the sign-in page</ExternalLink></p>}
+            {login.needs_code && !finished ? (
               <form onSubmit={submit} className="space-y-3">
                 <div className="space-y-1.5">
                   <Label htmlFor="agent-code">Code</Label>
@@ -263,17 +305,17 @@ function SignIn({ name, onClose, onDone }: { name: string; onClose: () => void; 
                 </div>
                 <Button type="submit" size="sm" disabled={busy || !code.trim()}>Finish</Button>
               </form>
-            ) : (
-              <>
-                <p>Type this code there: <span className="font-mono text-base font-medium">{login.code}</span></p>
-                <p className="inline-flex items-center gap-1.5 text-muted-foreground"><Loader aria-hidden className="size-4 animate-spin" />Waiting for you to finish there…</p>
-              </>
-            )}
+            ) : !login.needs_code && !finished ? (
+              <p>Type this code there: <span className="font-mono text-base font-medium">{login.code}</span></p>
+            ) : null}
+            {waiting && <p className="inline-flex items-center gap-1.5 text-muted-foreground"><Loader aria-hidden className="size-4 animate-spin" />Waiting for you to finish there…</p>}
+            {finished && <p className="text-muted-foreground">Signed in. The box couldn't finish setting it up.</p>}
           </div>
         )}
         {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
         <DialogFooter>
-          <Button variant="outline" onClick={close}>Cancel</Button>
+          {finished && error && <Button size="sm" disabled={busy} onClick={() => void confirm()}>Try again</Button>}
+          <Button variant="outline" onClick={() => void close()}>{finished ? 'Done' : 'Cancel'}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
