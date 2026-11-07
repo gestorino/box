@@ -54,8 +54,9 @@ the recovery code, the same backup can also be restored onto another box, its se
   WhatsApp and Telegram moving their sessions ahead) waits on the service's side instead of being
   lost. They stay stopped through a reboot: the box records which backup they were stopped for in a
   marker file, and every Concierge unit has a start condition that refuses while it exists (not
-  `systemctl mask`, which refuses units whose files live in `/etc/systemd/system`). Only a restore, or `make backup-resume`, starts them again; a deploy
-  refuses while they are. WhatsApp and Telegram keep a linked device that is offline for a while.
+  `systemctl mask`, which refuses units whose files live in `/etc/systemd/system`). Only a restore, `make backup-resume` or a deploy starts them again: a
+  deploy installs main's build under the hold, then ends it and starts them (main's code on the
+  box's data, as after any deploy; a restore of that backup then needs FORCE=1). WhatsApp and Telegram keep a linked device that is offline for a while.
 - **On the Mac**: outside the repo (*my call*: `~/Backups/concierge/<date>-<version>.tar.gz`, the
   directory 0700, the file 0600). It holds personal data in the clear (archives, the profiles'
   cookies); its secrets stay sealed. Encrypting whole backups comes with customer backups, later.

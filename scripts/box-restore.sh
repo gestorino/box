@@ -48,7 +48,8 @@ cleanup() {
 	rm -rf "$tmp"
 	if [ -n "$installed" ] && [ -z "$restored" ] && [ $status -ne 0 ]; then
 		echo "The box now runs the backup's build ($version, $revision) but the restore did not finish; its services are held down." \
-			"Run make restore again to finish it (make backup-resume would start the backup's build on the box's newer data)." >&2
+			"Run make restore again to finish it, or make deploy to bring main up instead" \
+			"(not make backup-resume: it would start the backup's build on the box's newer data)." >&2
 	fi
 }
 trap cleanup EXIT
@@ -115,8 +116,9 @@ have_version=$(printf '%s\n' "$have" | sed -n 1p)
 have_revision=$(printf '%s\n' "$have" | sed -n 2p)
 
 if [ "$have_version" != "$version" ] || [ "$have_revision" != "$revision" ]; then
-	# A deploy is refused while the box is stopped for a backup, so a box on another build has run
-	# since this one was taken: the box's restore would refuse it unforced, after the install.
+	# Only a deploy changes the box's build, and a deploy ends a backup's hold and starts the
+	# services, so a box on another build has run since this one was taken: the box's restore would
+	# refuse it unforced, after the install.
 	if [ -z "${FORCE:-}" ]; then
 		echo "the box runs $have_version ($have_revision), the backup was taken on $version ($revision): the box has run since," \
 			"so what arrived since would be lost and WhatsApp may need linking again; FORCE=1 restores it anyway" \

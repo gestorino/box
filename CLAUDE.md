@@ -81,7 +81,8 @@ path is tracked) at exit 0 once the tree is public.
 `box-recovery-code.sh`, `box-backup-resume.sh` here, over SSH): `make backup` keeps the box's state in
 `~/Backups/concierge/<stamp>-<version>.tar.gz` (0600, directory 0700). Every backup stops the services
 while it is taken; `STOP=1` keeps them stopped afterwards, by a marker file and a start condition on the
-box, until `make backup-resume` (a restore holds them by the same marker until its swap is through). The
+box, until a restore, `make backup-resume` or a deploy (which installs main under the hold, then ends it;
+a restore holds them by the same marker until its swap is through). The
 secrets move to another box only with the **recovery code** (`make recovery-code`; the owner types it on
 the box's own tty over `ssh -t`, the Mac scripts never read, store or pass it). `make restore` installs
 the backup's own build first when the box's differs: a published release, attestation-verified here, or a
