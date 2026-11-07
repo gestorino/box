@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"00000000-0000-0000-0000-000000000000"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"Thinking it over."}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"{\"action\":\"tool\",\"tool\":\"look\",\"arguments_json\":\"{}\",\"text\":\"\"}"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"{\"action\":\"say\",\"tool\":\"\",\"arguments_json\":\"\",\"text\":\"Done.\"}"}}
+{"type":"turn.completed","usage":{"input_tokens":460,"cached_input_tokens":340,"output_tokens":35}}
