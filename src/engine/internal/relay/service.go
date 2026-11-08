@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -316,8 +317,16 @@ func (s *Service) AddDevice(ctx context.Context, serial, label string, expires t
 	return s.store.AddDevice(ctx, Device{Serial: serial, Label: label, Issued: s.now(), Expires: expires})
 }
 
-// Devices are the device certificates the box issued, oldest first.
-func (s *Service) Devices(ctx context.Context) ([]Device, error) { return s.store.Devices(ctx) }
+// Devices are the device certificates the box issued and still lets in, oldest first: a device
+// that expires is gone.
+func (s *Service) Devices(ctx context.Context) ([]Device, error) {
+	all, err := s.store.Devices(ctx)
+	if err != nil {
+		return nil, err
+	}
+	now := s.now()
+	return slices.DeleteFunc(all, func(d Device) bool { return !now.Before(d.Expires) }), nil
+}
 
 // RemoveDevice drops a device certificate from the active list. Idempotent.
 func (s *Service) RemoveDevice(ctx context.Context, serial string) error {

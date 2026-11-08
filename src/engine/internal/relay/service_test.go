@@ -511,3 +511,24 @@ func TestAReclaimAfterAnUnfinishedStartOverIsNotWiped(t *testing.T) {
 		t.Fatal("the new claim was torn down")
 	}
 }
+
+// A device that expires is gone: the list holds only those still let in.
+func TestDevicesLeaveOutTheExpired(t *testing.T) {
+	r := newRig(t, secretstest.Start(t, "relay"))
+	r.claim(t)
+	ctx := context.Background()
+	now := time.Now()
+	if err := r.svc.AddDevice(ctx, "old", "Old phone", now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.svc.AddDevice(ctx, "new", "Phone", now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	ds, err := r.svc.Devices(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ds) != 1 || ds[0].Serial != "new" {
+		t.Fatalf("devices %+v, want only the unexpired one", ds)
+	}
+}
