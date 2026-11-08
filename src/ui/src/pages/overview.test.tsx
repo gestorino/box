@@ -20,6 +20,7 @@ describe('Overview', () => {
       revision: 'abc1234',
       browser: { enabled: true, connected: true, worker_version: '0.1.0', uptime_ms: 3_725_000 },
       channels: ['email'],
+      via_relay: false,
     })
     render(<Overview />)
     expect(await screen.findByText('Connected')).toBeInTheDocument()
@@ -30,7 +31,7 @@ describe('Overview', () => {
   })
 
   it('says plainly when no channel is configured', async () => {
-    engineAnswers({ version: 'dev', browser: { enabled: true, connected: false }, channels: [] })
+    engineAnswers({ version: 'dev', browser: { enabled: true, connected: false }, channels: [], via_relay: false })
     render(<Overview />)
     expect(await screen.findByText('Not connected')).toBeInTheDocument()
     expect(screen.getByText('No channels configured')).toBeInTheDocument()

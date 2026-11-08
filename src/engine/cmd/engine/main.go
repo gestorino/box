@@ -49,6 +49,7 @@ func run() error {
 	hostdSocket := flag.String("hostd-socket", "", "hostd's Unix socket; empty leaves /api/v1/network answering 503")
 	whatsappSocket := flag.String("whatsapp-socket", "", "whatsappd's Unix socket; empty leaves /api/v1/whatsapp answering 503")
 	emailSocket := flag.String("email-socket", "", "emaild's Unix socket; empty leaves /api/v1/email answering 503")
+	relaySocket := flag.String("relay-socket", "", "relayd's Unix socket; empty leaves /api/v1/relay answering 503")
 	telegramSocket := flag.String("telegram-socket", "", "telegramd's Unix socket; empty leaves /api/v1/telegram answering 503")
 	smsSocket := flag.String("sms-socket", "", "smsd's Unix socket; empty leaves /api/v1/sms answering 503")
 	callsSocket := flag.String("calls-socket", "", "calld's Unix socket; empty leaves /api/v1/calls answering 503")
@@ -139,6 +140,7 @@ func run() error {
 		WhatsApp: api.SocketProxy(*whatsappSocket, "WhatsApp service"),
 		Email:    api.SocketProxy(*emailSocket, "email service"),
 		Telegram: api.SocketProxy(*telegramSocket, "Telegram service"),
+		Relay:    api.SocketProxy(*relaySocket, "remote access"),
 		SignIns:  signInsHandler,
 		Accounts: signInsHandler,
 		Runs:     runsHandler,

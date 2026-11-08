@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
 	"path"
 	"path/filepath"
@@ -37,6 +38,7 @@ type StatusResponse struct {
 	Revision string        `json:"revision,omitempty"`
 	Browser  BrowserStatus `json:"browser"`
 	Channels []string      `json:"channels"`
+	ViaRelay bool          `json:"via_relay"` // this request came in through relayd, from the internet
 }
 
 // Config is what the HTTP surface serves. Browser may be nil (the worker is not configured);
@@ -58,6 +60,7 @@ type Config struct {
 	Runs     http.Handler // the engine's agent runs: /api/v1/runs, POST /api/v1/errands to start one, /api/v1/appointments
 	Health   http.Handler // the box's health history: /api/v1/health/{now,panels,events}; nil answers 503
 	AI       http.Handler // the OpenRouter key (aikey): /api/v1/ai, /api/v1/ai/key and /api/v1/ai/check
+	Relay    http.Handler // relayd: /api/v1/relay/*, remote access; issuing a device is refused for requests that came through it
 	Agents   http.Handler // the owner's agent (converse): /api/v1/agents, their sign-in, /api/v1/conversations; its GET /api/v1/agents/{name}/check is the agents' connector check, asked in-process
 }
 
@@ -69,7 +72,7 @@ func New(c Config) http.Handler {
 		w.Write([]byte("ok"))
 	})
 	mux.HandleFunc("GET /api/v1/status", func(w http.ResponseWriter, r *http.Request) {
-		resp := StatusResponse{Version: c.Build.Version, Revision: c.Build.Revision, Channels: c.Channels.Names()}
+		resp := StatusResponse{Version: c.Build.Version, Revision: c.Build.Revision, Channels: c.Channels.Names(), ViaRelay: viaRelay(r)}
 		if c.Browser != nil {
 			resp.Browser = BrowserStatus{Enabled: true, Status: c.Browser.Status(r.Context())}
 		}
@@ -131,6 +134,21 @@ func New(c Config) http.Handler {
 	if c.Telegram != nil {
 		mux.Handle("GET /api/v1/telegram/", c.Telegram)
 		mux.Handle("POST /api/v1/telegram/", c.Telegram) // credentials, link, password, settings, unlink
+	}
+	if c.Relay != nil {
+		mux.Handle("GET /api/v1/relay/", c.Relay)
+		mux.Handle("POST /api/v1/relay/", c.Relay)
+		mux.Handle("DELETE /api/v1/relay/", c.Relay)
+		// A stolen device must not mint more: issuing is only from home.
+		mux.HandleFunc("POST /api/v1/relay/devices", func(w http.ResponseWriter, r *http.Request) {
+			if viaRelay(r) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				writeJSON(w, map[string]string{"error": "issue devices from home"})
+				return
+			}
+			c.Relay.ServeHTTP(w, r)
+		})
 	}
 	if c.Runs != nil {
 		mux.Handle("POST /api/v1/errands", c.Runs)
@@ -212,4 +230,18 @@ func writeJSON(w http.ResponseWriter, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		slog.Warn("api: response not written", "err", err)
 	}
+}
+
+// viaRelay says the request came from the internet through relayd: relayd marks it
+// X-Concierge-Via: relay and connects from loopback. The header from any other peer is ignored.
+func viaRelay(r *http.Request) bool {
+	if r.Header.Get("X-Concierge-Via") != "relay" {
+		return false
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

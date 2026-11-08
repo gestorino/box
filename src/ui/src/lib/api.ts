@@ -10,6 +10,7 @@ export interface EngineStatus {
     error?: string
   }
   channels: string[]
+  via_relay: boolean
 }
 
 export async function fetchStatus(signal?: AbortSignal): Promise<EngineStatus> {
