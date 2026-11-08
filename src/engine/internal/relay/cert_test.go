@@ -12,8 +12,9 @@ import (
 )
 
 func TestCertIsLetsEncryptByTLSALPNOnly(t *testing.T) {
-	dir := t.TempDir()
-	c, err := NewCert(dir, "owner@example.org", "127.0.0.1:8443")
+	state := t.TempDir()
+	dir := filepath.Join(state, "certmagic")
+	c, err := NewCert(state, "owner@example.org", "127.0.0.1:8443")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,6 +34,9 @@ func TestCertIsLetsEncryptByTLSALPNOnly(t *testing.T) {
 	if fs, ok := c.cfg.Storage.(*certmagic.FileStorage); !ok || fs.Path != dir {
 		t.Fatalf("storage %#v, want file storage in %s", c.cfg.Storage, dir)
 	}
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("certmagic's directory: %v, %v; want a 0700 directory", fi, err)
+	}
 	if len(c.cfg.Issuers) != 1 || c.cfg.Issuers[0] != a {
 		t.Fatalf("issuers %v, want the one ACME issuer", c.cfg.Issuers)
 	}
@@ -44,6 +48,14 @@ func TestCertIsLetsEncryptByTLSALPNOnly(t *testing.T) {
 func TestCertRefusesABadFront(t *testing.T) {
 	if _, err := NewCert(t.TempDir(), "owner@example.org", "8443"); err == nil {
 		t.Fatal("NewCert with a front without a host: want an error")
+	}
+}
+
+func TestCertRefusesAnEmptyOrRelativeStateDir(t *testing.T) {
+	for _, dir := range []string{"", "state", "./state"} {
+		if _, err := NewCert(dir, "owner@example.org", "127.0.0.1:8443"); err == nil {
+			t.Errorf("NewCert(%q): want refused: certmagic would write keys relative to the working directory", dir)
+		}
 	}
 }
 
@@ -67,8 +79,14 @@ func TestCertWithoutOneIsNotReady(t *testing.T) {
 }
 
 func TestCertForgetWipesItsStorage(t *testing.T) {
-	dir := t.TempDir()
-	c, err := NewCert(dir, "owner@example.org", "127.0.0.1:8443")
+	state := t.TempDir()
+	dir := filepath.Join(state, "certmagic")
+	// relayd's own state beside certmagic's: Forget leaves it be.
+	sibling := filepath.Join(state, "relay.db")
+	if err := os.WriteFile(sibling, []byte("db"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := NewCert(state, "owner@example.org", "127.0.0.1:8443")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,14 +107,16 @@ func TestCertForgetWipesItsStorage(t *testing.T) {
 	if len(left) != 0 {
 		t.Fatalf("after Forget, %s holds %v", dir, left)
 	}
+	if b, err := os.ReadFile(sibling); err != nil || string(b) != "db" {
+		t.Fatalf("Forget touched the state directory's relay.db: %q, %v", b, err)
+	}
 	if err := c.Forget(); err != nil {
 		t.Fatalf("Forget again: %v", err)
 	}
-	gone, err := NewCert(filepath.Join(dir, "never-made"), "owner@example.org", "127.0.0.1:8443")
-	if err != nil {
+	if err := os.RemoveAll(dir); err != nil {
 		t.Fatal(err)
 	}
-	if err := gone.Forget(); err != nil {
-		t.Fatalf("Forget with no storage yet: %v", err)
+	if err := c.Forget(); err != nil {
+		t.Fatalf("Forget with certmagic's directory gone: %v", err)
 	}
 }

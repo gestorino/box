@@ -22,7 +22,7 @@ var _ CertManager = (*Cert)(nil)
 // Cert is the front's certificate for <name>.<box-domain>, from Let's Encrypt by TLS-ALPN-01
 // only (port 80 doesn't reach the box): the CA's check arrives through the relay at the front,
 // which hands it to ALPNChallenge. certmagic keeps the account key, the certificate and its key
-// in its file storage under dir, and renews it.
+// in its file storage in dir (<state>/certmagic, its alone), and renews it.
 type Cert struct {
 	dir   string
 	cache *certmagic.Cache
@@ -33,11 +33,24 @@ type Cert struct {
 	name string // the managed name, "" when none
 }
 
-// NewCert is the front's certificate, its storage in dir and email the ACME account's contact.
-// front is the front's host:port: certmagic's challenge "server" is pointed at it, so certmagic
-// finds the port held and leaves the answering to the front (it binds nothing of its own, and
-// never port 443, which relayd may not bind). The front must be listening before Manage.
-func NewCert(dir, email, front string) (*Cert, error) {
+// certmagicDir is certmagic's own directory under relayd's state directory: Forget empties it,
+// and nothing else lives in it.
+const certmagicDir = "certmagic"
+
+// NewCert is the front's certificate, its storage in <stateDir>/certmagic (made 0700; stateDir
+// must be absolute, or certmagic would write keys relative to the working directory) and email
+// the ACME account's contact. front is the front's host:port: certmagic's challenge "server" is
+// pointed at it, so certmagic finds the port held and leaves the answering to the front (it
+// binds nothing of its own, and never port 443, which relayd may not bind). The front must be
+// listening before Manage.
+func NewCert(stateDir, email, front string) (*Cert, error) {
+	if stateDir == "" || !filepath.IsAbs(stateDir) {
+		return nil, fmt.Errorf("relay: the state directory %q must be absolute", stateDir)
+	}
+	dir := filepath.Join(stateDir, certmagicDir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("relay: certmagic's directory: %w", err)
+	}
 	host, p, err := net.SplitHostPort(front)
 	if err != nil {
 		return nil, fmt.Errorf("relay: front %q: %w", front, err)
@@ -110,9 +123,9 @@ func (c *Cert) Ready() bool {
 	return false
 }
 
-// Forget stops keeping the certificate and wipes certmagic's storage: the certificate, its key
-// and the ACME account (dir holds only certmagic's). Call it with the tunnel stopped, so no
-// obtain is under way. Idempotent.
+// Forget stops keeping the certificate and empties certmagic's own directory: the certificate,
+// its key and the ACME account; the state directory around it is left alone. Call it with the
+// tunnel stopped (FrpTunnel.Forget stops it), so no obtain is under way. Idempotent.
 func (c *Cert) Forget() error {
 	c.mu.Lock()
 	name := c.name

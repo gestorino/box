@@ -223,9 +223,12 @@ func TestTunnelThroughRelay(t *testing.T) {
 		return err == nil && got == "engine via relay"
 	})
 
-	// Forget is the certificate side's wipe.
+	// Forget stops the tunnel first (no obtain under way), then wipes the certificate side.
 	if err := tun.Forget(); err != nil {
 		t.Fatal(err)
+	}
+	if tun.Connected() {
+		t.Fatal("Connected after Forget: it must stop the tunnel before wiping")
 	}
 	if r.cert.forgets != 1 {
 		t.Fatalf("Forget wiped the certificate %d times, want 1", r.cert.forgets)

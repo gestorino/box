@@ -115,8 +115,12 @@ func (t *FrpTunnel) stop() {
 	}
 }
 
-// Forget wipes the certificate side: the box's certificate and its ACME account.
-func (t *FrpTunnel) Forget() error { return t.cert.Forget() }
+// Forget stops the tunnel, so no obtain is under way, then wipes the certificate side: the
+// box's certificate and its ACME account.
+func (t *FrpTunnel) Forget() error {
+	t.Stop()
+	return t.cert.Forget()
+}
 
 // Connected says the relay has the box's proxy running: phones can reach the front.
 func (t *FrpTunnel) Connected() bool {
