@@ -41,7 +41,10 @@ type Cloud struct {
 // (the box's secret goes to relay.<box-domain>, so the control plane can't send it elsewhere).
 func NewCloud(base, version, boxDomain string) *Cloud {
 	return &Cloud{base: strings.TrimRight(base, "/"), version: version, boxDomain: boxDomain,
-		hc: &http.Client{Timeout: 15 * time.Second}}
+		hc: &http.Client{Timeout: 15 * time.Second,
+			// A redirect is the answer, never followed: following one would hand the box's headers
+			// (or a re-POSTed email, code and secret) to its target. Every 3xx is then an error.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 
 // do sends one request and returns the status and the body's error string (if any). A transport

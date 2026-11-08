@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -183,5 +184,34 @@ func TestAnUnreachableControlPlaneIsErrUnreachable(t *testing.T) {
 	c := fakeCloud(t, func(w http.ResponseWriter, r *http.Request) { reply(w, 500, `{}`) })
 	if err := c.ClaimStart(context.Background(), "a@b.c"); err == nil || errors.Is(err, ErrUnreachable) {
 		t.Fatalf("a 500 is an answer, not unreachable: %v", err)
+	}
+}
+
+// A redirect is an answer, never followed: following one would hand X-Box-Secret (or a re-POSTed
+// email, code and secret) to its target, and a target answering 401 would wipe the box.
+func TestRedirectsAreNeverFollowed(t *testing.T) {
+	var hits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		reply(w, 401, `{}`)
+	}))
+	t.Cleanup(target.Close)
+	for _, code := range []int{301, 302, 303, 307, 308} {
+		c := fakeCloud(t, func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, target.URL+r.URL.Path, code)
+		})
+		ok, err := c.Status(context.Background(), "box-1", "s3cret")
+		if err == nil || ok {
+			t.Errorf("status %d: %v %v; want an error, never removal", code, ok, err)
+		}
+		if _, err := c.ClaimFinish(context.Background(), "a@b.c", "1", "b", "s3cret"); err == nil {
+			t.Errorf("claim finish %d: want an error", code)
+		}
+		if err := c.ClaimStart(context.Background(), "a@b.c"); err == nil {
+			t.Errorf("claim start %d: want an error", code)
+		}
+	}
+	if n := hits.Load(); n != 0 {
+		t.Fatalf("the redirect's target was contacted %d times", n)
 	}
 }
