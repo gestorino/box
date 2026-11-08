@@ -14,6 +14,7 @@ require (
 	github.com/emersion/go-smtp v0.25.0
 	github.com/fatedier/frp v0.71.1
 	github.com/godbus/dbus/v5 v5.2.4
+	github.com/google/uuid v1.6.0
 	github.com/gotd/td v0.163.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/common v0.72.0
@@ -50,7 +51,6 @@ require (
 	github.com/go-faster/yaml v0.4.6 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/mux v1.8.1 // indirect
 	github.com/gotd/ige v0.3.0 // indirect
 	github.com/gotd/log v0.1.0 // indirect

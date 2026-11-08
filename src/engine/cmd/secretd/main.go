@@ -35,7 +35,7 @@ var (
 )
 
 // namespaces are the only callers there are: a typo in a name would silently make a new namespace.
-var namespaces = []string{"engine", "calld", "hostd", "emaild"}
+var namespaces = []string{"engine", "calld", "hostd", "emaild", "relay"}
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

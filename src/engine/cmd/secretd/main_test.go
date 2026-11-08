@@ -91,6 +91,29 @@ func TestRefusesRootAsACaller(t *testing.T) {
 	}
 }
 
+// relayd is a caller of its own: its namespace is "relay".
+func TestServesRelayAsACaller(t *testing.T) {
+	dir := sockDir(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, args(dir, keyFile(t, 32), "-caller", "relay="+me(t))) }()
+	sock := filepath.Join(dir, "s")
+	for i := 0; ; i++ {
+		if c, err := net.Dial("unix", sock); err == nil {
+			c.Close()
+			break
+		}
+		if i > 200 {
+			t.Fatal("never listened")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestServesItsCallers(t *testing.T) {
 	dir := sockDir(t)
 	ctx, cancel := context.WithCancel(context.Background())
