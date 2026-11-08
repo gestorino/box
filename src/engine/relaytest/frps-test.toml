@@ -1,0 +1,33 @@
+# The stand-in relay's frps: the contract's configuration. relaytest fills the placeholders and
+# moves bindPort and vhostHTTPSPort to loopback ports of its own.
+
+# Boxes connect here, over TLS only.
+bindPort = 7000
+transport.tls.force = true
+transport.tls.certFile = "{{CERT_FILE}}"
+transport.tls.keyFile = "{{KEY_FILE}}"
+
+# Phones connect here, routed by SNI <name>.<box-domain>, passed through undecrypted.
+vhostHTTPSPort = 443
+subDomainHost = "{{BOX_DOMAIN}}"
+
+# No auth.token: the control plane decides who logs in, from the box's metas. No webServer.
+# allowPorts empty, which frp reads as any port: the control plane's NewProxy, refusing every
+# type but https, is what keeps a box to its one https proxy, under the name it gives.
+[[httpPlugins]]
+name = "login"
+addr = "{{CONTROL_PLANE}}"
+path = "/relay/{{HOOK_SECRET}}/login"
+ops = ["Login"]
+
+[[httpPlugins]]
+name = "new-proxy"
+addr = "{{CONTROL_PLANE}}"
+path = "/relay/{{HOOK_SECRET}}/new-proxy"
+ops = ["NewProxy"]
+
+[[httpPlugins]]
+name = "close-proxy"
+addr = "{{CONTROL_PLANE}}"
+path = "/relay/{{HOOK_SECRET}}/close-proxy"
+ops = ["CloseProxy"]
