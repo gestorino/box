@@ -45,6 +45,18 @@ func TestIssuingDevicesIsRefusedOverTheRelay(t *testing.T) {
 	if len(*seen) != 0 {
 		t.Fatalf("relayd saw %q", *seen)
 	}
+	if code, _ := sendFrom(h, "127.0.0.1:5", "relay", "POST", "/api/v1/relay/devices/", `{}`); code != http.StatusForbidden {
+		t.Errorf("trailing slash: %d", code)
+	}
+	// The mux redirects unclean paths itself; either way relayd is not reached.
+	for _, p := range []string{"/api/v1/relay/devices//", "/api/v1/relay/x/../devices"} {
+		if code, _ := sendFrom(h, "127.0.0.1:5", "relay", "POST", p, `{}`); code == http.StatusAccepted {
+			t.Errorf("%s: %d", p, code)
+		}
+	}
+	if len(*seen) != 0 {
+		t.Fatalf("relayd saw %q", *seen)
+	}
 	if code, _ := sendFrom(h, "127.0.0.1:5", "relay", "GET", "/api/v1/relay/devices", ""); code != http.StatusAccepted {
 		t.Fatalf("listing over the relay: %d", code)
 	}

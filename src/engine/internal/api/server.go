@@ -136,12 +136,11 @@ func New(c Config) http.Handler {
 		mux.Handle("POST /api/v1/telegram/", c.Telegram) // credentials, link, password, settings, unlink
 	}
 	if c.Relay != nil {
-		mux.Handle("GET /api/v1/relay/", c.Relay)
-		mux.Handle("POST /api/v1/relay/", c.Relay)
-		mux.Handle("DELETE /api/v1/relay/", c.Relay)
-		// A stolen device must not mint more: issuing is only from home.
-		mux.HandleFunc("POST /api/v1/relay/devices", func(w http.ResponseWriter, r *http.Request) {
-			if viaRelay(r) {
+		// A stolen device must not mint more: issuing is only from home. One guard on the whole
+		// subtree, so no spelling of the path (a trailing slash, dot segments) gets around it.
+		relay := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && viaRelay(r) &&
+				strings.TrimRight(path.Clean(r.URL.Path), "/") == "/api/v1/relay/devices" {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
 				writeJSON(w, map[string]string{"error": "issue devices from home"})
@@ -149,6 +148,9 @@ func New(c Config) http.Handler {
 			}
 			c.Relay.ServeHTTP(w, r)
 		})
+		for _, m := range []string{"GET", "POST", "DELETE"} {
+			mux.Handle(m+" /api/v1/relay/", relay)
+		}
 	}
 	if c.Runs != nil {
 		mux.Handle("POST /api/v1/errands", c.Runs)
