@@ -126,7 +126,7 @@ func (c *Cloud) ClaimFinish(ctx context.Context, email, code, boxID, secret stri
 }
 
 // Status asks whether the control plane still holds the box as claimed. A 401 means it was removed
-// (false, nil); any other answer than 200 is an error, never "not claimed".
+// (false, nil); any other answer, a 200 that does not say claimed included, is an error.
 func (c *Cloud) Status(ctx context.Context, boxID, secret string) (bool, error) {
 	var out struct {
 		Claimed bool `json:"claimed"`
@@ -139,7 +139,10 @@ func (c *Cloud) Status(ctx context.Context, boxID, secret string) (bool, error) 
 	}
 	switch st {
 	case http.StatusOK:
-		return out.Claimed, nil
+		if !out.Claimed {
+			return false, errors.New("cloud: status answered 200 but not claimed")
+		}
+		return true, nil
 	case http.StatusUnauthorized:
 		return false, nil
 	}

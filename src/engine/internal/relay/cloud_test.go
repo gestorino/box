@@ -118,12 +118,13 @@ func TestErrorsNeverCarryTheSecretOrEmail(t *testing.T) {
 func TestStatus(t *testing.T) {
 	var hdr http.Header
 	code := 200
+	body := `{"claimed":true,"name":"abcdefghij"}`
 	c := fakeCloud(t, func(w http.ResponseWriter, r *http.Request) {
 		hdr = r.Header
 		if r.Method != "GET" || r.URL.Path != "/box/v1/status" {
 			t.Errorf("%s %s", r.Method, r.URL.Path)
 		}
-		reply(w, code, `{"claimed":true,"name":"abcdefghij"}`)
+		reply(w, code, body)
 	})
 	ok, err := c.Status(context.Background(), "box-1", "s3cret")
 	if err != nil || !ok {
@@ -136,6 +137,15 @@ func TestStatus(t *testing.T) {
 	ok, err = c.Status(context.Background(), "box-1", "s3cret")
 	if err != nil || ok {
 		t.Fatalf("401: %v %v", ok, err)
+	}
+	code = 200
+	body = `{"claimed":false}`
+	if ok, err = c.Status(context.Background(), "box-1", "s3cret"); err == nil || ok {
+		t.Fatalf("200 not claimed: %v %v", ok, err)
+	}
+	body = `nonsense`
+	if ok, err = c.Status(context.Background(), "box-1", "s3cret"); err == nil || ok {
+		t.Fatalf("unparseable: %v %v", ok, err)
 	}
 	code = 500
 	ok, err = c.Status(context.Background(), "box-1", "s3cret")

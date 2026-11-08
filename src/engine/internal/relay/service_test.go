@@ -14,11 +14,12 @@ import (
 )
 
 type fakeTunnel struct {
-	mu      sync.Mutex
-	starts  []string // the secrets started with
-	ids     []Identity
-	stops   int
-	startCh chan struct{}
+	mu        sync.Mutex
+	starts    []string // the secrets started with
+	ids       []Identity
+	stops     int
+	forgets   int
+	forgetErr error
 }
 
 func (f *fakeTunnel) Start(id Identity, secret string) error {
@@ -29,6 +30,21 @@ func (f *fakeTunnel) Start(id Identity, secret string) error {
 	return nil
 }
 func (f *fakeTunnel) Stop() { f.mu.Lock(); f.stops++; f.mu.Unlock() }
+func (f *fakeTunnel) Forget() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.forgetErr != nil {
+		return f.forgetErr
+	}
+	f.forgets++
+	return nil
+}
+func (f *fakeTunnel) setForgetErr(err error) { f.mu.Lock(); f.forgetErr = err; f.mu.Unlock() }
+func (f *fakeTunnel) lastStart() (string, Identity) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.starts[0], f.ids[0]
+}
 func (f *fakeTunnel) counts() (int, int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -128,8 +144,11 @@ func TestClaimFinishClaimsAndStartsTheTunnel(t *testing.T) {
 		t.Fatalf("%+v", s)
 	}
 	v, _, _ := sec.Get(context.Background(), "box-secret")
-	if len(r.tunnel.starts) != 1 || r.tunnel.starts[0] != v || r.tunnel.ids[0].Relay != "relay.example.net:7000" {
-		t.Fatalf("starts %v", r.tunnel.starts)
+	if n, _ := r.tunnel.counts(); n != 1 {
+		t.Fatalf("starts %d", n)
+	}
+	if got, tid := r.tunnel.lastStart(); got != v || tid.Relay != "relay.example.net:7000" {
+		t.Fatalf("started with %q %+v", got, tid)
 	}
 	id, _ := r.store.Identity(context.Background())
 	if id.Email != "a@b.c" {
@@ -162,6 +181,14 @@ func TestRemovedBoxStartsOver(t *testing.T) {
 	oldSecret, _, _ := sec.Get(ctx, "box-secret")
 	r.setStatus(401)
 	r.svc.checkStatus(ctx)
+	r.cloud.mu.Lock()
+	if len(r.cloud.boxes) != 1 || r.cloud.boxes[0] != oldID.BoxID || r.cloud.secrets[0] != oldSecret {
+		t.Fatalf("status sent %v %v", r.cloud.boxes, r.cloud.secrets)
+	}
+	r.cloud.mu.Unlock()
+	if r.tunnel.forgets != 1 {
+		t.Fatalf("forgets %d", r.tunnel.forgets)
+	}
 	id, _ := r.store.Identity(ctx)
 	newSecret, ok, _ := sec.Get(ctx, "box-secret")
 	if id.State != Unclaimed || id.BoxID == oldID.BoxID || !ok || newSecret == oldSecret {
@@ -195,8 +222,10 @@ func TestRunStartsTheTunnelWhenClaimedAndChecksOnEachTick(t *testing.T) {
 	sec := secretstest.Start(t, "relay")
 	r := newRig(t, sec)
 	r.claim(t)
+	r.tunnel.mu.Lock()
 	r.tunnel.stops = 0
 	r.tunnel.starts, r.tunnel.ids = nil, nil
+	r.tunnel.mu.Unlock()
 	// a new service on the same store, as after a restart
 	ticks := make(chan time.Time)
 	svc := NewService(r.store, r.svc.cloud, sec, r.tunnel, func() string { return "" }, time.Now)
@@ -225,5 +254,100 @@ func TestClaimStartWithSecretdDown(t *testing.T) {
 	}
 	if s := r.svc.Status(); s.State != Unclaimed {
 		t.Fatalf("%+v", s)
+	}
+}
+
+func TestStartOverFailingLeavesClaimedAndTheNextTickCompletesIt(t *testing.T) {
+	sec := secretstest.Start(t, "relay")
+	r := newRig(t, sec)
+	r.claim(t)
+	ctx := context.Background()
+	old, _ := r.store.Identity(ctx)
+	oldSecret, _, _ := sec.Get(ctx, "box-secret")
+	r.setStatus(401)
+	r.tunnel.setForgetErr(errors.New("disk"))
+	r.svc.checkStatus(ctx)
+	if id, _ := r.store.Identity(ctx); id.State != Claimed || id.BoxID != old.BoxID {
+		t.Fatalf("%+v", id)
+	}
+	if v, ok, _ := sec.Get(ctx, "box-secret"); !ok || v != oldSecret {
+		t.Fatal("secret changed")
+	}
+	if r.svc.Status().Problem == "" {
+		t.Fatal("want a problem")
+	}
+	r.tunnel.setForgetErr(nil)
+	r.svc.checkStatus(ctx)
+	id, _ := r.store.Identity(ctx)
+	v, ok, _ := sec.Get(ctx, "box-secret")
+	if id.State != Unclaimed || id.BoxID == old.BoxID || !ok || v == oldSecret {
+		t.Fatalf("%+v %v", id, ok)
+	}
+	if r.svc.Status().Problem != "" {
+		t.Fatal("problem not cleared")
+	}
+}
+
+func TestStartOverRetriesAfterTheSecretWasDeletedButResetFailed(t *testing.T) {
+	sec := secretstest.Start(t, "relay")
+	r := newRig(t, sec)
+	r.claim(t)
+	ctx := context.Background()
+	// as if a start-over deleted the secret and then failed
+	r.svc.removed = true
+	if err := sec.Delete(ctx, "box-secret"); err != nil {
+		t.Fatal(err)
+	}
+	r.svc.checkStatus(ctx)
+	if id, _ := r.store.Identity(ctx); id.State != Unclaimed {
+		t.Fatalf("%+v", id)
+	}
+}
+
+func TestMissingSecretOfAClaimedBoxIsNeverReplaced(t *testing.T) {
+	sec := secretstest.Start(t, "relay")
+	r := newRig(t, sec)
+	r.claim(t)
+	ctx := context.Background()
+	if err := sec.Delete(ctx, "box-secret"); err != nil {
+		t.Fatal(err)
+	}
+	r.svc.checkStatus(ctx)
+	if _, ok, _ := sec.Get(ctx, "box-secret"); ok {
+		t.Fatal("a secret was minted")
+	}
+	st := r.svc.Status()
+	if st.State != Claimed || st.Problem != "box secret missing" {
+		t.Fatalf("%+v", st)
+	}
+	r.cloud.mu.Lock()
+	defer r.cloud.mu.Unlock()
+	if len(r.cloud.boxes) != 0 {
+		t.Fatal("status call made")
+	}
+}
+
+func TestConcurrentClaimFinishStartsTheTunnelOnce(t *testing.T) {
+	r := newRig(t, secretstest.Start(t, "relay"))
+	ctx := context.Background()
+	if err := r.svc.ClaimStart(ctx, "a@b.c"); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); errs <- r.svc.ClaimFinish(ctx, "123456") }()
+	}
+	wg.Wait()
+	close(errs)
+	ok := 0
+	for err := range errs {
+		if err == nil {
+			ok++
+		}
+	}
+	if starts, _ := r.tunnel.counts(); ok != 1 || starts != 1 {
+		t.Fatalf("successes %d starts %d", ok, starts)
 	}
 }
