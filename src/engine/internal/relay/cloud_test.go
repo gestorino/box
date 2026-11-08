@@ -165,6 +165,13 @@ func TestClaimFinishRefusesAnAnswerOutsideTheBoxDomain(t *testing.T) {
 		`{"name":"a.b","box_domain":"example.net","relay":"relay.example.net:7000"}`,
 		`{"name":"A-b","box_domain":"example.net","relay":"relay.example.net:7000"}`,
 		`{"name":"-ab","box_domain":"example.net","relay":"relay.example.net:7000"}`,
+		// a name is exactly 10 of a-z2-7, as the control plane makes them
+		`{"name":"abcdefghi","box_domain":"example.net","relay":"relay.example.net:7000"}`,
+		`{"name":"abcdefghijk","box_domain":"example.net","relay":"relay.example.net:7000"}`,
+		`{"name":"abcdefgh1j","box_domain":"example.net","relay":"relay.example.net:7000"}`,
+		`{"name":"abcdefgh8j","box_domain":"example.net","relay":"relay.example.net:7000"}`,
+		`{"name":"abcdefgh-j","box_domain":"example.net","relay":"relay.example.net:7000"}`,
+		`{"name":"abcdefghiJ","box_domain":"example.net","relay":"relay.example.net:7000"}`,
 	} {
 		c := fakeCloud(t, func(w http.ResponseWriter, r *http.Request) { reply(w, 200, body) })
 		if res, err := c.ClaimFinish(context.Background(), "a@b.c", "1", "b", "s3cret"); err == nil {
@@ -213,5 +220,15 @@ func TestRedirectsAreNeverFollowed(t *testing.T) {
 	}
 	if n := hits.Load(); n != 0 {
 		t.Fatalf("the redirect's target was contacted %d times", n)
+	}
+}
+
+func TestClaimFinishTakesAnyNameOfTheContract(t *testing.T) {
+	for _, name := range []string{"abcdefghij", "a2b3c4d5e6", "zzzzzzzzz7"} {
+		body := `{"name":"` + name + `","box_domain":"example.net","relay":"relay.example.net:7000"}`
+		c := fakeCloud(t, func(w http.ResponseWriter, r *http.Request) { reply(w, 200, body) })
+		if res, err := c.ClaimFinish(context.Background(), "a@b.c", "1", "b", "s3cret"); err != nil || res.Name != name {
+			t.Errorf("%s: %+v %v", name, res, err)
+		}
 	}
 }

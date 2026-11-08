@@ -13,9 +13,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -32,10 +34,11 @@ var (
 	revision = ""
 )
 
-// The service's domains, placeholders until the owner's exist (both public values).
+// The service's domains (both public values): the site and its control plane, and the boxes' names
+// and relay.
 const (
-	defaultControlPlane = "https://example-site.invalid"
-	defaultBoxDomain    = "example-box.invalid"
+	defaultControlPlane = "https://gestorino.com"
+	defaultBoxDomain    = "gestorino.net"
 )
 
 func main() {
@@ -61,6 +64,9 @@ func run() error {
 	}
 	if *secretsSocket == "" {
 		return errors.New("no secrets socket: pass -secrets-socket")
+	}
+	if err := checkDomains(*controlPlane, *boxDomain); err != nil {
+		return err
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -133,6 +139,40 @@ func run() error {
 		return err
 	}
 	return nil
+}
+
+// checkDomains refuses a control plane that isn't an https:// origin (the box's secret goes to it)
+// and a box domain that isn't a lowercase hostname without a trailing dot (a claim must name it
+// exactly). The Cloud client takes any base, so tests can point it at a loopback server.
+func checkDomains(controlPlane, boxDomain string) error {
+	u, err := url.Parse(controlPlane)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil ||
+		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return fmt.Errorf("-control-plane %q: want an https:// origin", controlPlane)
+	}
+	if !isHostname(boxDomain) {
+		return fmt.Errorf("-box-domain %q: want a lowercase hostname without a trailing dot", boxDomain)
+	}
+	return nil
+}
+
+// isHostname says name is two or more DNS labels of a-z, 0-9 and inner hyphens.
+func isHostname(name string) bool {
+	labels := strings.Split(name, ".")
+	if len(name) > 253 || len(labels) < 2 {
+		return false
+	}
+	for _, l := range labels {
+		if l == "" || len(l) > 63 || l[0] == '-' || l[len(l)-1] == '-' {
+			return false
+		}
+		for _, r := range l {
+			if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func listener(path string) (net.Listener, error) {

@@ -161,14 +161,14 @@ func (c *Cloud) Status(ctx context.Context, boxID, secret string) (bool, error) 
 	return false, fmt.Errorf("cloud: status answered %d", st)
 }
 
-// isLabel says name is one DNS label as the control plane makes them: lowercase letters, digits and
-// inner hyphens, at most 63.
+// isLabel says name is a box's name as the control plane makes them: exactly 10 characters of
+// a-z2-7 (base32's lowercase alphabet).
 func isLabel(name string) bool {
-	if name == "" || len(name) > 63 || name[0] == '-' || name[len(name)-1] == '-' {
+	if len(name) != 10 {
 		return false
 	}
 	for _, r := range name {
-		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+		if (r < 'a' || r > 'z') && (r < '2' || r > '7') {
 			return false
 		}
 	}
