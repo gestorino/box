@@ -24,7 +24,8 @@ owner's email (to claim) and its version — never what it does.
     `200 {claimed: true, name}`, or `401` once the box was removed.
 - **The relay** (`relay.gestorino.net:7000`, frp v0.71.1): frpc over TLS with a certificate a
   public CA signed for `relay.gestorino.net`; `metadatas` `box_id` and `secret`; one `https` proxy
-  (the relay sets its `subdomain` to the box's name); phones arrive on 443 by SNI
+  named after the box's `box_id` (frp's proxy names are global on the relay, so the relay refuses a
+  proxy under any other name) and the relay sets its `subdomain` to the box's name; phones arrive on 443 by SNI
   `<name>.gestorino.net`, passed through undecrypted. A box the control plane doesn't know is refused
   at `Login`. Removal reaches the box only by its status call.
 - **Names** are 10 characters of `a-z2-7`, made by the control plane, never reused.
