@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sync"
 	"testing"
 	"testing/iotest"
@@ -397,5 +398,13 @@ func TestReadHeaderFirstEntry(t *testing.T) {
 	}
 	if h.ID != header().ID || !reflect.DeepEqual(h.Paths, []string{"var/lib/concierge"}) {
 		t.Fatalf("header = %+v", h)
+	}
+}
+
+func TestPathsHoldRelaydsState(t *testing.T) {
+	// relay.db (the box's identity and its devices) and certmagic's storage; the box secret and the
+	// device CA are secretd's, backed up with it.
+	if !slices.Contains(Paths, "var/lib/concierge-relay") {
+		t.Fatalf("Paths %v leave out var/lib/concierge-relay", Paths)
 	}
 }

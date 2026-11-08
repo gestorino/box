@@ -44,6 +44,7 @@ var Paths = []string{
 	"var/lib/concierge-whatsapp",
 	"var/lib/concierge-telegram",
 	"var/lib/concierge-email",
+	"var/lib/concierge-relay",
 	"etc/concierge",
 	"etc/credstore.encrypted/concierge-secrets-master",
 }

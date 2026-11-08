@@ -15,21 +15,29 @@ import (
 
 type fakeTunnel struct {
 	mu        sync.Mutex
-	starts    []string // the secrets started with
+	attempts  int      // every Start, failed ones included
+	starts    []string // the secrets started with, by the Starts that succeeded
 	ids       []Identity
 	stops     int
 	forgets   int
 	forgetErr error
+	startErr  error
 }
 
 func (f *fakeTunnel) Start(id Identity, secret string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.attempts++
+	if f.startErr != nil {
+		return f.startErr
+	}
 	f.starts = append(f.starts, secret)
 	f.ids = append(f.ids, id)
 	return nil
 }
-func (f *fakeTunnel) Stop() { f.mu.Lock(); f.stops++; f.mu.Unlock() }
+func (f *fakeTunnel) setStartErr(err error) { f.mu.Lock(); f.startErr = err; f.mu.Unlock() }
+func (f *fakeTunnel) attemptCount() int     { f.mu.Lock(); defer f.mu.Unlock(); return f.attempts }
+func (f *fakeTunnel) Stop()                 { f.mu.Lock(); f.stops++; f.mu.Unlock() }
 func (f *fakeTunnel) Forget() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -305,26 +313,152 @@ func TestStartOverRetriesAfterTheSecretWasDeletedButResetFailed(t *testing.T) {
 	}
 }
 
-func TestMissingSecretOfAClaimedBoxIsNeverReplaced(t *testing.T) {
-	sec := secretstest.Start(t, "relay")
-	r := newRig(t, sec)
-	r.claim(t)
+// lostKey checks a claimed box whose secret secretd reported absent started over: a new box_id
+// and secret, unclaimed, its certificate forgotten, no status call made with a minted secret, and
+// the owner told what to do.
+func (r *rig) lostKey(t *testing.T, svc *Service, old Identity) {
+	t.Helper()
 	ctx := context.Background()
-	if err := sec.Delete(ctx, "box-secret"); err != nil {
-		t.Fatal(err)
+	id, _ := r.store.Identity(ctx)
+	v, ok, _ := r.sec.Get(ctx, "box-secret")
+	if id.State != Unclaimed || id.BoxID == old.BoxID || !ok || v == "" {
+		t.Fatalf("after a lost key: %+v secret %v", id, ok)
 	}
-	r.svc.checkStatus(ctx)
-	if _, ok, _ := sec.Get(ctx, "box-secret"); ok {
-		t.Fatal("a secret was minted")
+	if r.tunnel.forgetCount() != 1 {
+		t.Fatalf("forgets %d", r.tunnel.forgetCount())
 	}
-	st := r.svc.Status()
-	if st.State != Claimed || st.Problem != "box secret missing" {
-		t.Fatalf("%+v", st)
+	if p := svc.Status().Problem; p != lostKeyProblem {
+		t.Fatalf("problem %q", p)
+	}
+	if lostKeyProblem != "This box lost its key: claim it again, and remove its old entry in your account" {
+		t.Fatalf("the words changed: %q", lostKeyProblem)
 	}
 	r.cloud.mu.Lock()
 	defer r.cloud.mu.Unlock()
 	if len(r.cloud.boxes) != 0 {
 		t.Fatal("status call made")
+	}
+}
+
+func TestAClaimedBoxThatLostItsKeyStartsOverOnATick(t *testing.T) {
+	sec := secretstest.Start(t, "relay")
+	r := newRig(t, sec)
+	r.claim(t)
+	ctx := context.Background()
+	old, _ := r.store.Identity(ctx)
+	if err := sec.Delete(ctx, "box-secret"); err != nil {
+		t.Fatal(err)
+	}
+	r.svc.checkStatus(ctx)
+	r.lostKey(t, r.svc, old)
+	// The words stay until the box is claimed again.
+	r.svc.checkStatus(ctx)
+	if p := r.svc.Status().Problem; p != lostKeyProblem {
+		t.Fatalf("problem %q", p)
+	}
+	r.claim(t)
+	if st := r.svc.Status(); st.State != Claimed || st.Problem != "" {
+		t.Fatalf("claimed again: %+v", st)
+	}
+}
+
+func TestAClaimedBoxThatLostItsKeyStartsOverAtStart(t *testing.T) {
+	sec := secretstest.Start(t, "relay")
+	r := newRig(t, sec)
+	r.claim(t)
+	ctx := context.Background()
+	old, _ := r.store.Identity(ctx)
+	if err := sec.Delete(ctx, "box-secret"); err != nil {
+		t.Fatal(err)
+	}
+	starts, _ := r.tunnel.counts()
+	ticks := make(chan time.Time)
+	svc := NewService(r.store, r.svc.cloud, sec, r.tunnel, func() string { return "" }, time.Now)
+	svc.ticks = ticks
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { svc.Run(runCtx); close(done) }()
+	ticks <- time.Now() // the start is fully handled before the first tick is taken
+	cancel()
+	<-done
+	r.lostKey(t, svc, old)
+	if now, _ := r.tunnel.counts(); now != starts {
+		t.Fatal("the tunnel started without the box's secret")
+	}
+}
+
+func TestSecretdDownWhileClaimedChangesNothing(t *testing.T) {
+	sec := secretstest.Start(t, "relay")
+	r := newRig(t, sec)
+	r.claim(t)
+	ctx := context.Background()
+	old, _ := r.store.Identity(ctx)
+	starts, stops := r.tunnel.counts()
+	check := func(svc *Service) {
+		t.Helper()
+		if id, _ := r.store.Identity(ctx); id != old {
+			t.Fatalf("identity changed: %+v", id)
+		}
+		if st := svc.Status(); st.State != Claimed || st.Problem != "secrets unavailable" {
+			t.Fatalf("%+v", st)
+		}
+		if a, o := r.tunnel.counts(); a != starts || o != stops || r.tunnel.forgetCount() != 0 {
+			t.Fatalf("tunnel touched: starts %d stops %d forgets %d", a, o, r.tunnel.forgetCount())
+		}
+		if v, ok, _ := sec.Get(ctx, "box-secret"); !ok || v == "" {
+			t.Fatal("the secret went")
+		}
+	}
+	// on a tick
+	r.svc.sec = secretstest.Down(t)
+	r.svc.checkStatus(ctx)
+	check(r.svc)
+	// at start: no tunnel without the secret, nothing else changed
+	ticks := make(chan time.Time)
+	svc := NewService(r.store, r.svc.cloud, secretstest.Down(t), r.tunnel, func() string { return "" }, time.Now)
+	svc.ticks = ticks
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { svc.Run(runCtx); close(done) }()
+	ticks <- time.Now()
+	cancel()
+	<-done
+	stops++ // Run stops the tunnel as it ends
+	check(svc)
+}
+
+func TestATunnelThatFailedToStartIsRetriedOnTheNextTick(t *testing.T) {
+	r := newRig(t, secretstest.Start(t, "relay"))
+	ctx := context.Background()
+	r.tunnel.setStartErr(errors.New("no CA file"))
+	r.claim(t)
+	if p := r.svc.Status().Problem; p != "can't start the connection to the relay" {
+		t.Fatalf("after the claim: problem %q", p)
+	}
+	// A good status call doesn't hide it, and the start is tried again.
+	r.svc.checkStatus(ctx)
+	if p := r.svc.Status().Problem; p != "can't start the connection to the relay" || r.tunnel.attemptCount() != 2 {
+		t.Fatalf("problem %q attempts %d", p, r.tunnel.attemptCount())
+	}
+	// It shows over a status call's problem too.
+	r.setStatus(500)
+	r.svc.checkStatus(ctx)
+	if p := r.svc.Status().Problem; p != "can't start the connection to the relay" || r.tunnel.attemptCount() != 3 {
+		t.Fatalf("problem %q attempts %d", p, r.tunnel.attemptCount())
+	}
+	r.setStatus(200)
+	r.tunnel.setStartErr(nil)
+	r.svc.checkStatus(ctx)
+	if starts, _ := r.tunnel.counts(); starts != 1 || r.tunnel.attemptCount() != 4 {
+		t.Fatalf("starts %d attempts %d", starts, r.tunnel.attemptCount())
+	}
+	if p := r.svc.Status().Problem; p != "" {
+		t.Fatalf("problem %q after the tunnel started", p)
+	}
+	// A running tunnel is left alone.
+	r.svc.checkStatus(ctx)
+	if r.tunnel.attemptCount() != 4 {
+		t.Fatalf("attempts %d: a running tunnel was started again", r.tunnel.attemptCount())
 	}
 }
 

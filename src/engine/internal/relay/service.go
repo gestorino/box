@@ -15,6 +15,10 @@ import (
 const (
 	secretName     = "box-secret"
 	statusInterval = 10 * time.Minute
+
+	// lostKeyProblem is what a claimed box says once it started over because secretd no longer
+	// held its secret: the control plane still lists it, under a secret nobody has.
+	lostKeyProblem = "This box lost its key: claim it again, and remove its old entry in your account"
 )
 
 // Tunnel is the box's way onto the relay while claimed.
@@ -45,10 +49,15 @@ type Service struct {
 	now    func() time.Time
 	ticks  <-chan time.Time // the status loop's clock; nil means every statusInterval
 
-	op      sync.Mutex // serializes ClaimStart, ClaimFinish and checkStatus
-	mu      sync.Mutex // guards problem
-	problem string
-	removed bool // a 401 was seen and the start-over is not through; guarded by op
+	op       sync.Mutex // serializes the start, ClaimStart, ClaimFinish and checkStatus
+	removed  bool       // a 401 was seen and the start-over is not through; guarded by op
+	tunnelUp bool       // the tunnel started and was not stopped since; guarded by op
+
+	mu      sync.Mutex // guards problem and tunnelProblem
+	problem string     // the claim's: the status call, secretd, a start-over
+	// tunnelProblem is the tunnel's, kept apart so a good status call doesn't hide it; Status
+	// shows it first.
+	tunnelProblem string
 }
 
 func NewService(store *Store, cloud *Cloud, sec *secrets.Client, tunnel Tunnel, probe func() string, now func() time.Time) *Service {
@@ -63,7 +72,8 @@ func newSecret() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// secret is the box's secret, made on first use.
+// secret is the box's secret, made on first use. Only an unclaimed or claiming box may make one:
+// the control plane holds a claimed box's secret's hash (claimedSecret is a claimed box's).
 func (s *Service) secret(ctx context.Context) (string, error) {
 	v, ok, err := s.sec.Get(ctx, secretName)
 	if err != nil {
@@ -78,14 +88,40 @@ func (s *Service) secret(ctx context.Context) (string, error) {
 	return v, s.sec.Put(ctx, secretName, v)
 }
 
+// claimedSecret is a claimed box's secret, never made anew. Secretd unreachable changes nothing
+// (false, the problem said); secretd holding none starts the box over, as a new one the owner
+// claims again (false). Call with op held.
+func (s *Service) claimedSecret(ctx context.Context) (string, bool) {
+	v, ok, err := s.sec.Get(ctx, secretName)
+	if err != nil {
+		s.setProblem("secrets unavailable")
+		return "", false
+	}
+	if ok {
+		return v, true
+	}
+	if err := s.startOver(ctx); err != nil { // the next tick finds it absent and tries again
+		slog.Error("relay: start over after a lost key", "err", err)
+		s.setProblem("couldn't start over after the box lost its key")
+		return "", false
+	}
+	slog.Warn("relay: the box's secret was gone; it started over, unclaimed")
+	s.setProblem(lostKeyProblem)
+	return "", false
+}
+
 // Run starts the tunnel when the box is claimed and checks the claim until ctx ends.
 func (s *Service) Run(ctx context.Context) {
+	s.op.Lock()
 	if id, err := s.store.Identity(ctx); err != nil {
 		slog.Error("relay: identity", "err", err)
 		s.setProblem("couldn't read the box's identity")
 	} else if id.State == Claimed {
-		s.startTunnel(ctx, id)
+		if secret, ok := s.claimedSecret(ctx); ok {
+			s.startTunnel(id, secret)
+		}
 	}
+	s.op.Unlock()
 	ticks := s.ticks
 	if ticks == nil {
 		t := time.NewTicker(statusInterval)
@@ -95,7 +131,9 @@ func (s *Service) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			s.tunnel.Stop()
+			s.op.Lock()
+			s.stopTunnel()
+			s.op.Unlock()
 			return
 		case <-ticks:
 			s.checkStatus(ctx)
@@ -103,20 +141,30 @@ func (s *Service) Run(ctx context.Context) {
 	}
 }
 
-func (s *Service) startTunnel(ctx context.Context, id Identity) {
-	secret, err := s.secret(ctx)
-	if err == nil {
-		err = s.tunnel.Start(id, secret)
-	}
-	if err != nil {
+// startTunnel starts the tunnel with the box's secret, saying so when it can't (the next tick
+// tries again). Call with op held.
+func (s *Service) startTunnel(id Identity, secret string) {
+	if err := s.tunnel.Start(id, secret); err != nil {
 		slog.Error("relay: start tunnel", "err", err)
-		s.setProblem("can't start the connection to the relay")
+		s.setTunnelProblem("can't start the connection to the relay")
+		return
 	}
+	s.tunnelUp = true
+	s.setTunnelProblem("")
 }
 
-func (s *Service) setProblem(p string) { s.mu.Lock(); s.problem = p; s.mu.Unlock() }
+// stopTunnel stops the tunnel. Call with op held.
+func (s *Service) stopTunnel() {
+	s.tunnel.Stop()
+	s.tunnelUp = false
+	s.setTunnelProblem("")
+}
 
-// checkStatus asks the control plane whether the box is still claimed. Only a 401 changes anything.
+func (s *Service) setProblem(p string)       { s.mu.Lock(); s.problem = p; s.mu.Unlock() }
+func (s *Service) setTunnelProblem(p string) { s.mu.Lock(); s.tunnelProblem = p; s.mu.Unlock() }
+
+// checkStatus asks the control plane whether the box is still claimed, and starts the tunnel
+// again if it isn't running. Only a 401, or secretd holding no secret, changes the claim.
 func (s *Service) checkStatus(ctx context.Context) {
 	s.op.Lock()
 	defer s.op.Unlock()
@@ -128,28 +176,25 @@ func (s *Service) checkStatus(ctx context.Context) {
 		s.finishStartOver(ctx)
 		return
 	}
-	secret, ok, err := s.sec.Get(ctx, secretName)
-	if err != nil {
-		s.setProblem("secrets unavailable")
-		return
-	}
+	secret, ok := s.claimedSecret(ctx)
 	if !ok {
-		// Never mint a new secret for a claimed box: the control plane holds the old one's hash.
-		s.setProblem("box secret missing")
 		return
 	}
 	claimed, err := s.cloud.Status(ctx, id.BoxID, secret)
-	if err != nil {
+	switch {
+	case err != nil:
 		slog.Warn("relay: status check failed", "err", err)
 		s.setProblem("can't reach the service")
+	case !claimed:
+		s.removed = true
+		s.finishStartOver(ctx)
 		return
+	default:
+		s.setProblem("")
 	}
-	s.setProblem("")
-	if claimed {
-		return
+	if !s.tunnelUp {
+		s.startTunnel(id, secret)
 	}
-	s.removed = true
-	s.finishStartOver(ctx)
 }
 
 func (s *Service) finishStartOver(ctx context.Context) {
@@ -162,9 +207,10 @@ func (s *Service) finishStartOver(ctx context.Context) {
 }
 
 // startOver makes the box a new one. Every step is idempotent and Reset (which leaves Claimed)
-// comes last, so a failure leaves the box Claimed and the next tick sees the 401 again.
+// comes last, so a failure leaves the box Claimed and the next tick tries again. Call with op
+// held.
 func (s *Service) startOver(ctx context.Context) error {
-	s.tunnel.Stop()
+	s.stopTunnel()
 	if err := s.tunnel.Forget(); err != nil {
 		return err
 	}
@@ -174,9 +220,11 @@ func (s *Service) startOver(ctx context.Context) error {
 	if err := s.store.Reset(ctx); err != nil {
 		return err
 	}
-	s.removed = false // unclaimed from here on; a failed mint is ClaimStart's to redo
-	_, err := s.secret(ctx)
-	return err
+	s.removed = false                        // unclaimed from here on
+	if _, err := s.secret(ctx); err != nil { // a failed mint is ClaimStart's to redo
+		slog.Warn("relay: make the new box's secret", "err", err)
+	}
+	return nil
 }
 
 // ClaimStart has the control plane mail a code to email.
@@ -230,7 +278,7 @@ func (s *Service) ClaimFinish(ctx context.Context, code string) error {
 	}
 	s.removed = false
 	s.setProblem("")
-	s.startTunnel(ctx, id)
+	s.startTunnel(id, secret)
 	return nil
 }
 
@@ -242,6 +290,9 @@ func (s *Service) Status() Status {
 	}
 	s.mu.Lock()
 	st := Status{State: id.State, Problem: s.problem}
+	if s.tunnelProblem != "" {
+		st.Problem = s.tunnelProblem
+	}
 	s.mu.Unlock()
 	if id.State == Claimed {
 		st.Name, st.Address = id.Name, id.Name+"."+id.BoxDomain
