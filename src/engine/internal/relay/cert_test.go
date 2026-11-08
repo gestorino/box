@@ -14,10 +14,11 @@ import (
 func TestCertIsLetsEncryptByTLSALPNOnly(t *testing.T) {
 	state := t.TempDir()
 	dir := filepath.Join(state, "certmagic")
-	c, err := NewCert(state, "owner@example.org", "127.0.0.1:8443")
+	c, err := NewCert(state, "", "127.0.0.1:8443")
 	if err != nil {
 		t.Fatal(err)
 	}
+	c.use("owner@example.org")
 	a := c.acme
 	if !a.DisableHTTPChallenge || a.DisableTLSALPNChallenge || a.DNS01Solver != nil {
 		t.Fatalf("challenges: http disabled %v, tls-alpn disabled %v, dns %v; want TLS-ALPN-01 only",
@@ -60,16 +61,28 @@ func TestCertRefusesAnEmptyOrRelativeStateDir(t *testing.T) {
 }
 
 func TestCertWithoutOneIsNotReady(t *testing.T) {
-	c, err := NewCert(t.TempDir(), "owner@example.org", "127.0.0.1:8443")
+	c, err := NewCert(t.TempDir(), "", "127.0.0.1:8443")
 	if err != nil {
 		t.Fatal(err)
 	}
+	conn, peer := net.Pipe() // certmagic reads the hello's connection, as a handshake has one
+	t.Cleanup(func() { conn.Close(); peer.Close() })
+	hello := &tls.ClientHelloInfo{ServerName: "b1.box.test", Conn: conn}
+	// Before anything is managed there is no certmagic at all: no certificate, no challenge.
+	if c.Ready() {
+		t.Fatal("Ready before anything was managed")
+	}
+	if _, err := c.ServerCert(hello); err == nil {
+		t.Fatal("ServerCert answered before anything was managed")
+	}
+	if cfg, ok := c.ALPNChallenge(&tls.ClientHelloInfo{SupportedProtos: []string{"acme-tls/1"}}); ok || cfg != nil {
+		t.Fatalf("ALPNChallenge before anything was managed = %v, %v", cfg, ok)
+	}
+	c.use("owner@example.org")
 	if c.Ready() {
 		t.Fatal("Ready with nothing managed")
 	}
-	conn, peer := net.Pipe() // certmagic reads the hello's connection, as a handshake has one
-	t.Cleanup(func() { conn.Close(); peer.Close() })
-	if _, err := c.ServerCert(&tls.ClientHelloInfo{ServerName: "b1.box.test", Conn: conn}); err == nil {
+	if _, err := c.ServerCert(hello); err == nil {
 		t.Fatal("ServerCert answered a name it holds nothing for")
 	}
 	cfg, ok := c.ALPNChallenge(&tls.ClientHelloInfo{ServerName: "b1.box.test", SupportedProtos: []string{"acme-tls/1"}})
@@ -86,10 +99,11 @@ func TestCertForgetWipesItsStorage(t *testing.T) {
 	if err := os.WriteFile(sibling, []byte("db"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	c, err := NewCert(state, "owner@example.org", "127.0.0.1:8443")
+	c, err := NewCert(state, "", "127.0.0.1:8443")
 	if err != nil {
 		t.Fatal(err)
 	}
+	c.use("owner@example.org")
 	// What certmagic keeps: the account and the certificate, under its own keys.
 	for _, f := range []string{"acme/acme-v02.api.letsencrypt.org-directory/users/owner@example.org/owner.key",
 		"certificates/acme-v02.api.letsencrypt.org-directory/b1.box.test/b1.box.test.key"} {
@@ -107,6 +121,9 @@ func TestCertForgetWipesItsStorage(t *testing.T) {
 	if len(left) != 0 {
 		t.Fatalf("after Forget, %s holds %v", dir, left)
 	}
+	if c.cfg != nil || c.cache != nil {
+		t.Fatal("after Forget certmagic is still configured: the next claim must start from nothing")
+	}
 	if b, err := os.ReadFile(sibling); err != nil || string(b) != "db" {
 		t.Fatalf("Forget touched the state directory's relay.db: %q, %v", b, err)
 	}
@@ -118,5 +135,33 @@ func TestCertForgetWipesItsStorage(t *testing.T) {
 	}
 	if err := c.Forget(); err != nil {
 		t.Fatalf("Forget with certmagic's directory gone: %v", err)
+	}
+}
+
+func TestCertFollowsTheAccountsEmail(t *testing.T) {
+	c, err := NewCert(t.TempDir(), "", "127.0.0.1:8443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.use("owner@example.org")
+	first := c.cache
+	c.use("owner@example.org")
+	if c.cache != first {
+		t.Fatal("the same email built certmagic again")
+	}
+	c.use("other@example.org")
+	if c.acme.Email != "other@example.org" || c.cache == first {
+		t.Fatalf("another email: issuer email %q, cache replaced %v; want a new certmagic for it", c.acme.Email, c.cache != first)
+	}
+}
+
+func TestCertAFixedEmailIsTheContact(t *testing.T) {
+	c, err := NewCert(t.TempDir(), "acme@example.org", "127.0.0.1:8443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.use("owner@example.org")
+	if c.acme.Email != "acme@example.org" {
+		t.Fatalf("issuer email %q, want the fixed acme@example.org", c.acme.Email)
 	}
 }

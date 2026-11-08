@@ -14,7 +14,7 @@ func fakeCloud(t *testing.T, h http.HandlerFunc) *Cloud {
 	t.Helper()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return NewCloud(srv.URL, "1.2.3")
+	return NewCloud(srv.URL, "1.2.3", "example.net")
 }
 
 func reply(w http.ResponseWriter, code int, body string) {
@@ -108,7 +108,7 @@ func TestErrorsNeverCarryTheSecretOrEmail(t *testing.T) {
 	if err == nil || strings.Contains(err.Error(), "s3cret") {
 		t.Fatalf("got %v", err)
 	}
-	dead := NewCloud("http://127.0.0.1:1", "1")
+	dead := NewCloud("http://127.0.0.1:1", "1", "example.net")
 	err = dead.ClaimStart(context.Background(), "a@b.c")
 	if err == nil || strings.Contains(err.Error(), "a@b.c") {
 		t.Fatalf("got %v", err)
@@ -151,5 +151,37 @@ func TestStatus(t *testing.T) {
 	ok, err = c.Status(context.Background(), "box-1", "s3cret")
 	if err == nil || ok {
 		t.Fatalf("500: %v %v", ok, err)
+	}
+}
+
+func TestClaimFinishRefusesAnAnswerOutsideTheBoxDomain(t *testing.T) {
+	// The box hands its secret to the relay it is told of: only its own domain's relay will do.
+	for _, body := range []string{
+		`{"name":"abcdefghij","box_domain":"example.org","relay":"relay.example.org:7000"}`,
+		`{"name":"abcdefghij","box_domain":"example.net","relay":"relay.example.org:7000"}`,
+		`{"name":"abcdefghij","box_domain":"example.net","relay":"relay.example.net:7001"}`,
+		`{"name":"","box_domain":"example.net","relay":"relay.example.net:7000"}`,
+		`{"name":"a.b","box_domain":"example.net","relay":"relay.example.net:7000"}`,
+		`{"name":"A-b","box_domain":"example.net","relay":"relay.example.net:7000"}`,
+		`{"name":"-ab","box_domain":"example.net","relay":"relay.example.net:7000"}`,
+	} {
+		c := fakeCloud(t, func(w http.ResponseWriter, r *http.Request) { reply(w, 200, body) })
+		if res, err := c.ClaimFinish(context.Background(), "a@b.c", "1", "b", "s3cret"); err == nil {
+			t.Errorf("%s: accepted as %+v", body, res)
+		}
+	}
+}
+
+func TestAnUnreachableControlPlaneIsErrUnreachable(t *testing.T) {
+	dead := NewCloud("http://127.0.0.1:1", "1", "example.net")
+	if err := dead.ClaimStart(context.Background(), "a@b.c"); !errors.Is(err, ErrUnreachable) {
+		t.Fatalf("claim start: %v", err)
+	}
+	if _, err := dead.ClaimFinish(context.Background(), "a@b.c", "1", "b", "s"); !errors.Is(err, ErrUnreachable) {
+		t.Fatalf("claim finish: %v", err)
+	}
+	c := fakeCloud(t, func(w http.ResponseWriter, r *http.Request) { reply(w, 500, `{}`) })
+	if err := c.ClaimStart(context.Background(), "a@b.c"); err == nil || errors.Is(err, ErrUnreachable) {
+		t.Fatalf("a 500 is an answer, not unreachable: %v", err)
 	}
 }

@@ -37,10 +37,10 @@ type Identity struct {
 
 // Device is a device certificate the box issued.
 type Device struct {
-	Serial  string
-	Label   string
-	Issued  time.Time
-	Expires time.Time
+	Serial  string    `json:"serial"`
+	Label   string    `json:"label"`
+	Issued  time.Time `json:"issued"`
+	Expires time.Time `json:"expires"`
 }
 
 // Store is relay.db: the box's identity (one row) and the device certificates it issued.

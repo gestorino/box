@@ -146,7 +146,7 @@ func (c *CA) Issue(label string) (serial string, p12 []byte, password string, ex
 		return "", nil, "", time.Time{}, err
 	}
 	t := c.now()
-	expires = t.AddDate(1, 0, 0)
+	expires = t.AddDate(1, 0, 0).Truncate(time.Second) // as the certificate holds it
 	tmpl := &x509.Certificate{
 		SerialNumber:          sn,
 		Subject:               pkix.Name{CommonName: label},

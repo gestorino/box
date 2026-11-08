@@ -17,6 +17,9 @@ var (
 	ErrExpiredCode    = errors.New("expired code")
 	ErrNoCode         = errors.New("no code")
 	ErrAlreadyClaimed = errors.New("box already claimed")
+
+	// ErrUnreachable is no answer from the control plane at all: no network, no route, no reply.
+	ErrUnreachable = errors.New("control plane unreachable")
 )
 
 // ClaimResult is what the control plane answers a finished claim with.
@@ -27,15 +30,18 @@ type ClaimResult struct {
 // Cloud is the client of the control plane's /box/v1 contract. Its errors never carry the email, the
 // code or the box secret.
 type Cloud struct {
-	base    string
-	version string
-	hc      *http.Client
+	base      string
+	version   string
+	boxDomain string
+	hc        *http.Client
 }
 
 // NewCloud makes a client of the control plane at base (https://<site-domain>); version is the
-// box's, sent with every status call.
-func NewCloud(base, version string) *Cloud {
-	return &Cloud{base: strings.TrimRight(base, "/"), version: version, hc: &http.Client{Timeout: 15 * time.Second}}
+// box's, sent with every status call; boxDomain is the only domain a claim may put the box under
+// (the box's secret goes to relay.<box-domain>, so the control plane can't send it elsewhere).
+func NewCloud(base, version, boxDomain string) *Cloud {
+	return &Cloud{base: strings.TrimRight(base, "/"), version: version, boxDomain: boxDomain,
+		hc: &http.Client{Timeout: 15 * time.Second}}
 }
 
 // do sends one request and returns the status and the body's error string (if any). A transport
@@ -66,7 +72,7 @@ func (c *Cloud) do(ctx context.Context, method, path string, body any, hdr map[s
 		if ctx.Err() != nil {
 			return 0, "", ctx.Err()
 		}
-		return 0, "", errors.New("cloud: the control plane is unreachable")
+		return 0, "", ErrUnreachable
 	}
 	defer resp.Body.Close()
 	var reply struct {
@@ -109,6 +115,9 @@ func (c *Cloud) ClaimFinish(ctx context.Context, email, code, boxID, secret stri
 	}
 	switch {
 	case st == http.StatusOK:
+		if !isLabel(out.Name) || out.BoxDomain != c.boxDomain || out.Relay != "relay."+c.boxDomain+":7000" {
+			return ClaimResult{}, errors.New("cloud: claim finish answered a name or relay outside the box domain")
+		}
 		return ClaimResult{Name: out.Name, BoxDomain: out.BoxDomain, Relay: out.Relay}, nil
 	case st == http.StatusConflict:
 		return ClaimResult{}, ErrAlreadyClaimed
@@ -147,4 +156,18 @@ func (c *Cloud) Status(ctx context.Context, boxID, secret string) (bool, error) 
 		return false, nil
 	}
 	return false, fmt.Errorf("cloud: status answered %d", st)
+}
+
+// isLabel says name is one DNS label as the control plane makes them: lowercase letters, digits and
+// inner hyphens, at most 63.
+func isLabel(name string) bool {
+	if name == "" || len(name) > 63 || name[0] == '-' || name[len(name)-1] == '-' {
+		return false
+	}
+	for _, r := range name {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+			return false
+		}
+	}
+	return true
 }

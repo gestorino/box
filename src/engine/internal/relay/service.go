@@ -27,11 +27,11 @@ type Tunnel interface {
 
 // Status is what the console shows of the claim.
 type Status struct {
-	State   State
-	Name    string
-	Address string // <name>.<box-domain>, when claimed
-	Waiting string // "", "relay" or "certificate"
-	Problem string
+	State   State  `json:"state"`
+	Name    string `json:"name"`
+	Address string `json:"address"` // <name>.<box-domain>, when claimed
+	Waiting string `json:"waiting"` // "", "relay" or "certificate"
+	Problem string `json:"problem"`
 }
 
 // Service is the box's claim: the identity, the secret, the tunnel while claimed, and the
@@ -200,7 +200,10 @@ func (s *Service) ClaimStart(ctx context.Context, email string) error {
 	return s.store.SetIdentity(ctx, id)
 }
 
-var errNotClaiming = errors.New("no claim in progress")
+var (
+	errNotClaiming = errors.New("no claim in progress")
+	errNotClaimed  = errors.New("box not claimed")
+)
 
 // ClaimFinish claims the box with the mailed code and starts the tunnel.
 func (s *Service) ClaimFinish(ctx context.Context, code string) error {
@@ -245,4 +248,27 @@ func (s *Service) Status() Status {
 		st.Waiting = s.probe()
 	}
 	return st
+}
+
+// AddDevice records a device certificate the CA issued, while the box is claimed (a box starting
+// over drops its devices, so none is added past that).
+func (s *Service) AddDevice(ctx context.Context, serial, label string, expires time.Time) error {
+	s.op.Lock()
+	defer s.op.Unlock()
+	id, err := s.store.Identity(ctx)
+	if err != nil {
+		return err
+	}
+	if id.State != Claimed {
+		return errNotClaimed
+	}
+	return s.store.AddDevice(ctx, Device{Serial: serial, Label: label, Issued: s.now(), Expires: expires})
+}
+
+// Devices are the device certificates the box issued, oldest first.
+func (s *Service) Devices(ctx context.Context) ([]Device, error) { return s.store.Devices(ctx) }
+
+// RemoveDevice drops a device certificate from the active list. Idempotent.
+func (s *Service) RemoveDevice(ctx context.Context, serial string) error {
+	return s.store.RemoveDevice(ctx, serial)
 }
