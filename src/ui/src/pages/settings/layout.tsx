@@ -10,6 +10,7 @@ const TABS = [
   { to: 'wifi', label: 'Wi-Fi' },
   { to: 'sim', label: 'SIM' },
   { to: 'ai', label: 'AI' },
+  { to: 'remote', label: 'Remote access' },
 ]
 
 /** The pending change as the layout last saw it, and a way to re-read it right after a panel
@@ -25,7 +26,7 @@ export function SettingsLayout() {
   }
   return (
     <div className="space-y-6">
-      <PageHeader title="Settings" description="The box's network, Wi-Fi and the SIM card, and the AI key its runs use." />
+      <PageHeader title="Settings" description="The box's network, Wi-Fi and the SIM card, the AI key its runs use, and remote access." />
       <nav aria-label="Settings sections" className="flex gap-1 border-b">
         {TABS.map((t) => (
           <NavLink

@@ -212,7 +212,7 @@ docs/superpowers/  current design docs (specs/); implementation plans (plans/) a
   working keeps its row; each row has a status circle (green, amber, grey). Each daemon's
   `POST /<name>/remove {delete_data, force}` logs out (424 when it can't reach the service, unless
   `force`) and keeps or wipes everything it stored, in any state. Each connector's settings are a
-  panel on its page; Settings is Wi-Fi, SIM and the AI key only. The two agent daemons, claudd and codexd, are units hostd starts
+  panel on its page; Settings is Wi-Fi, SIM, the AI key and remote access. The two agent daemons, claudd and codexd, are units hostd starts
   and stops too (below), but they are not connectors: no row, no setup page; the owner signs them in under Settings → AI. Design:
   `docs/superpowers/specs/2026-10-28-connectors-design.md`; verified setup and health:
   `docs/superpowers/specs/2026-10-28-connectors-write-and-verify-design.md`.

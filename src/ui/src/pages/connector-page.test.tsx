@@ -123,7 +123,7 @@ describe('Settings', () => {
   it('holds Wi-Fi, SIM and the AI key, no connector', async () => {
     open('/settings/wifi', { 'GET /api/v1/network/wifi': { status: 503 }, 'GET /api/v1/network/checkpoints': { body: { pending: null } } })
     const tabs = (await screen.findByRole('navigation', { name: 'Settings sections' })).querySelectorAll('a')
-    expect(Array.from(tabs).map((a) => a.textContent)).toEqual(['Wi-Fi', 'SIM', 'AI'])
+    expect(Array.from(tabs).map((a) => a.textContent)).toEqual(['Wi-Fi', 'SIM', 'AI', 'Remote access'])
   })
 
   it.each(['/settings/email', '/settings/phone', '/settings/whatsapp', '/settings/telegram'])('%s is gone', async (path) => {

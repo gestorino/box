@@ -29,6 +29,7 @@ import { ErrandsPage } from '@/pages/errands'
 import { AccountRunLogPage, ErrandRunLogPage } from '@/pages/run-log'
 import { ErrandRunPage } from '@/pages/errand-run'
 import { AiSettings } from '@/pages/settings/ai'
+import { RemoteSettings } from '@/pages/settings/remote'
 import { SettingsLayout } from '@/pages/settings/layout'
 import { SimSettings } from '@/pages/settings/sim'
 import { WifiSettings } from '@/pages/settings/wifi'
@@ -87,6 +88,7 @@ export const routes: RouteObject[] = [
               { path: 'wifi', element: <WifiSettings /> },
               { path: 'sim', element: <SimSettings /> },
               { path: 'ai', element: <AiSettings /> },
+              { path: 'remote', element: <RemoteSettings /> },
             ],
           },
           { path: 'style-guide', element: <StyleGuide />, ...page('Style guide') },
