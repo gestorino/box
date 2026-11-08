@@ -53,7 +53,7 @@ removed in the account, the console says it is not connected within 10 minutes.
   `concierge-relay-clients`, of which the engine's user is a member). The engine forwards
   `/api/v1/relay/*` to it (`api.SocketProxy`), behind the console login.
 - **A secretd caller**, namespace `relay` (`-secrets-socket`, required): `box-secret` and
-  `device-ca-key`. secretd down: claiming and issuing answer 502 "secrets unavailable"; a claimed
+  `device-ca` (the CA key and its certificate, one value). secretd down: claiming and issuing answer 502 "secrets unavailable"; a claimed
   box whose secret secretd can't give doesn't connect, and says so.
 - **Network:** it alone of the box's daemons talks to the control plane and the relay (outbound
   HTTPS and TCP 7000), and listens on `127.0.0.1:8443`, nothing else.
