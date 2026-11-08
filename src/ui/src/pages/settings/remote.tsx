@@ -33,8 +33,14 @@ export function RemoteSettings() {
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">Reach the console from your phone or computer, away from home, with a certificate only you hold.</p>
-      {status.error && !s && <p role="alert" className="text-sm text-destructive">{message(status.error)}</p>}
+      {/* A failed poll keeps the last answer on screen: say it is the last one, not the box's now. */}
+      {status.error && (
+        <p role="alert" className="text-sm text-destructive">
+          {s ? `Couldn't refresh: ${message(status.error)}. Showing the last state the box reported.` : message(status.error)}
+        </p>
+      )}
       {!s && !status.error && <Skeleton className="h-32 w-full" />}
+      {s && s.state !== 'claimed' && s.problem && <Problem text={s.problem} />}
       {(s?.state === 'unclaimed' || (s?.state === 'claiming' && restart)) && (
         <EmailStep email={email} setEmail={setEmail} onSent={() => { setRestart(false); status.refresh() }} />
       )}
@@ -134,13 +140,18 @@ function ClaimedCard({ s }: { s: RelayStatus }) {
         <p role="status" className={`inline-flex items-center gap-1.5 text-sm ${tone}`}>
           <Icon aria-hidden className="size-4" />{words}
         </p>
-        {s.problem && (
-          <p className="flex items-center gap-1.5 text-sm text-status-failed-foreground">
-            <CircleAlert aria-hidden className="size-4" />{s.problem}
-          </p>
-        )}
+        {s.problem && <Problem text={s.problem} />}
       </CardContent>
     </Card>
+  )
+}
+
+/** Why remote access is not working, in the box's words. */
+function Problem({ text }: { text: string }) {
+  return (
+    <p className="flex items-center gap-1.5 text-sm text-status-failed-foreground">
+      <CircleAlert aria-hidden className="size-4" />{text}
+    </p>
   )
 }
 
@@ -153,6 +164,7 @@ function Devices() {
   const [label, setLabel] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
+  const [revokeError, setRevokeError] = useState<string>()
   const [issued, setIssued] = useState<{ label: string; device: IssuedDevice; url: string }>()
   const [revoking, setRevoking] = useState<Device>()
 
@@ -178,13 +190,13 @@ function Devices() {
   const revoke = async () => {
     if (!revoking) return
     setBusy(true)
-    setError(undefined)
+    setRevokeError(undefined)
     try {
       await revokeDevice(revoking.serial)
       setRevoking(undefined)
       devices.refresh()
     } catch (err) {
-      setError(message(err))
+      setRevokeError(message(err)) // in the dialog, which stays open over the page
     } finally {
       setBusy(false)
     }
@@ -222,6 +234,11 @@ function Devices() {
           </div>
         )}
         {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+        {devices.error && (
+          <p role="alert" className="text-sm text-destructive">
+            {devices.data ? `Couldn't refresh the devices: ${message(devices.error)}. Showing the last list.` : message(devices.error)}
+          </p>
+        )}
         {devices.data && devices.data.length === 0 && <p className="text-sm text-muted-foreground">No devices yet</p>}
         {devices.data && devices.data.length > 0 && (
           <ul className="divide-y">
@@ -231,7 +248,7 @@ function Devices() {
                   <p className="text-sm font-medium">{d.label}</p>
                   <p className="text-xs text-muted-foreground">Issued {day(d.issued)} · expires {day(d.expires)}</p>
                 </div>
-                <Button size="sm" variant="outline" onClick={() => { setError(undefined); setRevoking(d) }}>Revoke</Button>
+                <Button size="sm" variant="outline" onClick={() => { setRevokeError(undefined); setRevoking(d) }}>Revoke</Button>
               </li>
             ))}
           </ul>
@@ -243,6 +260,7 @@ function Devices() {
             <DialogTitle>Revoke {revoking?.label}?</DialogTitle>
             <DialogDescription>That device can no longer reach this box. Its connections close now.</DialogDescription>
           </DialogHeader>
+          {revokeError && <p role="alert" className="text-sm text-destructive">{revokeError}</p>}
           <DialogFooter>
             <Button variant="outline" disabled={busy} onClick={() => setRevoking(undefined)}>Keep it</Button>
             <Button variant="destructive" disabled={busy} onClick={revoke}>Revoke</Button>

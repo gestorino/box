@@ -1,8 +1,9 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { RemoteSettings } from '@/pages/settings/remote'
+import { POLL_MS } from '@/lib/relay'
 import { stubFetch } from '@/test/fetch'
 
 const S = 'GET /api/v1/relay/status'
@@ -106,5 +107,46 @@ describe('Remote access', () => {
     await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Revoke' }))
     await waitFor(() => expect(calls.some((c) => c.key === REVOKE)).toBe(true))
     expect(await screen.findByText('No devices yet')).toBeInTheDocument()
+  })
+  it('a failed poll after a good one says the state shown is the last one', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      stubFetch({
+        [S]: [st({ state: 'claimed', address: 'a.b' }), { status: 502, body: { error: 'remote access failed' } }],
+        [DEVS]: [{ body: [] }, 'network-error'], [ENGINE]: engine(false),
+      })
+      show()
+      expect(await screen.findByText('Connected as a.b')).toBeInTheDocument()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      await act(() => vi.advanceTimersByTimeAsync(POLL_MS + 100))
+      expect(await screen.findByText("Couldn't refresh: remote access failed. Showing the last state the box reported.")).toBeInTheDocument()
+      expect(screen.getByText('Connected as a.b')).toBeInTheDocument()
+      expect(screen.getByText("Couldn't refresh the devices: Failed to fetch. Showing the last list.")).toBeInTheDocument()
+      expect(screen.getByText('No devices yet')).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a failed Revoke says so in the dialog, which stays open', async () => {
+    stubFetch({
+      [S]: st({ state: 'claimed', address: 'a.b' }), [ENGINE]: engine(false),
+      [DEVS]: { body: [{ serial: 'abc1', label: 'Phone', issued: '2026-11-08T00:00:00Z', expires: '2027-11-08T00:00:00Z' }] },
+      [REVOKE]: { status: 502, body: { error: 'remote access failed' } },
+    })
+    show()
+    await userEvent.click(await screen.findByRole('button', { name: 'Revoke' }))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Revoke' }))
+    expect(await within(dialog).findByText('remote access failed')).toBeInTheDocument()
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('unclaimed: says why when the box started over', async () => {
+    const lost = 'This box lost its key: claim it again, and remove its old entry in your account'
+    stubFetch({ [S]: st({ problem: lost }), [ENGINE]: engine(false) })
+    show()
+    expect(await screen.findByText(lost)).toBeInTheDocument()
+    expect(screen.getByText('Reach this box from anywhere')).toBeInTheDocument()
   })
 })
