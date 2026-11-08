@@ -24,8 +24,8 @@ const (
 	Claimed   State = "claimed"
 )
 
-// Identity is who the box is to the service. Email is the account's, kept after the claim (the ACME
-// contact, and "claimed by" in the console); Name, BoxDomain and Relay are set once claimed.
+// Identity is who the box is to the service. Email is the account's, the claim's (sent with its
+// start and its finish); Name, BoxDomain and Relay are set once claimed.
 type Identity struct {
 	BoxID     string
 	State     State

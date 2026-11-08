@@ -14,18 +14,22 @@ import (
 func TestCertIsLetsEncryptByTLSALPNOnly(t *testing.T) {
 	state := t.TempDir()
 	dir := filepath.Join(state, "certmagic")
-	c, err := NewCert(state, "", "127.0.0.1:8443")
+	c, err := NewCert(state, "127.0.0.1:8443")
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.use("owner@example.org")
+	c.use()
 	a := c.acme
 	if !a.DisableHTTPChallenge || a.DisableTLSALPNChallenge || a.DNS01Solver != nil {
 		t.Fatalf("challenges: http disabled %v, tls-alpn disabled %v, dns %v; want TLS-ALPN-01 only",
 			a.DisableHTTPChallenge, a.DisableTLSALPNChallenge, a.DNS01Solver)
 	}
-	if a.CA != certmagic.LetsEncryptProductionCA || !a.Agreed || a.Email != "owner@example.org" {
-		t.Fatalf("issuer: CA %q, agreed %v, email %q", a.CA, a.Agreed, a.Email)
+	if a.CA != certmagic.LetsEncryptProductionCA || !a.Agreed {
+		t.Fatalf("issuer: CA %q, agreed %v", a.CA, a.Agreed)
+	}
+	// No ACME contact: the owner's email would be in certmagic's logs and at Let's Encrypt.
+	if a.Email != "" || certmagic.DefaultACME.Email != "" {
+		t.Fatalf("ACME contact %q (default %q), want none", a.Email, certmagic.DefaultACME.Email)
 	}
 	// certmagic's challenge listener is the front's own address: it finds the port held and
 	// binds nothing, never 443.
@@ -47,21 +51,21 @@ func TestCertIsLetsEncryptByTLSALPNOnly(t *testing.T) {
 }
 
 func TestCertRefusesABadFront(t *testing.T) {
-	if _, err := NewCert(t.TempDir(), "owner@example.org", "8443"); err == nil {
+	if _, err := NewCert(t.TempDir(), "8443"); err == nil {
 		t.Fatal("NewCert with a front without a host: want an error")
 	}
 }
 
 func TestCertRefusesAnEmptyOrRelativeStateDir(t *testing.T) {
 	for _, dir := range []string{"", "state", "./state"} {
-		if _, err := NewCert(dir, "owner@example.org", "127.0.0.1:8443"); err == nil {
+		if _, err := NewCert(dir, "127.0.0.1:8443"); err == nil {
 			t.Errorf("NewCert(%q): want refused: certmagic would write keys relative to the working directory", dir)
 		}
 	}
 }
 
 func TestCertWithoutOneIsNotReady(t *testing.T) {
-	c, err := NewCert(t.TempDir(), "", "127.0.0.1:8443")
+	c, err := NewCert(t.TempDir(), "127.0.0.1:8443")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +82,7 @@ func TestCertWithoutOneIsNotReady(t *testing.T) {
 	if cfg, ok := c.ALPNChallenge(&tls.ClientHelloInfo{SupportedProtos: []string{"acme-tls/1"}}); ok || cfg != nil {
 		t.Fatalf("ALPNChallenge before anything was managed = %v, %v", cfg, ok)
 	}
-	c.use("owner@example.org")
+	c.use()
 	if c.Ready() {
 		t.Fatal("Ready with nothing managed")
 	}
@@ -99,13 +103,13 @@ func TestCertForgetWipesItsStorage(t *testing.T) {
 	if err := os.WriteFile(sibling, []byte("db"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	c, err := NewCert(state, "", "127.0.0.1:8443")
+	c, err := NewCert(state, "127.0.0.1:8443")
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.use("owner@example.org")
+	c.use()
 	// What certmagic keeps: the account and the certificate, under its own keys.
-	for _, f := range []string{"acme/acme-v02.api.letsencrypt.org-directory/users/owner@example.org/owner.key",
+	for _, f := range []string{"acme/acme-v02.api.letsencrypt.org-directory/users/default/default.key",
 		"certificates/acme-v02.api.letsencrypt.org-directory/b1.box.test/b1.box.test.key"} {
 		if err := c.cfg.Storage.Store(context.Background(), f, []byte("x")); err != nil {
 			t.Fatal(err)
@@ -138,30 +142,22 @@ func TestCertForgetWipesItsStorage(t *testing.T) {
 	}
 }
 
-func TestCertFollowsTheAccountsEmail(t *testing.T) {
-	c, err := NewCert(t.TempDir(), "", "127.0.0.1:8443")
+func TestCertIsBuiltOnceUntilForgotten(t *testing.T) {
+	c, err := NewCert(t.TempDir(), "127.0.0.1:8443")
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.use("owner@example.org")
+	c.use()
 	first := c.cache
-	c.use("owner@example.org")
+	c.use()
 	if c.cache != first {
-		t.Fatal("the same email built certmagic again")
+		t.Fatal("certmagic built again with nothing forgotten")
 	}
-	c.use("other@example.org")
-	if c.acme.Email != "other@example.org" || c.cache == first {
-		t.Fatalf("another email: issuer email %q, cache replaced %v; want a new certmagic for it", c.acme.Email, c.cache != first)
-	}
-}
-
-func TestCertAFixedEmailIsTheContact(t *testing.T) {
-	c, err := NewCert(t.TempDir(), "acme@example.org", "127.0.0.1:8443")
-	if err != nil {
+	if err := c.Forget(); err != nil {
 		t.Fatal(err)
 	}
-	c.use("owner@example.org")
-	if c.acme.Email != "acme@example.org" {
-		t.Fatalf("issuer email %q, want the fixed acme@example.org", c.acme.Email)
+	c.use()
+	if c.cache == first || c.cache == nil {
+		t.Fatal("after Forget, the same certmagic")
 	}
 }

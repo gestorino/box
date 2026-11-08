@@ -32,16 +32,14 @@ import (
 type fakeCert struct {
 	mu      sync.Mutex
 	managed []string
-	emails  []string
 	forgets int
 	ready   atomic.Bool
 }
 
-func (f *fakeCert) Manage(_ context.Context, email, name string) error {
+func (f *fakeCert) Manage(_ context.Context, name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.managed = append(f.managed, name)
-	f.emails = append(f.emails, email)
 	return nil
 }
 func (f *fakeCert) Ready() bool { return f.ready.Load() }
@@ -183,12 +181,6 @@ func TestTunnelThroughRelay(t *testing.T) {
 	waitFor(t, "the certificate to be managed", func() bool { return len(r.cert.names()) > 0 })
 	if got := r.cert.names(); len(got) != 1 || got[0] != "b1."+r.relay.BoxDomain {
 		t.Fatalf("managed %v, want [b1.%s]", got, r.relay.BoxDomain)
-	}
-	r.cert.mu.Lock()
-	emails := append([]string(nil), r.cert.emails...)
-	r.cert.mu.Unlock()
-	if len(emails) != 1 || emails[0] != "owner@example.org" {
-		t.Fatalf("managed with ACME emails %v, want the account's [owner@example.org]", emails)
 	}
 	r.cert.ready.Store(true)
 	if got := tun.Waiting(); got != "" {

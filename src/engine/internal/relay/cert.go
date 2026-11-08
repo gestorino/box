@@ -25,21 +25,19 @@ var _ CertManager = (*Cert)(nil)
 // which hands it to ALPNChallenge. certmagic keeps the account key, the certificate and its key
 // in its file storage in dir (<state>/certmagic, its alone), and renews it.
 //
-// certmagic's ACME contact is fixed when it is built, so it is built at the first Manage, with
-// that claim's email, built again (the old cache stopped) only when the email changes, and
-// dropped by Forget: a box claimed again starts from nothing.
+// The ACME account has no contact: the owner's email would be in certmagic's logs and its
+// errors, and at Let's Encrypt. certmagic is built at the first Manage and dropped by Forget: a
+// box claimed again starts from nothing.
 type Cert struct {
-	dir   string
-	email string // a fixed ACME contact; "" is the account's, as Manage is given it
-	host  string
-	port  int
+	dir  string
+	host string
+	port int
 
-	mu      sync.Mutex
-	contact string // the email the current certmagic was built with
-	cache   *certmagic.Cache
-	cfg     *certmagic.Config
-	acme    *certmagic.ACMEIssuer
-	name    string // the managed name, "" when none
+	mu    sync.Mutex
+	cache *certmagic.Cache
+	cfg   *certmagic.Config
+	acme  *certmagic.ACMEIssuer
+	name  string // the managed name, "" when none
 }
 
 // certmagicDir is certmagic's own directory under relayd's state directory: Forget empties it,
@@ -49,12 +47,11 @@ const certmagicDir = "certmagic"
 var errNoCert = errors.New("relay: no certificate yet")
 
 // NewCert is the front's certificate, its storage in <stateDir>/certmagic (made 0700; stateDir
-// must be absolute, or certmagic would write keys relative to the working directory). email is a
-// fixed ACME contact, or "" for the account's email each Manage is given. front is the front's
-// host:port: certmagic's challenge "server" is pointed at it, so certmagic finds the port held
+// must be absolute, or certmagic would write keys relative to the working directory). front is
+// the front's host:port: certmagic's challenge "server" is pointed at it, so certmagic finds the port held
 // and leaves the answering to the front (it binds nothing of its own, and never port 443, which
 // relayd may not bind). The front must be listening before Manage.
-func NewCert(stateDir, email, front string) (*Cert, error) {
+func NewCert(stateDir, front string) (*Cert, error) {
 	if stateDir == "" || !filepath.IsAbs(stateDir) {
 		return nil, fmt.Errorf("relay: the state directory %q must be absolute", stateDir)
 	}
@@ -70,22 +67,16 @@ func NewCert(stateDir, email, front string) (*Cert, error) {
 	if err != nil {
 		return nil, fmt.Errorf("relay: front %q: %w", front, err)
 	}
-	return &Cert{dir: dir, email: email, host: host, port: port}, nil
+	return &Cert{dir: dir, host: host, port: port}, nil
 }
 
-// use makes certmagic's config for the account's email (or the fixed one), unless the current
-// one already has that contact, and returns it.
-func (c *Cert) use(account string) *certmagic.Config {
+// use makes certmagic's config, unless it is made already, and returns it.
+func (c *Cert) use() *certmagic.Config {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	contact := c.email
-	if contact == "" {
-		contact = account
-	}
-	if c.cfg != nil && c.contact == contact {
+	if c.cfg != nil {
 		return c.cfg
 	}
-	c.drop()
 	logger := zap.New(slogCore{})
 	var cfg *certmagic.Config
 	cache := certmagic.NewCache(certmagic.CacheOptions{
@@ -98,7 +89,6 @@ func (c *Cert) use(account string) *certmagic.Config {
 	})
 	acme := certmagic.NewACMEIssuer(cfg, certmagic.ACMEIssuer{
 		CA:                      certmagic.LetsEncryptProductionCA,
-		Email:                   contact,
 		Agreed:                  true,
 		DisableHTTPChallenge:    true,
 		DisableTLSALPNChallenge: false,
@@ -107,7 +97,7 @@ func (c *Cert) use(account string) *certmagic.Config {
 		Logger:                  logger,
 	})
 	cfg.Issuers = []certmagic.Issuer{acme}
-	c.contact, c.cache, c.cfg, c.acme = contact, cache, cfg, acme
+	c.cache, c.cfg, c.acme = cache, cfg, acme
 	return cfg
 }
 
@@ -116,14 +106,13 @@ func (c *Cert) drop() {
 	if c.cache != nil {
 		c.cache.Stop()
 	}
-	c.contact, c.cache, c.cfg, c.acme, c.name = "", nil, nil, nil, ""
+	c.cache, c.cfg, c.acme, c.name = nil, nil, nil, ""
 }
 
 // Manage gets the certificate for name in the background (or loads it from storage) and keeps
-// it renewed, its ACME contact the account's email (unless a fixed one was given); obtaining
-// stops when ctx ends. Managing another name stops keeping the old one.
-func (c *Cert) Manage(ctx context.Context, email, name string) error {
-	cfg := c.use(email) // a new certmagic manages nothing yet: drop cleared the name
+// it renewed; obtaining stops when ctx ends. Managing another name stops keeping the old one.
+func (c *Cert) Manage(ctx context.Context, name string) error {
+	cfg := c.use()
 	c.mu.Lock()
 	if c.name != "" && c.name != name {
 		c.cache.RemoveManaged([]certmagic.SubjectIssuer{{Subject: c.name}})

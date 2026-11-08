@@ -15,9 +15,8 @@ import (
 
 // CertManager is the tunnel's certificate side: *Cert, or a fake where no ACME may run.
 type CertManager interface {
-	// Manage starts getting (and keeping) a certificate for name, until ctx ends; email is the
-	// account's, the ACME contact.
-	Manage(ctx context.Context, email, name string) error
+	// Manage starts getting (and keeping) a certificate for name, until ctx ends.
+	Manage(ctx context.Context, name string) error
 	// Ready says a valid certificate for the managed name is held.
 	Ready() bool
 	// Forget wipes the certificate and the ACME account. Idempotent.
@@ -77,13 +76,13 @@ func (t *FrpTunnel) Start(id Identity, secret string) error {
 			slog.Error("relay: frp client stopped", "err", err)
 		}
 	})
-	wg.Go(func() { t.certify(ctx, id.Email, id.Name+"."+id.BoxDomain) })
+	wg.Go(func() { t.certify(ctx, id.Name+"."+id.BoxDomain) })
 	return nil
 }
 
 // certify waits until the relay has the box's proxy, so the CA's check can reach the front,
 // then manages the certificate.
-func (t *FrpTunnel) certify(ctx context.Context, email, name string) {
+func (t *FrpTunnel) certify(ctx context.Context, name string) {
 	tick := time.NewTicker(500 * time.Millisecond)
 	defer tick.Stop()
 	for !t.Connected() {
@@ -93,7 +92,7 @@ func (t *FrpTunnel) certify(ctx context.Context, email, name string) {
 		case <-tick.C:
 		}
 	}
-	if err := t.cert.Manage(ctx, email, name); err != nil {
+	if err := t.cert.Manage(ctx, name); err != nil {
 		slog.Error("relay: manage the certificate", "name", name, "err", err)
 	}
 }

@@ -57,7 +57,6 @@ func run() error {
 	engine := flag.String("engine", "127.0.0.1:80", "the engine's address, where the front forwards the devices' requests")
 	front := flag.String("front", "127.0.0.1:8443", "the TLS front's address: the relay's proxy target and the ACME check's")
 	caFile := flag.String("ca-file", "/etc/ssl/certs/ca-certificates.crt", "the roots the relay's certificate is checked against")
-	acmeEmail := flag.String("acme-email", "", "the ACME account's contact (default: the account's email)")
 	flag.Parse()
 	if *dir == "" {
 		return errors.New("no state directory: run under systemd (StateDirectory) or pass -dir")
@@ -86,7 +85,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("device CA: %w", err)
 	}
-	cert, err := relay.NewCert(*dir, *acmeEmail, *front)
+	cert, err := relay.NewCert(*dir, *front)
 	if err != nil {
 		return err
 	}
