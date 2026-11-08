@@ -100,7 +100,7 @@ States: **unclaimed** → **claiming** (a code was mailed) → **claimed**.
 
 ### Devices
 
-- **The device CA** is relayd's own: an ECDSA P-256 key (`device-ca-key` in secretd) and a
+- **The device CA** is relayd's own: an ECDSA P-256 key (`device-ca` in secretd, the key and its certificate as one value) and a
   self-signed CA certificate, made at the first claim. It signs only device certificates.
 - **Issue** (Remote access tab, a label such as "Owner's iPhone"): a P-256 key and a certificate
   for one year, made on the box, given once as a `.p12` with a random password shown once (iOS
