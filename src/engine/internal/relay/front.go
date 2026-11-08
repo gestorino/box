@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -150,13 +151,15 @@ func NewFront(ca *CA, active func(serial string) bool,
 				return
 			}
 			serial := r.TLS.PeerCertificates[0].SerialNumber.Text(16)
+			// Remember first: a revoke that lands between the check and the remember would
+			// otherwise miss this connection (revoke, then CloseDevice, is the revoker's order).
+			if dc, ok := r.Context().Value(connKey{}).(*deviceConn); ok {
+				f.remember(dc, serial)
+			}
 			if !f.active(serial) {
 				w.Header().Set("Connection", "close")
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
-			}
-			if dc, ok := r.Context().Value(connKey{}).(*deviceConn); ok {
-				f.remember(dc, serial)
 			}
 			proxy.ServeHTTP(w, r)
 		}),
@@ -178,8 +181,4 @@ func NewFront(ca *CA, active func(serial string) bool,
 	return f
 }
 
-type notActive struct{}
-
-func (notActive) Error() string { return "device not active" }
-
-var errNotActive error = notActive{}
+var errNotActive = errors.New("device not active")

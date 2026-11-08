@@ -33,6 +33,9 @@ type frontRig struct {
 	engine  *httptest.Server
 	acme    atomic.Pointer[tls.Config]
 	front   *Front
+	block   atomic.Pointer[chan struct{}] // when set, the 2nd active() call waits on it
+	calls   atomic.Int32
+	entered chan struct{}
 }
 
 func selfSigned(t *testing.T) (tls.Certificate, *x509.Certificate) {
@@ -53,7 +56,7 @@ func selfSigned(t *testing.T) (tls.Certificate, *x509.Certificate) {
 
 func newFrontRig(t *testing.T) *frontRig {
 	t.Helper()
-	r := &frontRig{}
+	r := &frontRig{entered: make(chan struct{}, 1)}
 	ca, err := LoadCA(context.Background(), secretstest.Start(t, "relay"), time.Now)
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +88,15 @@ func newFrontRig(t *testing.T) *frontRig {
 	cert, leaf := selfSigned(t)
 	r.server = leaf
 	srv := NewFront(ca,
-		func(serial string) bool { _, ok := r.allowed.Load(serial); return ok },
+		func(serial string) bool {
+			if ch := r.block.Load(); ch != nil && r.calls.Add(1) == 2 { // 1st is the handshake
+				r.entered <- struct{}{}
+				<-*ch
+				return true
+			}
+			_, ok := r.allowed.Load(serial)
+			return ok
+		},
 		func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &cert, nil },
 		func(h *tls.ClientHelloInfo) (*tls.Config, bool) { c := r.acme.Load(); return c, c != nil },
 		strings.TrimPrefix(r.engine.URL, "http://"))
@@ -296,5 +307,31 @@ func TestFrontACMEConfigCannotCarryTraffic(t *testing.T) {
 		if rerr == nil || strings.Contains(string(b[:n]), "HTTP/1.1") {
 			t.Fatalf("an HTTP response without a client certificate: %q %v", b[:n], rerr)
 		}
+	}
+}
+
+func TestFrontRevokeDuringARequestStillClosesItsWebSocket(t *testing.T) {
+	r := newFrontRig(t)
+	cert, serial := r.device(t, r.ca)
+	release := make(chan struct{})
+	r.block.Store(&release)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		ws, _, err := websocket.Dial(ctx, "wss://"+r.addr+"/ws", &websocket.DialOptions{HTTPClient: r.client(cert)})
+		if err == nil {
+			defer ws.CloseNow()
+			_, _, err = ws.Read(ctx) // the echo server sends nothing: only a close ends this
+		}
+		done <- err
+	}()
+	<-r.entered // the request is inside active(), already remembered
+	r.allowed.Delete(serial)
+	r.front.CloseDevice(serial)
+	close(release) // active() now answers true, as a check that raced the revoke would have
+	err := <-done
+	if err == nil || ctx.Err() != nil {
+		t.Fatalf("a revoked device's WebSocket stayed open: %v", err)
 	}
 }
