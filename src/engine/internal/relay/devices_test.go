@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/x509"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -88,5 +89,54 @@ func TestLoadCATwiceIsTheSameCA(t *testing.T) {
 func TestLoadCAWithSecretdDownFails(t *testing.T) {
 	if _, err := LoadCA(context.Background(), secretstest.Down(t), time.Now); err == nil {
 		t.Fatal("expected an error")
+	}
+}
+
+func TestLoadCAAbsentStoresOnce(t *testing.T) {
+	sec := secretstest.Start(t, "relay")
+	if _, err := LoadCA(context.Background(), sec, time.Now); err != nil {
+		t.Fatal(err)
+	}
+	v1, ok, _ := sec.Get(context.Background(), caName)
+	if !ok {
+		t.Fatal("not stored")
+	}
+	if _, err := LoadCA(context.Background(), sec, time.Now); err != nil {
+		t.Fatal(err)
+	}
+	if v2, _, _ := sec.Get(context.Background(), caName); v1 != v2 {
+		t.Fatal("a reload rewrote the stored CA")
+	}
+}
+
+func TestLoadCARefusesBadStoredValue(t *testing.T) {
+	ctx := context.Background()
+	other := secretstest.Start(t, "relay")
+	if _, err := LoadCA(ctx, other, time.Now); err != nil {
+		t.Fatal(err)
+	}
+	ov, _, _ := other.Get(ctx, caName)
+	var o storedCA
+	if err := json.Unmarshal([]byte(ov), &o); err != nil {
+		t.Fatal(err)
+	}
+	sec := secretstest.Start(t, "relay")
+	if _, err := LoadCA(ctx, sec, time.Now); err != nil {
+		t.Fatal(err)
+	}
+	mv, _, _ := sec.Get(ctx, caName)
+	var m storedCA
+	json.Unmarshal([]byte(mv), &m)
+	mixed, _ := json.Marshal(storedCA{Key: m.Key, Cert: o.Cert})
+	for name, bad := range map[string]string{"corrupt": "not json", "mismatched": string(mixed)} {
+		if err := sec.Put(ctx, caName, bad); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadCA(ctx, sec, time.Now); err == nil {
+			t.Fatalf("%s: expected an error", name)
+		}
+		if got, _, _ := sec.Get(ctx, caName); got != bad {
+			t.Fatalf("%s: stored value was changed", name)
+		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"time"
@@ -18,13 +19,19 @@ import (
 )
 
 const (
-	caKeyName  = "device-ca-key"  // PKCS#8 DER, base64
-	caCertName = "device-ca-cert" // DER, base64 (public, kept beside the key so a load is the same CA)
+	// caName is the whole CA in secretd, one value: {"key": PKCS#8 DER base64, "cert": DER base64}.
+	// One Put writes it, so a half-present or mismatched pair cannot exist.
+	caName = "device-ca"
 
 	// passwordAlphabet is typed by hand on a phone: no 0/O, 1/l/I look-alikes.
 	passwordAlphabet = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 	passwordLength   = 20
 )
+
+type storedCA struct {
+	Key  string `json:"key"`
+	Cert string `json:"cert"`
+}
 
 // CA is the box's own device CA: it issues the client certificates phones present to relayd.
 type CA struct {
@@ -33,18 +40,16 @@ type CA struct {
 	now  func() time.Time
 }
 
-// LoadCA reads the CA from secretd, making it (P-256, ten years) on first use.
+// LoadCA reads the CA from secretd, making it (P-256, ten years) only when it is absent. A value that
+// is unparseable or whose key does not match its certificate is an error, never replaced: that would
+// invalidate every issued device. relayd calls it once at start (a single caller; it does not lock).
 func LoadCA(ctx context.Context, sec *secrets.Client, now func() time.Time) (*CA, error) {
-	keyB64, keyOK, err := sec.Get(ctx, caKeyName)
+	v, ok, err := sec.Get(ctx, caName)
 	if err != nil {
 		return nil, err
 	}
-	certB64, certOK, err := sec.Get(ctx, caCertName)
-	if err != nil {
-		return nil, err
-	}
-	if keyOK && certOK {
-		return parseCA(keyB64, certB64, now)
+	if ok {
+		return parseCA(v, now)
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -73,11 +78,14 @@ func LoadCA(ctx context.Context, sec *secrets.Client, now func() time.Time) (*CA
 	if err != nil {
 		return nil, err
 	}
-	// The cert first: a key without its cert is retried as a fresh pair, a cert without its key never is.
-	if err := sec.Put(ctx, caCertName, base64.StdEncoding.EncodeToString(der)); err != nil {
+	val, err := json.Marshal(storedCA{
+		Key:  base64.StdEncoding.EncodeToString(keyDER),
+		Cert: base64.StdEncoding.EncodeToString(der),
+	})
+	if err != nil {
 		return nil, err
 	}
-	if err := sec.Put(ctx, caKeyName, base64.StdEncoding.EncodeToString(keyDER)); err != nil {
+	if err := sec.Put(ctx, caName, string(val)); err != nil {
 		return nil, err
 	}
 	cert, err := x509.ParseCertificate(der)
@@ -87,8 +95,12 @@ func LoadCA(ctx context.Context, sec *secrets.Client, now func() time.Time) (*CA
 	return &CA{key: key, cert: cert, now: now}, nil
 }
 
-func parseCA(keyB64, certB64 string, now func() time.Time) (*CA, error) {
-	keyDER, err := base64.StdEncoding.DecodeString(keyB64)
+func parseCA(value string, now func() time.Time) (*CA, error) {
+	var s storedCA
+	if err := json.Unmarshal([]byte(value), &s); err != nil {
+		return nil, fmt.Errorf("device CA: %w", err)
+	}
+	keyDER, err := base64.StdEncoding.DecodeString(s.Key)
 	if err != nil {
 		return nil, fmt.Errorf("device CA key: %w", err)
 	}
@@ -100,13 +112,17 @@ func parseCA(keyB64, certB64 string, now func() time.Time) (*CA, error) {
 	if !ok {
 		return nil, fmt.Errorf("device CA key: not an ECDSA key")
 	}
-	certDER, err := base64.StdEncoding.DecodeString(certB64)
+	certDER, err := base64.StdEncoding.DecodeString(s.Cert)
 	if err != nil {
 		return nil, fmt.Errorf("device CA cert: %w", err)
 	}
 	cert, err := x509.ParseCertificate(certDER)
 	if err != nil {
 		return nil, fmt.Errorf("device CA cert: %w", err)
+	}
+	pub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok || !pub.Equal(&key.PublicKey) {
+		return nil, fmt.Errorf("device CA: the key does not match the certificate")
 	}
 	return &CA{key: key, cert: cert, now: now}, nil
 }
