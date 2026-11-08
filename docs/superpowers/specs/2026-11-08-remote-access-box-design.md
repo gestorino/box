@@ -14,18 +14,18 @@ owner's email (to claim) and its version — never what it does.
 
 ## The contract with the service
 
-- **The control plane** (`https://<site-domain>`, JSON):
+- **The control plane** (`https://gestorino.com`, JSON):
   - `POST /box/v1/claim/start {email}` → `200 {}` whether or not the email has an account (a code
     is mailed when it does; 6 digits, 15 minutes, 5 tries).
   - `POST /box/v1/claim/finish {email, code, box_id, secret}` → `200 {name, box_domain, relay}`
-    (`relay` is `relay.<box-domain>:7000`); `400 {error: "wrong code" | "expired code" | "no code"}`;
+    (`relay` is `relay.gestorino.net:7000`); `400 {error: "wrong code" | "expired code" | "no code"}`;
     `409 {error: "box already claimed"}`. `secret` is 256 random bits, base64url.
   - `GET /box/v1/status` with headers `X-Box-Id`, `X-Box-Secret`, `X-Box-Version` →
     `200 {claimed: true, name}`, or `401` once the box was removed.
-- **The relay** (`relay.<box-domain>:7000`, frp v0.71.1): frpc over TLS with a certificate a
-  public CA signed for `relay.<box-domain>`; `metadatas` `box_id` and `secret`; one `https` proxy
+- **The relay** (`relay.gestorino.net:7000`, frp v0.71.1): frpc over TLS with a certificate a
+  public CA signed for `relay.gestorino.net`; `metadatas` `box_id` and `secret`; one `https` proxy
   (the relay sets its `subdomain` to the box's name); phones arrive on 443 by SNI
-  `<name>.<box-domain>`, passed through undecrypted. A box the control plane doesn't know is refused
+  `<name>.gestorino.net`, passed through undecrypted. A box the control plane doesn't know is refused
   at `Login`. Removal reaches the box only by its status call.
 - **Names** are 10 characters of `a-z2-7`, made by the control plane, never reused.
 
@@ -37,8 +37,8 @@ to. A **service of its own** does it (*my call*, the owner asked): like every da
 under its own user, with no root and no reach into the other services' data.
 
 **Success:** on the console at home the owner types their email, then the code from the mail; the
-console says "Connected as `<name>.<box-domain>`"; they issue a certificate for their phone,
-install it, and from mobile data the phone opens `https://<name>.<box-domain>` and gets the
+console says "Connected as `<name>.gestorino.net`"; they issue a certificate for their phone,
+install it, and from mobile data the phone opens `https://<name>.gestorino.net` and gets the
 console. Another phone, without a certificate, can't complete the handshake. After the box is
 removed in the account, the console says it is not connected within 10 minutes.
 
@@ -62,12 +62,12 @@ removed in the account, the console says it is not connected within 10 minutes.
 ### Three libraries, one process
 
 - **frp's client** as a Go package (`github.com/fatedier/frp/client`), not a separate frpc: it
-  dials `relay.<box-domain>:7000` over TLS, checks the relay's certificate against the system's
-  roots with `serverName = relay.<box-domain>` (without a trusted CA set, frpc doesn't verify the
+  dials `relay.gestorino.net:7000` over TLS, checks the relay's certificate against the system's
+  roots with `serverName = relay.gestorino.net` (without a trusted CA set, frpc doesn't verify the
   server, and the box secret would go to anyone in the middle; the builder confirms in frp's code),
   sends `box_id` and `secret` in `metadatas`, and registers one `https` proxy to `127.0.0.1:8443`
   (any subdomain: the control plane rewrites it to the box's name). It reconnects by itself.
-- **certmagic** (Caddy's ACME library) for the box's certificate for `<name>.<box-domain>`, by
+- **certmagic** (Caddy's ACME library) for the box's certificate for `<name>.gestorino.net`, by
   **TLS-ALPN-01 only** (port 80 isn't routed to the box): Let's Encrypt's check reaches the box
   through the relay on 443. Its storage (account key, certificate, key) under the state directory
   (*my call*: certmagic's file storage, not secretd).
@@ -90,7 +90,7 @@ States: **unclaimed** → **claiming** (a code was mailed) → **claimed**.
 3. "The code from the mail" → `POST /relay/claim/finish` → the control plane's `claim/finish`
    with `box_id` and the secret → `{name, box_domain, relay}` stored → claimed.
 4. Claimed: the frp client starts; certmagic gets the certificate; the tab shows
-   "Connected as `<name>.<box-domain>`" (or what it is waiting on: the relay, the certificate).
+   "Connected as `<name>.gestorino.net`" (or what it is waiting on: the relay, the certificate).
 5. Every 10 minutes `GET /box/v1/status` (sending the box's version). **`401`: removed** → stop the
    frp client, delete the certificate, the secret and the devices, make a new `box_id` and secret,
    back to unclaimed. **Any other failure** (no network, the control plane down): keep going as is.
