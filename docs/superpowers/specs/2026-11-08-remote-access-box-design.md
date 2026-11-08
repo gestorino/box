@@ -28,7 +28,14 @@ owner's email (to claim) and its version — never what it does.
   proxy under any other name) and the relay sets its `subdomain` to the box's name; phones arrive on 443 by SNI
   `<name>.gestorino.net`, passed through undecrypted. A box the control plane doesn't know is refused
   at `Login`. Removal reaches the box only by its status call.
-- **Names** are 10 characters of `a-z2-7`, made by the control plane, never reused.
+- **Names** are 10 characters of `a-z2-7`, made by the control plane, never reused. The box
+  refuses a claim's answer whose name isn't one, or whose `box_domain` and `relay` aren't its own
+  domain's.
+- **The box's side of it:** relayd's `-control-plane` (default `https://gestorino.com`) and
+  `-box-domain` (default `gestorino.net`); it refuses to start with a control plane that isn't an
+  `https://` origin or a box domain that isn't a lowercase hostname without a trailing dot. It
+  never follows the control plane's redirects: a 3xx is an answer, and an error (never removal),
+  so the box's secret goes nowhere else.
 
 ## Why
 
@@ -53,8 +60,15 @@ removed in the account, the console says it is not connected within 10 minutes.
   `concierge-relay-clients`, of which the engine's user is a member). The engine forwards
   `/api/v1/relay/*` to it (`api.SocketProxy`), behind the console login.
 - **A secretd caller**, namespace `relay` (`-secrets-socket`, required): `box-secret` and
-  `device-ca` (the CA key and its certificate, one value). secretd down: claiming and issuing answer 502 "secrets unavailable"; a claimed
-  box whose secret secretd can't give doesn't connect, and says so.
+  `device-ca` (the CA key and its certificate, one value). relayd reads the CA once at start and
+  holds it, so it doesn't start while secretd is down. secretd down after that: claiming answers
+  502 "secrets unavailable" (issuing still works, from the CA in memory); a claimed box whose
+  secret secretd can't give (unreachable) doesn't connect, changes nothing, and says so. A claimed
+  box whose secret secretd **holds no longer** is a box nobody can prove: it never makes a new one
+  (the control plane holds the old one's hash) but starts over by itself, as on a `401` (below),
+  and says "This box lost its key: claim it again, and remove its old entry in your account".
+- **Backed up** with the box: `var/lib/concierge-relay` is one of the backup's paths (its
+  secrets are secretd's, backed up there).
 - **Network:** it alone of the box's daemons talks to the control plane and the relay (outbound
   HTTPS and TCP 7000), and listens on `127.0.0.1:8443`, nothing else.
 - Unit and user wherever the box layout lives when this is built (today `ansible/`; the installer
@@ -71,7 +85,9 @@ removed in the account, the console says it is not connected within 10 minutes.
 - **certmagic** (Caddy's ACME library) for the box's certificate for `<name>.gestorino.net`, by
   **TLS-ALPN-01 only** (port 80 isn't routed to the box): Let's Encrypt's check reaches the box
   through the relay on 443. Its storage (account key, certificate, key) under the state directory
-  (*my call*: certmagic's file storage, not secretd).
+  (*my call*: certmagic's file storage, not secretd). The ACME account has **no contact**: an
+  email there would be in certmagic's logs and errors, and at Let's Encrypt (whose expiry mails
+  certmagic's renewal makes unneeded).
 - **A TLS server** on `127.0.0.1:8443`: `GetConfigForClient` answers ACME's `acme-tls/1`
   handshake with certmagic's challenge (no client certificate asked), and every other handshake
   **requires a client certificate** issued by the box's device CA whose serial is in the active
@@ -90,8 +106,11 @@ States: **unclaimed** → **claiming** (a code was mailed) → **claimed**.
    → the control plane's `claim/start`.
 3. "The code from the mail" → `POST /relay/claim/finish` → the control plane's `claim/finish`
    with `box_id` and the secret → `{name, box_domain, relay}` stored → claimed.
+   The finish runs on past its request (up to 30 s), so a claim the control plane accepted is
+   stored even when the browser went away; relayd's shutdown waits for it.
 4. Claimed: the frp client starts; certmagic gets the certificate; the tab shows
    "Connected as `<name>.gestorino.net`" (or what it is waiting on: the relay, the certificate).
+   A tunnel that can't start says so, and every status tick starts it again until it runs.
 5. Every 10 minutes `GET /box/v1/status` (sending the box's version). **`401`: removed** → stop the
    frp client, delete the certificate, the secret and the devices, make a new `box_id` and secret,
    back to unclaimed. **Any other failure** (no network, the control plane down): keep going as is.
@@ -108,7 +127,8 @@ States: **unclaimed** → **claiming** (a code was mailed) → **claimed**.
   (`software.sslmate.com/src/go-pkcs12`) and checks the file installs on an iPhone (Safari →
   profile) and on Android ("VPN & app user certificate").
 - **The active list** (`relay.db`: serial, label, issued, expires): only those serials are let in.
-  **Revoke** removes one, at once. A device that expires is gone; issuing again is the owner's.
+  **Revoke** removes one, at once. A device that expires is gone (refused, and left out of the
+  list); issuing again is the owner's.
 - Issuing is offered only from the LAN (*my call*), so a stolen device certificate can't mint
   more: relayd marks every request it forwards (a header it first strips from the incoming
   request), the engine trusts the mark only from loopback, refuses issuing on a marked request,
