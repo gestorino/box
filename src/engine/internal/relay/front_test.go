@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,10 +29,10 @@ type frontRig struct {
 	addr    string
 	ca      *CA
 	server  *x509.Certificate
-	revoked atomic.Bool
-	serial  atomic.Value
+	allowed sync.Map // serials Issue returned and not revoked
 	engine  *httptest.Server
-	acme    *tls.Config
+	acme    atomic.Pointer[tls.Config]
+	front   *Front
 }
 
 func selfSigned(t *testing.T) (tls.Certificate, *x509.Certificate) {
@@ -84,23 +85,24 @@ func newFrontRig(t *testing.T) *frontRig {
 	cert, leaf := selfSigned(t)
 	r.server = leaf
 	srv := NewFront(ca,
-		func(serial string) bool { return !r.revoked.Load() },
+		func(serial string) bool { _, ok := r.allowed.Load(serial); return ok },
 		func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &cert, nil },
-		func(h *tls.ClientHelloInfo) (*tls.Config, bool) { return r.acme, r.acme != nil },
+		func(h *tls.ClientHelloInfo) (*tls.Config, bool) { c := r.acme.Load(); return c, c != nil },
 		strings.TrimPrefix(r.engine.URL, "http://"))
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	go srv.ServeTLS(ln, "", "")
+	r.front = srv
+	go srv.Serve(ln)
 	t.Cleanup(func() { srv.Close() })
 	r.addr = ln.Addr().String()
 	return r
 }
 
-func (r *frontRig) device(t *testing.T, ca *CA) tls.Certificate {
+func (r *frontRig) device(t *testing.T, ca *CA) (tls.Certificate, string) {
 	t.Helper()
-	_, p12, pw, _, err := ca.Issue("phone")
+	serial, p12, pw, _, err := ca.Issue("phone")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,6 +114,14 @@ func (r *frontRig) device(t *testing.T, ca *CA) tls.Certificate {
 	for _, x := range chain {
 		c.Certificate = append(c.Certificate, x.Raw)
 	}
+	if ca == r.ca {
+		r.allowed.Store(serial, true)
+	}
+	return c, serial
+}
+
+func (r *frontRig) mustDevice(t *testing.T) tls.Certificate {
+	c, _ := r.device(t, r.ca)
 	return c
 }
 
@@ -140,8 +150,9 @@ func (r *frontRig) get(c *http.Client, path string, hdr ...string) (string, erro
 
 func TestFrontRefusesNoCertificate(t *testing.T) {
 	r := newFrontRig(t)
-	if _, err := r.get(r.client(), "/via"); err == nil {
-		t.Fatal("a client with no certificate got through")
+	_, err := r.get(r.client(), "/via")
+	if err == nil || !strings.Contains(err.Error(), "remote error: tls:") {
+		t.Fatalf("want a TLS alert, got %v", err)
 	}
 }
 
@@ -151,14 +162,16 @@ func TestFrontRefusesAnotherCA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.get(r.client(r.device(t, other)), "/via"); err == nil {
-		t.Fatal("a certificate from another CA got through")
+	oc, _ := r.device(t, other)
+	_, err = r.get(r.client(oc), "/via")
+	if err == nil || !strings.Contains(err.Error(), "remote error: tls:") {
+		t.Fatalf("want a TLS alert, got %v", err)
 	}
 }
 
 func TestFrontForwardsAndMarksVia(t *testing.T) {
 	r := newFrontRig(t)
-	got, err := r.get(r.client(r.device(t, r.ca)), "/via", "X-Concierge-Via", "lan")
+	got, err := r.get(r.client(r.mustDevice(t)), "/via", "X-Concierge-Via", "lan")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,21 +182,73 @@ func TestFrontForwardsAndMarksVia(t *testing.T) {
 
 func TestFrontRevokedSerialCannotReturn(t *testing.T) {
 	r := newFrontRig(t)
-	c := r.client(r.device(t, r.ca))
+	cert, serial := r.device(t, r.ca)
+	c := r.client(cert)
 	c.Transport.(*http.Transport).TLSClientConfig.ClientSessionCache = tls.NewLRUClientSessionCache(8)
 	if _, err := r.get(c, "/via"); err != nil {
 		t.Fatal(err)
 	}
-	r.revoked.Store(true)
+	r.allowed.Delete(serial)
 	// A new connection, with the session cache that would resume the old session.
-	if _, err := r.get(c, "/via"); err == nil {
-		t.Fatal("a revoked device got back in on a new connection")
+	_, err := r.get(c, "/via")
+	if err == nil || !strings.Contains(err.Error(), "remote error: tls:") {
+		t.Fatalf("a revoked device got back in on a new connection: %v", err)
+	}
+}
+
+func TestFrontRevokedSerialIsRefusedOnAnOpenConnection(t *testing.T) {
+	r := newFrontRig(t)
+	cert, serial := r.device(t, r.ca)
+	c := r.client(cert)
+	c.Transport.(*http.Transport).DisableKeepAlives = false
+	status := func() int {
+		resp, err := c.Get("https://" + r.addr + "/via")
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if status() != 200 {
+		t.Fatal("first request refused")
+	}
+	r.allowed.Delete(serial)
+	if got := status(); got != http.StatusForbidden {
+		t.Fatalf("revoked device on its keep-alive connection got %d, want 403", got)
+	}
+}
+
+func TestFrontCloseDeviceClosesOnlyThatDevicesWebSockets(t *testing.T) {
+	r := newFrontRig(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	dial := func() (*websocket.Conn, string) {
+		cert, serial := r.device(t, r.ca)
+		ws, _, err := websocket.Dial(ctx, "wss://"+r.addr+"/ws", &websocket.DialOptions{HTTPClient: r.client(cert)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { ws.CloseNow() })
+		return ws, serial
+	}
+	a, serialA := dial()
+	b, _ := dial()
+	r.front.CloseDevice(serialA)
+	if _, _, err := a.Read(ctx); err == nil {
+		t.Fatal("the closed device's WebSocket still reads")
+	}
+	if err := b.Write(ctx, websocket.MessageText, []byte("still")); err != nil {
+		t.Fatal(err)
+	}
+	if _, m, err := b.Read(ctx); err != nil || string(m) != "still" {
+		t.Fatalf("other device's WebSocket: %q %v", m, err)
 	}
 }
 
 func TestFrontPassesWebSockets(t *testing.T) {
 	r := newFrontRig(t)
-	c := r.client(r.device(t, r.ca))
+	c := r.client(r.mustDevice(t))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	ws, _, err := websocket.Dial(ctx, "wss://"+r.addr+"/ws", &websocket.DialOptions{HTTPClient: c})
@@ -203,7 +268,7 @@ func TestFrontPassesWebSockets(t *testing.T) {
 func TestFrontAnswersTheACMEChallengeWithoutAClientCertificate(t *testing.T) {
 	r := newFrontRig(t)
 	cert, _ := selfSigned(t)
-	r.acme = &tls.Config{Certificates: []tls.Certificate{cert}, NextProtos: []string{"acme-tls/1"}}
+	r.acme.Store(&tls.Config{Certificates: []tls.Certificate{cert}, NextProtos: []string{"acme-tls/1"}})
 	conn, err := tls.Dial("tcp", r.addr, &tls.Config{
 		InsecureSkipVerify: true, NextProtos: []string{"acme-tls/1"}, ServerName: "box.test"})
 	if err != nil {
@@ -212,5 +277,24 @@ func TestFrontAnswersTheACMEChallengeWithoutAClientCertificate(t *testing.T) {
 	defer conn.Close()
 	if p := conn.ConnectionState().NegotiatedProtocol; p != "acme-tls/1" {
 		t.Fatalf("negotiated %q", p)
+	}
+}
+
+func TestFrontACMEConfigCannotCarryTraffic(t *testing.T) {
+	r := newFrontRig(t)
+	cert, _ := selfSigned(t)
+	// A challenge config that also speaks http/1.1, and a hello offering both.
+	r.acme.Store(&tls.Config{Certificates: []tls.Certificate{cert}, NextProtos: []string{"http/1.1", "acme-tls/1"}})
+	conn, err := tls.Dial("tcp", r.addr, &tls.Config{
+		InsecureSkipVerify: true, NextProtos: []string{"http/1.1", "acme-tls/1"}, ServerName: "box.test"})
+	if err == nil {
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(3 * time.Second))
+		io.WriteString(conn, "GET /via HTTP/1.1\r\nHost: box.test\r\n\r\n")
+		b := make([]byte, 64)
+		n, rerr := conn.Read(b)
+		if rerr == nil || strings.Contains(string(b[:n]), "HTTP/1.1") {
+			t.Fatalf("an HTTP response without a client certificate: %q %v", b[:n], rerr)
+		}
 	}
 }
