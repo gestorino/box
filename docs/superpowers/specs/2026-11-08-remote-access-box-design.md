@@ -101,7 +101,7 @@ States: **unclaimed** → **claiming** (a code was mailed) → **claimed**.
 ### Devices
 
 - **The device CA** is relayd's own: an ECDSA P-256 key (`device-ca` in secretd, the key and its certificate as one value) and a
-  self-signed CA certificate, made at the first claim. It signs only device certificates.
+  self-signed CA certificate, made at relayd's first start. It signs only device certificates.
 - **Issue** (Remote access tab, a label such as "Owner's iPhone"): a P-256 key and a certificate
   for one year, made on the box, given once as a `.p12` with a random password shown once (iOS
   refuses a `.p12` without one); the key is not kept. The builder picks the PKCS#12 encoder
