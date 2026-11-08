@@ -367,3 +367,61 @@ func TestAPILogsNoEmailCodeOrPassword(t *testing.T) {
 		}
 	}
 }
+
+// A claim the control plane accepts is the box's even when the console went away meanwhile: the
+// finish runs on past its request.
+func TestAPIClaimFinishOutlivesItsRequest(t *testing.T) {
+	arrived, release, gone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	cloud := fakeCloud(t, func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/box/v1/claim/start":
+			reply(w, 200, `{}`)
+		case "/box/v1/claim/finish":
+			close(arrived)
+			select {
+			case <-req.Context().Done(): // the box gave up on the call
+				close(gone)
+				return
+			case <-release:
+			}
+			reply(w, 200, goodClaim)
+		case "/box/v1/status":
+			reply(w, 200, `{"claimed":true}`)
+		}
+	})
+	r := newAPIRig(t, secretstest.Start(t, "relay"), cloud)
+	r.want(t, "POST", "/relay/claim/start", `{"email":"owner@example.org"}`, 204, "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, "POST", "http://relayd/relay/claim/finish", strings.NewReader(`{"code":"123456"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		if resp, err := r.c.Do(req); err == nil {
+			resp.Body.Close()
+		}
+		close(done)
+	}()
+	<-arrived
+	cancel() // the browser goes away mid-call
+	<-done
+	select { // time for the cancellation to reach the box's call, if it would
+	case <-gone:
+		t.Fatal("the browser going away cancelled the claim's call to the control plane")
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		id, err := r.store.Identity(context.Background())
+		if err == nil && id.State == Claimed && id.Name == "abcdefghij" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the accepted claim was lost: %+v %v", id, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

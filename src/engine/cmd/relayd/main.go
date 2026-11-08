@@ -108,20 +108,19 @@ func run() error {
 
 	tunnel := relay.NewFrpTunnel(*caFile, *front, cert)
 	svc := relay.NewService(store, relay.NewCloud(*controlPlane, version, *boxDomain), sec, tunnel, tunnel.Waiting, time.Now)
+	// The service runs until the socket's requests are through, not merely until the signal: a
+	// claim the control plane accepted is stored, and its tunnel stopped, before the store closes.
+	svcCtx, stopSvc := context.WithCancel(context.Background())
+	defer stopSvc()
 	ran := make(chan struct{})
-	go func() { svc.Run(ctx); close(ran) }() // stops the tunnel when ctx ends
+	go func() { svc.Run(svcCtx); close(ran) }() // stops the tunnel when svcCtx ends
 
 	srv := &http.Server{Handler: relay.NewHandler(svc, ca, fr.CloseDevice), Protocols: h2c.Protocols(), ReadHeaderTimeout: 10 * time.Second}
-	go func() {
-		<-ctx.Done()
-		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		srv.Shutdown(shutdown)
-	}()
 	slog.Info("relayd listening", "addr", ln.Addr(), "front", fln.Addr(), "version", version, "revision", revision,
 		"state", svc.Status().State)
-	err = srv.Serve(ln)
+	err = serveUntil(ctx, srv, ln, relay.ClaimFinishTimeout+10*time.Second)
 	stop()
+	stopSvc()
 	<-ran
 	// The front's requests get a short grace; its hijacked WebSockets (live views) are neither
 	// drained by Shutdown nor closed by Close, and end with the process.
@@ -134,15 +133,33 @@ func run() error {
 		return ferr
 	default:
 	}
-	if !errors.Is(err, http.ErrServerClosed) {
-		return err
-	}
-	return nil
+	return err
 }
 
-// checkDomains refuses a control plane that isn't an https:// origin (the box's secret goes to it)
-// and a box domain that isn't a lowercase hostname without a trailing dot (a claim must name it
-// exactly). The Cloud client takes any base, so tests can point it at a loopback server.
+// serveUntil serves ln until ctx ends (or serving fails), then shuts srv down, and returns only
+// once its handlers are through or grace has passed: nothing they use may be closed before.
+func serveUntil(ctx context.Context, srv *http.Server, ln net.Listener, grace time.Duration) error {
+	served := make(chan error, 1)
+	go func() { served <- srv.Serve(ln) }()
+	var err error
+	select {
+	case <-ctx.Done():
+	case err = <-served:
+	}
+	shutdown, cancel := context.WithTimeout(context.Background(), grace)
+	defer cancel()
+	if serr := srv.Shutdown(shutdown); serr != nil {
+		slog.Warn("relayd: requests still running at shutdown", "err", serr)
+	}
+	if err == nil {
+		err = <-served
+	}
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
 func checkDomains(controlPlane, boxDomain string) error {
 	u, err := url.Parse(controlPlane)
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil ||

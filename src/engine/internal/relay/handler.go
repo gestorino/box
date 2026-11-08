@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,10 @@ import (
 
 // maxLabel is a device label's length: X.509's upper bound for a common name.
 const maxLabel = 64
+
+// ClaimFinishTimeout bounds a claim's finish, which runs on past its request; relayd's shutdown
+// waits longer than this for the socket's requests.
+const ClaimFinishTimeout = 30 * time.Second
 
 var errBadBody = errors.New("bad request")
 
@@ -44,7 +49,12 @@ func NewHandler(s *Service, ca *CA, closeDevice func(serial string)) http.Handle
 			answer(w, "claim finish", 0, nil, errBadBody)
 			return
 		}
-		answer(w, "claim finish", http.StatusNoContent, nil, s.ClaimFinish(r.Context(), in.Code))
+		// A claim the control plane accepts is the box's whether or not the console still waits for
+		// the answer: the finish runs on a context of its own, so the browser going away mid-call
+		// can't lose it.
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), ClaimFinishTimeout)
+		defer cancel()
+		answer(w, "claim finish", http.StatusNoContent, nil, s.ClaimFinish(ctx, in.Code))
 	})
 	mux.HandleFunc("GET /relay/devices", func(w http.ResponseWriter, r *http.Request) {
 		ds, err := s.Devices(r.Context())
