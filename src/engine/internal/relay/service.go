@@ -158,7 +158,6 @@ func (s *Service) finishStartOver(ctx context.Context) {
 		s.setProblem("couldn't start over after removal")
 		return
 	}
-	s.removed = false
 	s.setProblem("")
 }
 
@@ -175,6 +174,7 @@ func (s *Service) startOver(ctx context.Context) error {
 	if err := s.store.Reset(ctx); err != nil {
 		return err
 	}
+	s.removed = false // unclaimed from here on; a failed mint is ClaimStart's to redo
 	_, err := s.secret(ctx)
 	return err
 }
@@ -225,6 +225,7 @@ func (s *Service) ClaimFinish(ctx context.Context, code string) error {
 	if err := s.store.SetIdentity(ctx, id); err != nil {
 		return err
 	}
+	s.removed = false
 	s.setProblem("")
 	s.startTunnel(ctx, id)
 	return nil

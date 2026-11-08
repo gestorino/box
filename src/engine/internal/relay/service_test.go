@@ -39,6 +39,7 @@ func (f *fakeTunnel) Forget() error {
 	f.forgets++
 	return nil
 }
+func (f *fakeTunnel) forgetCount() int       { f.mu.Lock(); defer f.mu.Unlock(); return f.forgets }
 func (f *fakeTunnel) setForgetErr(err error) { f.mu.Lock(); f.forgetErr = err; f.mu.Unlock() }
 func (f *fakeTunnel) lastStart() (string, Identity) {
 	f.mu.Lock()
@@ -186,8 +187,8 @@ func TestRemovedBoxStartsOver(t *testing.T) {
 		t.Fatalf("status sent %v %v", r.cloud.boxes, r.cloud.secrets)
 	}
 	r.cloud.mu.Unlock()
-	if r.tunnel.forgets != 1 {
-		t.Fatalf("forgets %d", r.tunnel.forgets)
+	if r.tunnel.forgetCount() != 1 {
+		t.Fatalf("forgets %d", r.tunnel.forgetCount())
 	}
 	id, _ := r.store.Identity(ctx)
 	newSecret, ok, _ := sec.Get(ctx, "box-secret")
@@ -349,5 +350,30 @@ func TestConcurrentClaimFinishStartsTheTunnelOnce(t *testing.T) {
 	}
 	if starts, _ := r.tunnel.counts(); ok != 1 || starts != 1 {
 		t.Fatalf("successes %d starts %d", ok, starts)
+	}
+}
+
+// A start-over that got past Reset but failed to mint the new secret leaves removed set; a re-claim
+// must not be wiped by it.
+func TestAReclaimAfterAnUnfinishedStartOverIsNotWiped(t *testing.T) {
+	sec := secretstest.Start(t, "relay")
+	r := newRig(t, sec)
+	ctx := context.Background()
+	r.svc.removed = true // the state after Reset succeeded and minting failed: unclaimed, secret absent
+	if err := r.svc.ClaimStart(ctx, "a@b.c"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.svc.ClaimFinish(ctx, "123456"); err != nil {
+		t.Fatal(err)
+	}
+	r.svc.checkStatus(ctx)
+	r.cloud.mu.Lock()
+	calls := len(r.cloud.boxes)
+	r.cloud.mu.Unlock()
+	if id, _ := r.store.Identity(ctx); id.State != Claimed || calls != 1 {
+		t.Fatalf("%+v status calls %d", id, calls)
+	}
+	if _, stops := r.tunnel.counts(); stops != 0 || r.tunnel.forgetCount() != 0 {
+		t.Fatal("the new claim was torn down")
 	}
 }
