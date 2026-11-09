@@ -73,15 +73,16 @@ describe('Remote access', () => {
     const { calls } = stubFetch({
       [S]: st({ state: 'claimed', address: 'a.b' }), [ENGINE]: engine(false),
       [DEVS]: [{ body: [] }, { body: [{ serial: 'abc1', label: 'Phone', issued: '2026-11-08T00:00:00Z', expires: '2027-11-08T00:00:00Z' }] }],
-      [ISSUE]: { body: { serial: 'abc1', p12: btoa('file'), password: 'hunter-two', expires: '2027-11-08T00:00:00Z' } },
+      [ISSUE]: { body: { serial: 'abc1', p12: btoa('file'), mobileconfig: btoa('profile'), password: 'hunter-two', expires: '2027-11-08T00:00:00Z' } },
     })
     show()
     await userEvent.type(await screen.findByLabelText('Label'), 'Phone')
     await userEvent.click(screen.getByRole('button', { name: 'Issue' }))
     expect(await screen.findByText('hunter-two')).toBeInTheDocument()
     expect(screen.getByText("Install the file on the phone; this password won't be shown again")).toBeInTheDocument()
-    const link = screen.getByRole('link', { name: /Phone\.p12/ })
-    expect(link).toHaveAttribute('download', 'Phone.p12')
+    expect(screen.getByRole('link', { name: /Phone\.mobileconfig/ })).toHaveAttribute('download', 'Phone.mobileconfig')
+    expect(screen.getByRole('link', { name: /Phone\.p12/ })).toHaveAttribute('download', 'Phone.p12')
+    expect(screen.getByText('Apple devices: the .mobileconfig. Android and others: the .p12.')).toBeInTheDocument()
     expect(calls.find((c) => c.key === ISSUE)?.body).toEqual({ label: 'Phone' })
     await userEvent.click(screen.getByRole('button', { name: 'Done' }))
     expect(screen.queryByText('hunter-two')).not.toBeInTheDocument()

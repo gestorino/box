@@ -76,6 +76,10 @@ func NewHandler(s *Service, ca *CA, closeDevice func(serial string)) http.Handle
 			return
 		}
 		serial, p12, password, expires, err := ca.Issue(label)
+		var profile []byte
+		if err == nil {
+			profile, err = Profile(label, serial, p12)
+		}
 		if err == nil {
 			err = s.AddDevice(r.Context(), serial, label, expires)
 		}
@@ -85,12 +89,14 @@ func NewHandler(s *Service, ca *CA, closeDevice func(serial string)) http.Handle
 		}
 		// The password and the key are in this answer alone: nothing on the way may keep it.
 		w.Header().Set("Cache-Control", "no-store")
+		// The same file twice: as a .p12 (Android, others) and inside an Apple profile (.mobileconfig).
 		answer(w, "issue", http.StatusOK, struct {
-			Serial   string    `json:"serial"`
-			P12      string    `json:"p12"`
-			Password string    `json:"password"`
-			Expires  time.Time `json:"expires"`
-		}{serial, base64.StdEncoding.EncodeToString(p12), password, expires}, nil)
+			Serial       string    `json:"serial"`
+			P12          string    `json:"p12"`
+			MobileConfig string    `json:"mobileconfig"`
+			Password     string    `json:"password"`
+			Expires      time.Time `json:"expires"`
+		}{serial, base64.StdEncoding.EncodeToString(p12), base64.StdEncoding.EncodeToString(profile), password, expires}, nil)
 	})
 	mux.HandleFunc("DELETE /relay/devices/{serial}", func(w http.ResponseWriter, r *http.Request) {
 		serial := r.PathValue("serial")

@@ -256,10 +256,11 @@ func TestAPIIssueListRevoke(t *testing.T) {
 		t.Fatalf("issue's Cache-Control %q: the password and the key must not be kept", hdr.Get("Cache-Control"))
 	}
 	var issued struct {
-		Serial   string    `json:"serial"`
-		P12      string    `json:"p12"`
-		Password string    `json:"password"`
-		Expires  time.Time `json:"expires"`
+		Serial       string    `json:"serial"`
+		P12          string    `json:"p12"`
+		MobileConfig string    `json:"mobileconfig"`
+		Password     string    `json:"password"`
+		Expires      time.Time `json:"expires"`
 	}
 	if err := json.Unmarshal([]byte(b), &issued); err != nil {
 		t.Fatal(err)
@@ -267,6 +268,14 @@ func TestAPIIssueListRevoke(t *testing.T) {
 	der, err := base64.StdEncoding.DecodeString(issued.P12)
 	if err != nil {
 		t.Fatalf("p12 is not base64: %v", err)
+	}
+	profile, err := base64.StdEncoding.DecodeString(issued.MobileConfig)
+	if err != nil {
+		t.Fatalf("mobileconfig is not base64: %v", err)
+	}
+	if !strings.Contains(string(profile), "<data>"+issued.P12+"</data>") ||
+		!strings.Contains(string(profile), "<string>Gestorino Cert</string>") {
+		t.Fatalf("the profile doesn't carry the same .p12 under its name: %s", profile)
 	}
 	_, leaf, _, err := pkcs12.DecodeChain(der, issued.Password)
 	if err != nil {
@@ -296,7 +305,7 @@ func TestAPIIssueListRevoke(t *testing.T) {
 		time.Since(list[0].Issued) > time.Minute || !list[0].Expires.Equal(issued.Expires) {
 		t.Fatalf("list %+v", list)
 	}
-	if strings.Contains(b, issued.Password) || strings.Contains(b, "p12") {
+	if strings.Contains(b, issued.Password) || strings.Contains(b, "p12") || strings.Contains(b, "mobileconfig") {
 		t.Fatalf("the list carries the password or the file: %s", b)
 	}
 

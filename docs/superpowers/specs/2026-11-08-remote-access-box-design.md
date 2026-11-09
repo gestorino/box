@@ -122,7 +122,9 @@ States: **unclaimed** → **claiming** (a code was mailed) → **claimed**.
   self-signed CA certificate, made at relayd's first start. It signs only device certificates.
 - **Issue** (Remote access tab, a label such as "Owner's iPhone"): a P-256 key and a certificate
   for one year, made on the box, given once as a `.p12` with a random password shown once (iOS
-  refuses a `.p12` without one); the key is not kept. The builder picks the PKCS#12 encoder
+  refuses a `.p12` without one); the key is not kept. The same `.p12` also comes inside an Apple
+  configuration profile (`.mobileconfig`, no password in it: the device asks while installing), which
+  an Apple device lists as "Gestorino Cert"; a bare `.p12` shows only "Identity Certificate". The builder picks the PKCS#12 encoder
   (`software.sslmate.com/src/go-pkcs12`) and checks the file installs on an iPhone (Safari →
   profile) and on Android ("VPN & app user certificate").
 - **The active list** (`relay.db`: serial, label, issued, expires): only those serials are let in.

@@ -9,7 +9,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useEngineStatus } from '@/hooks/use-engine-status'
 import { usePoll } from '@/hooks/use-poll'
 import {
-  claimFinish, claimStart, type Device, getDevices, getRelay, type IssuedDevice, issueDevice, p12Url, POLL_MS, type RelayStatus, revokeDevice,
+  claimFinish, claimStart, type Device, getDevices, getRelay, type IssuedDevice, fileUrl, issueDevice, P12_TYPE, POLL_MS, PROFILE_TYPE, type RelayStatus, revokeDevice,
 } from '@/lib/relay'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -165,11 +165,16 @@ function Devices() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
   const [revokeError, setRevokeError] = useState<string>()
-  const [issued, setIssued] = useState<{ label: string; device: IssuedDevice; url: string }>()
+  const [issued, setIssued] = useState<{ label: string; device: IssuedDevice; p12: string; profile: string }>()
   const [revoking, setRevoking] = useState<Device>()
 
-  // The file's address lives only while its panel is open.
-  useEffect(() => () => { if (issued) URL.revokeObjectURL(issued.url) }, [issued])
+  // The files' addresses live only while their panel is open.
+  useEffect(() => () => {
+    if (issued) {
+      URL.revokeObjectURL(issued.p12)
+      URL.revokeObjectURL(issued.profile)
+    }
+  }, [issued])
 
   const issue = async (e: FormEvent) => {
     e.preventDefault()
@@ -178,7 +183,7 @@ function Devices() {
     try {
       const name = label.trim()
       const device = await issueDevice(name)
-      setIssued({ label: name, device, url: p12Url(device.p12) })
+      setIssued({ label: name, device, p12: fileUrl(device.p12, P12_TYPE), profile: fileUrl(device.mobileconfig, PROFILE_TYPE) })
       setLabel('')
       devices.refresh()
     } catch (err) {
@@ -225,9 +230,13 @@ function Devices() {
                 <Copy aria-hidden className="size-4" />Copy
               </Button>
             </p>
+            <p className="text-sm text-muted-foreground">Apple devices: the .mobileconfig. Android and others: the .p12.</p>
             <div className="flex flex-wrap items-center gap-2">
               <Button asChild size="sm">
-                <a href={issued.url} download={`${issued.label}.p12`}><Download aria-hidden className="size-4" />{issued.label}.p12</a>
+                <a href={issued.profile} download={`${issued.label}.mobileconfig`}><Download aria-hidden className="size-4" />{issued.label}.mobileconfig</a>
+              </Button>
+              <Button asChild size="sm" variant="outline">
+                <a href={issued.p12} download={`${issued.label}.p12`}><Download aria-hidden className="size-4" />{issued.label}.p12</a>
               </Button>
               <Button type="button" size="sm" variant="outline" onClick={() => setIssued(undefined)}>Done</Button>
             </div>
