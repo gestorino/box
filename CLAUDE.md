@@ -259,7 +259,7 @@ docs/superpowers/  current design docs (specs/); implementation plans (plans/) a
   `docs/superpowers/specs/2026-11-07-agent-design.md`; as connectors: `docs/superpowers/specs/2026-11-08-agents-like-connectors-design.md`.
 - **Conversations** — `internal/converse/`: the owner talks to their agent, and the agent answers, on WhatsApp.
   The hub keeps a conversation per owner chat (the store is the engine's `-agent-db`; empty runs no agent and no
-  WhatsApp listener; with `-claude-socket`, `-codex-socket`, `-time-zone` (IANA, derived from the box when unset) and `-console-url`, the link in a human-check message), steps the primary agent (hostd's `/settings/agent`: `primary`, `secondary`; the first agent added is primary, removing the primary promotes the other) with the last 60 events and runs its tools (at most 8 a turn: the box's
+  WhatsApp listener; with `-claude-socket`, `-codex-socket`, `-time-zone` (IANA, derived from the box when unset) and `-console-url`, the link in a human-check message), steps the primary agent (hostd keeps `primary` in `/settings/agent`, which reads back the `secondary`: the other agent, when added; the first agent added is primary, removing the primary promotes the other) with the last 60 events and runs its tools (at most 8 a turn: the box's
   accounts and the card actions as errands), and closes a conversation 2 h after its last event with no errand
   running. **The front door is the Contacts phone only**: a request counts only from a fresh message (sent within 10 min) in a private WhatsApp
   chat whose JID is the owner's Contacts phone (the engine's own sender check, never the model's; groups never
@@ -270,7 +270,7 @@ docs/superpowers/  current design docs (specs/); implementation plans (plans/) a
   owner's message, never the agent's words either. When the primary's step fails with Unauthenticated (not signed in),
   ResourceExhausted (out of its plan's limit) or Unavailable (not reachable), the secondary answers that one turn, and the owner is told once per
   stretch in fixed words ("Claude can't answer now (…); Codex is answering."); a limit is remembered (`limited_at` on `/api/v1/agents`, the sidebar's amber circle). Each agent's page `/agents/{name}`
-  lists its conversations (`/agents/{name}/{id}`: the events) and its settings (Primary/Secondary, Make primary, Sign in again, Sign out, Remove); "Answer me on WhatsApp" is on `/agents`. **Every event and its usage carry the agent; usage is shown per conversation and per agent**, a cost labelled "plan equivalent" (the subscription's, not a
+  lists its conversations (`/agents/{name}/{id}`: the events) and its settings (Primary/Secondary, Make primary, Sign in again, Sign out, Remove); "Answer me on WhatsApp" is on `/agents`. **Every agent's event and its usage carry the agent; usage is shown per conversation and per agent**, a cost labelled "plan equivalent" (the subscription's, not a
   bill), "unknown" when the CLI gave none. Design: `docs/superpowers/specs/2026-11-07-agent-design.md`, `docs/superpowers/specs/2026-11-08-agents-like-connectors-design.md`.
 - **`internal/listen/`** — listeners: the engine waits for an email or an SMS and the connector
   pushes it. One contract (`proto/concierge/listen/v1/listen.proto`, Connect, generated offline by
