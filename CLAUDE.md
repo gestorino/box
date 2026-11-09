@@ -316,6 +316,16 @@ docs/superpowers/  current design docs (specs/); implementation plans (plans/) a
   `/api/v1/telegram/*`. Backfill seeds each supergroup's `pts`, or its gaps are never recovered.
   Logic tested with a fake client; `gotd.go` is the thin adapter, verified live. Design:
   `docs/superpowers/specs/2026-10-28-telegram-design.md`.
+- **`cmd/relayd` + `internal/relay/`** — the box's remote access, so the owner's devices reach the console from the internet.
+  Own user `concierge-relay`, state in `/var/lib/concierge-relay` (0700), socket-activated and always on (it holds the tunnel);
+  the engine forwards `/api/v1/relay/*` to its socket (`-relay-socket`; without relayd it answers 503). A secretd caller
+  `relay` (`box-secret`, `device-ca`; `-secrets-socket`, required). It runs frp's client to `relay.gestorino.net:7000`, the
+  server verified against the system roots; the front's certificate comes from Let's Encrypt through certmagic, TLS-ALPN-01
+  only. A TLS front on 127.0.0.1:8443 requires a device certificate from the box's own CA and forwards to the engine with
+  `X-Concierge-Via: relay`; issuing a device is refused for any request that came over the relay. The owner claims the box by
+  an emailed code with the control plane at gestorino.com; relayd then calls its status every 10 minutes, and a 401 means the
+  box was removed. The control plane and the relay are private services of their own, known here only by the contract in the
+  design doc. Design: `docs/superpowers/specs/2026-11-08-remote-access-box-design.md`.
 - **Errands** — `/errands` (`POST /api/v1/errands` starts one): paste a link and what to do ("book a table"); the
   worker's agent (`agent.py`, carrying a booking experiment's measured settings) does it
   in the site's browser and asks the owner every choice the site's flow presents (`ask_user` →
