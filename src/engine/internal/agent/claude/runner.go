@@ -33,7 +33,7 @@ type Runner struct{ bin, home, model string }
 // working directory.
 func NewRunner(bin, home, model string) *Runner { return &Runner{bin, home, model} }
 
-var errNotSignedIn = connect.NewError(connect.CodeFailedPrecondition, errors.New("not signed in"))
+var errNotSignedIn = connect.NewError(connect.CodeUnauthenticated, errors.New("not signed in"))
 
 // cliReply is the part of `--output-format json`'s result that matters.
 type cliReply struct {
@@ -80,11 +80,16 @@ func (r *Runner) Run(ctx context.Context, system, input string, schema []byte) (
 	cmd.Stdin = strings.NewReader(input)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, nil, cliproc.Fail("claude failed", stderr.String(), err, token)
-	}
+	runErr := cmd.Run()
 	var rep cliReply
-	if err := json.Unmarshal(stdout.Bytes(), &rep); err != nil {
+	jsonErr := json.Unmarshal(stdout.Bytes(), &rep)
+	if jsonErr == nil && rep.IsError && cliproc.LimitReached(rep.Result) { // the CLI may exit non-zero with it
+		return nil, nil, cliproc.ErrLimit
+	}
+	if runErr != nil {
+		return nil, nil, cliproc.Fail("claude failed", stderr.String(), runErr, token)
+	}
+	if jsonErr != nil {
 		return nil, nil, cliproc.Fail("claude's reply is not JSON", stderr.String(), nil, token)
 	}
 	if rep.IsError {

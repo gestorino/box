@@ -34,11 +34,15 @@ type Runner struct{ bin, home, model string }
 // empty working directory (work).
 func NewRunner(bin, home, model string) *Runner { return &Runner{bin, home, model} }
 
-var errNotSignedIn = connect.NewError(connect.CodeFailedPrecondition, errors.New("not signed in"))
+var errNotSignedIn = connect.NewError(connect.CodeUnauthenticated, errors.New("not signed in"))
 
 // event is the part of `codex exec --json`'s lines that matters.
 type event struct {
-	Type string `json:"type"`
+	Type    string `json:"type"`
+	Message string `json:"message"` // an error event's
+	Error   struct {
+		Message string `json:"message"` // a turn.failed's
+	} `json:"error"`
 	Item struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
@@ -96,9 +100,7 @@ func (r *Runner) Run(ctx context.Context, system, input string, schema []byte) (
 	cliproc.KillOnCancel(cmd, waitDelay)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, nil, cliproc.Fail("codex failed", stderr.String(), err)
-	}
+	runErr := cmd.Run() // the CLI may exit non-zero with an error event: read the events first
 
 	var raw string
 	var u agentv1.Usage
@@ -112,6 +114,12 @@ func (r *Runner) Run(ctx context.Context, system, input string, schema []byte) (
 		}
 		switch {
 		case ev.Type == "turn.failed" || ev.Type == "error":
+			if cliproc.LimitReached(ev.Message) || cliproc.LimitReached(ev.Error.Message) {
+				return nil, nil, cliproc.ErrLimit
+			}
+			if runErr != nil {
+				break
+			}
 			return nil, nil, cliproc.Fail("codex reported an error", stderr.String(), nil)
 		case ev.Type == "item.completed" && ev.Item.Type == "agent_message":
 			raw = ev.Item.Text
@@ -119,6 +127,9 @@ func (r *Runner) Run(ctx context.Context, system, input string, schema []byte) (
 			u.InputTokens += ev.Usage.InputTokens
 			u.OutputTokens += ev.Usage.OutputTokens
 		}
+	}
+	if runErr != nil {
+		return nil, nil, cliproc.Fail("codex failed", stderr.String(), runErr)
 	}
 	if strings.TrimSpace(raw) == "" {
 		return nil, nil, cliproc.Fail("codex gave no final message", stderr.String(), nil)

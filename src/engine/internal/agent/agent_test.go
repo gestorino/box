@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"concierge/engine/internal/agent"
+	"concierge/engine/internal/agent/cliproc"
 	agentv1 "concierge/engine/internal/gen/agent/v1"
 )
 
@@ -212,6 +213,14 @@ func TestStatusSaysTheModelTheDaemonRuns(t *testing.T) {
 	}
 	if want := (&agentv1.StatusResponse{SignedIn: true, CliVersion: "1.2.3", Model: "the-model"}); !proto.Equal(resp.Msg, want) {
 		t.Fatalf("status %v, want %v", resp.Msg, want)
+	}
+}
+
+func TestStepKeepsTheRunnersCode(t *testing.T) {
+	s := agent.NewServer(errRunner{cliproc.ErrLimit}, errLogin{cliproc.ErrLimit}, "m")
+	_, err := s.Step(context.Background(), connect.NewRequest(&agentv1.StepRequest{}))
+	if connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("step: %v", err)
 	}
 }
 
