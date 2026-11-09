@@ -395,7 +395,7 @@ func TestAnUnreachableAgentSaysSo(t *testing.T) {
 	for _, name := range []string{"codex", "unknown"} { // a dead socket, an agent not configured
 		r.settings.set(true, name)
 		r.hub.Owner(context.Background(), "whatsapp", "chat", "go", Source{})
-		if got, want := r.channel.next(t), couldNotFinish+" "+cantAnswer(name, connect.CodeUnavailable); got != want {
+		if got, want := r.channel.next(t), couldNotFinish+". "+cantAnswer(name, connect.CodeUnavailable); got != want {
 			t.Fatalf("%s: sent %q, want %q", name, got, want)
 		}
 		r.settle(t)
@@ -1224,7 +1224,7 @@ func TestFallbackKeepsTheWindow(t *testing.T) {
 func TestNoSecondary(t *testing.T) {
 	r := newRig(t, openStore(t), failing(connect.CodeResourceExhausted))
 	r.hub.Owner(context.Background(), "whatsapp", "chat", "go", Source{})
-	if got, want := r.channel.next(t), couldNotFinish+" "+cantAnswer("claude", connect.CodeResourceExhausted); got != want {
+	if got, want := r.channel.next(t), "I couldn't finish that, please try again. Claude can't answer now (out of its plan's limit)."; got != want {
 		t.Fatalf("sent %q, want %q", got, want)
 	}
 	r.settle(t)
@@ -1237,7 +1237,7 @@ func TestBothCantAnswer(t *testing.T) {
 	if got, want := r.channel.next(t), switchNotice("claude", "codex", connect.CodeUnauthenticated); got != want {
 		t.Fatalf("sent %q, want %q", got, want)
 	}
-	if got, want := r.channel.next(t), couldNotFinish+" "+cantAnswer("codex", connect.CodeUnavailable); got != want {
+	if got, want := r.channel.next(t), couldNotFinish+". "+cantAnswer("codex", connect.CodeUnavailable); got != want {
 		t.Fatalf("sent %q, want %q", got, want)
 	}
 	r.settle(t)

@@ -625,7 +625,7 @@ func (h *Hub) failed(ctx context.Context, c Conversation, ch Channel, e *agentv1
 	case ends[x.GetKind()] && strings.TrimSpace(x.GetText()) != "":
 		h.say(ctx, c, ch, "", x.GetText())
 	case reason != "":
-		h.say(ctx, c, ch, "", couldNotFinish+" "+reason)
+		h.say(ctx, c, ch, "", couldNotFinish+". "+reason)
 	default:
 		h.say(ctx, c, ch, "", couldNotFinish)
 	}
