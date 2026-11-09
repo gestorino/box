@@ -269,8 +269,9 @@ type EventView struct {
 }
 
 func view(c Conversation, first string) ConversationView {
-	return ConversationView{c.ID, c.Channel, c.State, c.Started, c.Last, cut(first, firstWordsMax), c.CostUSD, c.CostKnown,
-		c.InTokens, c.OutTokens, c.Model}
+	t := c.Total("")
+	return ConversationView{c.ID, c.Channel, c.State, c.Started, c.Last, cut(first, firstWordsMax), t.CostUSD, t.CostKnown,
+		t.InTokens, t.OutTokens, t.Model}
 }
 
 func cut(s string, n int) string {
@@ -292,7 +293,7 @@ func (h *handler) conversations(w http.ResponseWriter, r *http.Request) {
 	if h.unavailable(w) {
 		return
 	}
-	list, err := h.store.List(r.Context())
+	list, err := h.store.List(r.Context(), "")
 	var first map[int64]string
 	if err == nil {
 		first, err = h.store.FirstWords(r.Context())
@@ -319,10 +320,6 @@ func (h *handler) conversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c, events, runs, err := h.store.One(r.Context(), id)
-	var times map[int64]time.Time
-	if err == nil {
-		times, err = h.store.EventTimes(r.Context(), id)
-	}
 	if errors.Is(err, ErrNoConversation) {
 		reply(w, http.StatusNotFound, map[string]string{"error": "no such conversation"})
 		return
@@ -335,7 +332,7 @@ func (h *handler) conversation(w http.ResponseWriter, r *http.Request) {
 	first := ""
 	evs := make([]EventView, len(events))
 	for i, e := range events {
-		evs[i] = eventView(e, times[e.GetId()])
+		evs[i] = eventView(e.Event, e.At)
 		if first == "" && evs[i].Kind == "owner" {
 			first = evs[i].Text
 		}

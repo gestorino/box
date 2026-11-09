@@ -251,7 +251,7 @@ func (r *rig) settle(t *testing.T) {
 // only is the one conversation of the store.
 func (r *rig) only(t *testing.T) (Conversation, []*agentv1.Event) {
 	t.Helper()
-	list, err := r.store.List(context.Background())
+	list, err := r.store.List(context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +262,16 @@ func (r *rig) only(t *testing.T) (Conversation, []*agentv1.Event) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return c, events
+	return c, plain(events)
+}
+
+// plain is the events without their agent and time.
+func plain(stored []StoredEvent) []*agentv1.Event {
+	out := make([]*agentv1.Event, len(stored))
+	for i, se := range stored {
+		out[i] = se.Event
+	}
+	return out
 }
 
 // kinds is each event's kind, in order.
@@ -308,7 +317,7 @@ func TestATurnLoopsThroughToolsToASay(t *testing.T) {
 		events[2].GetToolResult().GetCallId() != "c1" || events[3].GetAgent() != "On it" {
 		t.Fatalf("events: %v", events)
 	}
-	if c.InTokens != 30 || c.OutTokens != 5 || !c.CostKnown || c.CostUSD < 0.0299 || c.CostUSD > 0.0301 || c.Model != "m" {
+	if u := c.Total(""); u.InTokens != 30 || u.OutTokens != 5 || !u.CostKnown || u.CostUSD < 0.0299 || u.CostUSD > 0.0301 || u.Model != "m" {
 		t.Fatalf("usage: %+v", c)
 	}
 	steps := r.agent.requests()
@@ -575,8 +584,8 @@ func TestAnErrandsQuestionBecomesATurn(t *testing.T) {
 		t.Fatalf("last event: %v", events[len(events)-1])
 	}
 	r.settle(t)
-	if _, stored, _, _ := r.store.One(context.Background(), conv); !equal(kinds(stored), []string{"errand:question", "agent"}) {
-		t.Fatalf("stored: %v", kinds(stored))
+	if _, stored, _, _ := r.store.One(context.Background(), conv); !equal(kinds(plain(stored)), []string{"errand:question", "agent"}) {
+		t.Fatalf("stored: %v", kinds(plain(stored)))
 	}
 }
 
@@ -676,8 +685,8 @@ func TestAHumanCheckSendsTheConsoleLink(t *testing.T) {
 		t.Fatalf("sent %q, want %q", got, want)
 	}
 	r.settle(t)
-	if _, stored, _, _ := r.store.One(context.Background(), conv); !equal(kinds(stored), []string{"errand:human_check", "agent"}) {
-		t.Fatalf("stored: %v", kinds(stored))
+	if _, stored, _, _ := r.store.One(context.Background(), conv); !equal(kinds(plain(stored)), []string{"errand:human_check", "agent"}) {
+		t.Fatalf("stored: %v", kinds(plain(stored)))
 	}
 	r.hub.cfg.ConsoleURL = ""
 	r.hub.RunEvent(signins.RunEvent{Run: 41, Kind: "human_check"})
@@ -717,7 +726,7 @@ func TestAnEventOfNoConversationIsDropped(t *testing.T) {
 		t.Fatalf("dropping three events took %v", took)
 	}
 	r.channel.none(t)
-	if list, _ := r.store.List(context.Background()); len(list) != 0 {
+	if list, _ := r.store.List(context.Background(), ""); len(list) != 0 {
 		t.Fatalf("conversations: %v", list)
 	}
 }
@@ -807,7 +816,7 @@ func TestAnIdleConversationIsNotReused(t *testing.T) {
 	r.hub.Owner(context.Background(), "whatsapp", "chat", "later", Source{})
 	r.channel.next(t)
 	r.settle(t)
-	list, err := r.store.List(context.Background())
+	list, err := r.store.List(context.Background(), "")
 	if err != nil || len(list) != 2 {
 		t.Fatalf("conversations: %+v %v", list, err)
 	}

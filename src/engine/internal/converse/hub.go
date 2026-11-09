@@ -166,7 +166,7 @@ func (h *Hub) closeDangling(conv int64) {
 		}
 	}
 	for _, c := range open {
-		if _, err := h.cfg.Store.Append(h.base, conv, &agentv1.Event{Kind: &agentv1.Event_ToolResult{ToolResult: &agentv1.ToolResult{
+		if _, err := h.cfg.Store.Append(h.base, conv, "", &agentv1.Event{Kind: &agentv1.Event_ToolResult{ToolResult: &agentv1.ToolResult{
 			CallId: c.GetCallId(), ResultJson: restarted}}}, h.cfg.Now()); err != nil {
 			slog.Error("converse: closing a tool call the restart cut short", "conversation", conv, "err", err)
 		}
@@ -580,7 +580,7 @@ func (h *Hub) step(ctx context.Context, c Conversation, taking int64, agent agen
 		slog.Error("converse: a step failed", "conversation", c.ID, "code", connect.CodeOf(err).String())
 		return nil, false
 	}
-	if err := h.cfg.Store.AddUsage(ctx, c.ID, resp.Msg.GetUsage()); err != nil {
+	if err := h.cfg.Store.AddUsage(ctx, c.ID, "", resp.Msg.GetUsage()); err != nil {
 		slog.Error("converse: adding a step's usage", "conversation", c.ID, "err", err)
 	}
 	return resp.Msg, true
@@ -589,12 +589,12 @@ func (h *Hub) step(ctx context.Context, c Conversation, taking int64, agent agen
 // runTool appends the call, runs it in the turn taking #taking and appends its result; false when
 // either can't be kept.
 func (h *Hub) runTool(ctx context.Context, conv, taking int64, call *agentv1.ToolCall) bool {
-	if _, err := h.cfg.Store.Append(ctx, conv, &agentv1.Event{Kind: &agentv1.Event_ToolCall{ToolCall: call}}, h.cfg.Now()); err != nil {
+	if _, err := h.cfg.Store.Append(ctx, conv, "", &agentv1.Event{Kind: &agentv1.Event_ToolCall{ToolCall: call}}, h.cfg.Now()); err != nil {
 		slog.Error("converse: keeping a tool call", "conversation", conv, "err", err)
 		return false
 	}
 	result := h.cfg.Tools.Call(ctx, conv, taking, call)
-	if _, err := h.cfg.Store.Append(ctx, conv, &agentv1.Event{Kind: &agentv1.Event_ToolResult{ToolResult: &agentv1.ToolResult{
+	if _, err := h.cfg.Store.Append(ctx, conv, "", &agentv1.Event{Kind: &agentv1.Event_ToolResult{ToolResult: &agentv1.ToolResult{
 		CallId: call.GetCallId(), ResultJson: result}}}, h.cfg.Now()); err != nil {
 		slog.Error("converse: keeping a tool's result", "conversation", conv, "err", err)
 		return false
@@ -605,7 +605,7 @@ func (h *Hub) runTool(ctx context.Context, conv, taking int64, call *agentv1.Too
 // say keeps the words as the agent's and sends them to the owner on the conversation's channel;
 // false when the send failed.
 func (h *Hub) say(ctx context.Context, c Conversation, ch Channel, text string) bool {
-	if _, err := h.cfg.Store.Append(ctx, c.ID, &agentv1.Event{Kind: &agentv1.Event_Agent{Agent: text}}, h.cfg.Now()); err != nil {
+	if _, err := h.cfg.Store.Append(ctx, c.ID, "", &agentv1.Event{Kind: &agentv1.Event_Agent{Agent: text}}, h.cfg.Now()); err != nil {
 		slog.Error("converse: keeping the agent's words", "conversation", c.ID, "err", err)
 	}
 	sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)

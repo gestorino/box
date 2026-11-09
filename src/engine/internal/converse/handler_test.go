@@ -252,13 +252,13 @@ func TestConversationListAndOne(t *testing.T) {
 	appendEvent(t, s, cv, &agentv1.Event{Kind: &agentv1.Event_ToolResult{ToolResult: &agentv1.ToolResult{CallId: "c", ResultJson: `{"run":7}`}}})
 	appendEvent(t, s, cv, errandEvent(7, "question", "Which?", "a", "b"))
 	appendEvent(t, s, cv, errandEvent(7, "done", "ok"))
-	if _, err := s.Append(context.Background(), cv, said("later"), t0.Add(time.Hour)); err != nil {
+	if _, err := s.Append(context.Background(), cv, "", said("later"), t0.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.LinkRun(context.Background(), cv, 7); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddUsage(context.Background(), cv, &agentv1.Usage{Model: "m", CostUsd: 0.5, CostKnown: true, InputTokens: 10, OutputTokens: 3}); err != nil {
+	if err := s.AddUsage(context.Background(), cv, "", &agentv1.Usage{Model: "m", CostUsd: 0.5, CostKnown: true, InputTokens: 10, OutputTokens: 3}); err != nil {
 		t.Fatal(err)
 	}
 	h := NewHandler(s, nil, nil)
