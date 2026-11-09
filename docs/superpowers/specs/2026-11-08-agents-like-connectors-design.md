@@ -50,7 +50,8 @@ conversations. With both added, one is the **primary** and answers, and the othe
   - **Primary** / **Secondary**: which role it has; **Make primary** on the secondary swaps them.
     With one agent added it is the primary and there is nothing to swap.
   - its account, CLI version and model (what `Status` reports today);
-  - **Sign in again** when it isn't signed in (the setup page's sign-in, the agent staying added);
+  - **Sign in again** when it isn't signed in and its daemon answers (the setup page's sign-in,
+    with no second add and no Cancel, the agent staying added); "Not reachable" when it doesn't;
   - **Sign out** (`Logout`; it stays added and amber; while it is signed out the other answers);
   - **Remove** (asks in a modal, as a connector's Remove: signs it out, stops its unit, `not_added`).
     Removing the primary makes the secondary the primary.
@@ -88,12 +89,20 @@ conversations. With both added, one is the **primary** and answers, and the othe
 - **The owner is told once** when the secondary first answers in a conversation after the primary
   couldn't, before the secondary's words, in the hub's words, never the model's: "Claude can't answer
   now (not signed in | out of its plan's limit | not reachable); Codex is answering." — told again
-  only after a turn the primary answered. With no secondary added (or it can't answer either), the
-  owner gets `couldNotFinish` with the primary's reason in the same words.
+  only after a turn the primary answered. Whether it is due is decided at the switch; it is said only
+  just before the secondary's own say or end, so it is never in the secondary's window and never said
+  when the secondary fails too. With no secondary added (or it can't answer either), the owner gets
+  `couldNotFinish` with the primary's reason in the same words.
 - **The limit is remembered**: a `ResourceExhausted` step marks that agent limited (agent.db, the
-  time it was hit) until its next successful step. `/api/v1/agents` reports it (`limited_at`), which
-  is the sidebar's amber "Out of its plan's limit". The hub still tries a limited primary first on
-  every turn (the limit has no known end; trying costs one quick failed step).
+  time it was hit) until its next successful step, a finished sign-in or a sign-out (the console's
+  Sign out and Remove both sign out). `/api/v1/agents` reports it (`limited_at`) within 24 h of it
+  (an older one is not reported; its row stays until cleared), which is the sidebar's amber "Out of
+  its plan's limit" and the panel's "Out of its plan's limit since …". The hub still tries a limited
+  primary first on every turn (the limit has no known end; trying costs one quick failed step).
+- **A refused sign-in is not signed in**: besides a missing token or `auth.json`, each runner reads
+  the CLI's reply for an auth failure (`cliproc.SignInRefused`: an invalid key, a 401, an expired
+  token or session) and answers `Unauthenticated`, as it reads a limit — provisional words, settled
+  by the live check's recorded replies.
 
 ### 4. Each agent's own conversations
 

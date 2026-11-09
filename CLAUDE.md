@@ -269,7 +269,7 @@ docs/superpowers/  current design docs (specs/); implementation plans (plans/) a
   (the question's `wait`) answers it, never the agent's words; a question takes only one of its own options or the
   owner's message, never the agent's words either. When the primary's step fails with Unauthenticated (not signed in),
   ResourceExhausted (out of its plan's limit) or Unavailable (not reachable), the secondary answers that one turn, and the owner is told once per
-  stretch in fixed words ("Claude can't answer now (…); Codex is answering."); a limit is remembered (`limited_at` on `/api/v1/agents`, the sidebar's amber circle). Each agent's page `/agents/{name}`
+  stretch in fixed words ("Claude can't answer now (…); Codex is answering."); the notice is said just before the secondary's words, never in its window; a CLI's refused sign-in counts as not signed in; a limit is remembered until a step works, a sign-in or a sign-out (`limited_at` on `/api/v1/agents`, within 24 h; the sidebar's amber circle). Each agent's page `/agents/{name}`
   lists its conversations (`/agents/{name}/{id}`: the events) and its settings (Primary/Secondary, Make primary, Sign in again, Sign out, Remove); "Answer me on WhatsApp" is on `/agents`. **Every agent's event and its usage carry the agent; usage is shown per conversation and per agent**, a cost labelled "plan equivalent" (the subscription's, not a
   bill), "unknown" when the CLI gave none. Design: `docs/superpowers/specs/2026-11-07-agent-design.md`, `docs/superpowers/specs/2026-11-08-agents-like-connectors-design.md`.
 - **`internal/listen/`** — listeners: the engine waits for an email or an SMS and the connector
