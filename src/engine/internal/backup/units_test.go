@@ -20,8 +20,8 @@ func TestUnitsStopOrder(t *testing.T) {
 		}
 		seen[u] = true
 	}
-	if n != 22 {
-		t.Errorf("%d units; want 22", n)
+	if n != 24 {
+		t.Errorf("%d units; want 24", n)
 	}
 	// sensord reads the state directories (CAP_DAC_READ_SEARCH) through mounts on the old ones: it
 	// must not outlive a swap, and stops before secretd as everything else does.
@@ -40,6 +40,8 @@ func TestCoreUnitsStartOrder(t *testing.T) {
 		"concierge-hostd.service",
 		"concierge-sensors.service",
 		"concierge-worker.service",
+		"concierge-relay.socket",
+		"concierge-relay.service",
 		"concierge-engine.service",
 	}
 	if !slices.Equal(CoreUnits, want) {
@@ -49,5 +51,15 @@ func TestCoreUnitsStartOrder(t *testing.T) {
 		if !slices.Contains(Units, u) {
 			t.Errorf("%s is not one of Units: a backup would not stop it", u)
 		}
+	}
+}
+
+// relayd reads secretd and always runs (hostd does not start it): it stops before secretd, and
+// the backup starts it again with the core.
+func TestUnitsStopRelayBeforeSecretd(t *testing.T) {
+	svc, sock := slices.Index(Units, "concierge-relay.service"), slices.Index(Units, "concierge-relay.socket")
+	secrets := slices.Index(Units, "concierge-secrets.service")
+	if svc < 0 || sock != svc+1 || sock >= secrets {
+		t.Fatalf("Units %v: want relay's service, then its socket, before secretd", Units)
 	}
 }

@@ -56,13 +56,15 @@ var Units = []string{
 	"concierge-claude.socket",
 	"concierge-codex.service",
 	"concierge-codex.socket",
+	"concierge-relay.service",
+	"concierge-relay.socket",
 	"concierge-sensors.service",
 	"concierge-secrets.service",
 	"concierge-secrets.socket",
 }
 
 // CoreUnits are what a backup or restore starts again, in start order: secretd first, the engine
-// last. hostd then starts the connectors the owner added, and keeps the rest stopped, as at boot.
+// last. relayd, always on, starts with it; hostd then starts the connectors the owner added, and keeps the rest stopped, as at boot.
 // While Marker exists none of the units starts (each has ConditionPathExists=! on it), reboot
 // included, so it is removed before they are started.
 var CoreUnits = []string{
@@ -73,6 +75,8 @@ var CoreUnits = []string{
 	"concierge-hostd.service",
 	"concierge-sensors.service",
 	"concierge-worker.service",
+	"concierge-relay.socket",
+	"concierge-relay.service",
 	"concierge-engine.service",
 }
 
