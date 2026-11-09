@@ -407,20 +407,71 @@ func TestConversationUsagePerAgent(t *testing.T) {
 	}
 }
 
-func TestAgentsReportLimit(t *testing.T) {
+// limitsHandler is the console's API on the store s and the agents, its clock at now.
+func limitsHandler(s *Store, agents map[string]agentv1connect.AgentServiceClient, now time.Time) http.Handler {
+	return (&handler{store: s, agents: agents, needsCode: map[string]bool{}, loginTimeout: loginTimeout,
+		finishTimeout: finishTimeout, now: func() time.Time { return now }}).routes()
+}
+
+func TestAgentsReportALimitOfTheLastDayOnly(t *testing.T) {
 	s := openStore(t)
-	if err := s.MarkLimited(context.Background(), "codex", t0); err != nil {
+	now := t0.Add(48 * time.Hour)
+	if err := s.MarkLimited(context.Background(), "claude", now.Add(-25*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	rec := do(NewHandler(s, nil, nil), "GET", "/api/v1/agents", "")
+	if err := s.MarkLimited(context.Background(), "codex", now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	rec := do(limitsHandler(s, nil, now), "GET", "/api/v1/agents", "")
 	var raw []map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil || len(raw) != 2 {
 		t.Fatalf("%s %v", rec.Body, err)
 	}
 	if _, ok := raw[0]["limited_at"]; ok {
-		t.Fatalf("claude limited: %v", raw[0])
+		t.Fatalf("claude's limit of 25 h ago reported: %v", raw[0])
 	}
-	if at, _ := raw[1]["limited_at"].(string); at == "" || !strings.HasPrefix(at, t0.UTC().Format("2006-01-02")) {
+	if at, _ := raw[1]["limited_at"].(string); at != now.Add(-time.Hour).Format(time.RFC3339) {
 		t.Fatalf("codex: %v", raw[1])
+	}
+	if limited, err := s.Limited(context.Background()); err != nil || len(limited) != 2 {
+		t.Fatalf("the old limit is forgotten: %v %v", limited, err)
+	}
+}
+
+func TestASignInFinishedOrALogoutClearsTheLimit(t *testing.T) {
+	for _, path := range []string{"login/finish", "logout"} {
+		t.Run(path, func(t *testing.T) {
+			s := openStore(t)
+			for _, name := range AgentNames {
+				if err := s.MarkLimited(context.Background(), name, t0); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h := limitsHandler(s, map[string]agentv1connect.AgentServiceClient{"claude": serveLogin(t, &loginAgent{})}, t0)
+			if rec := do(h, "POST", "/api/v1/agents/claude/"+path, `{"code":"123"}`); rec.Code != http.StatusNoContent {
+				t.Fatalf("%d %s", rec.Code, rec.Body)
+			}
+			limited, err := s.Limited(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := limited["claude"]; ok || len(limited) != 1 {
+				t.Fatalf("limited after %s: %v", path, limited)
+			}
+		})
+	}
+}
+
+func TestAFailedSignInKeepsTheLimit(t *testing.T) {
+	s := openStore(t)
+	if err := s.MarkLimited(context.Background(), "claude", t0); err != nil {
+		t.Fatal(err)
+	}
+	h := limitsHandler(s, map[string]agentv1connect.AgentServiceClient{"claude": serveLogin(t, &loginAgent{})}, t0)
+	if rec := do(h, "POST", "/api/v1/agents/claude/login/finish", `{}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if limited, err := s.Limited(context.Background()); err != nil || len(limited) != 1 {
+		t.Fatalf("limited: %v %v", limited, err)
 	}
 }

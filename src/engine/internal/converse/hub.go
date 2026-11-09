@@ -535,12 +535,16 @@ func (h *Hub) errandLink(run int64) string {
 // turn steps the first agent of the order on the event e until it says something or ends, running
 // each tool it calls, at most MaxTools; false when the hub's stop cut it short (nothing said: it runs
 // again). A step the agent can't answer (fallsBack) goes to the next agent of the order, on the same
-// window; the owner is told of the switch unless the next agent said the conversation's last words
-// already (once a stretch). A turn that fails tells the owner what it could (failed), and why when no
-// agent could answer.
+// window. Whether the owner is told of the switch is decided at the switch: unless the next agent said
+// the conversation's last words already (once a stretch); the notice is said only just before the next
+// agent's own words, so it is never in that agent's window and never said when it fails too. A turn
+// that fails tells the owner what it could (failed), and, when no agent could answer, why the primary
+// couldn't.
 func (h *Hub) turn(ctx context.Context, c Conversation, e *agentv1.Event, order []string, ch Channel) bool {
 	taking := e.GetId()
 	cur := 0
+	var primary connect.Code // why the primary couldn't answer
+	notice := ""             // the switch's notice, said before the answering agent's words; "" when none is due
 	for tools := 0; ; {
 		name := order[cur]
 		resp, err := h.step(ctx, c, taking, name)
@@ -558,13 +562,17 @@ func (h *Hub) turn(ctx context.Context, c Conversation, e *agentv1.Event, order 
 					slog.Error("converse: marking an agent's limit", "agent", name, "err", err)
 				}
 			}
+			if cur == 0 {
+				primary = code
+			}
 			if cur+1 == len(order) {
-				h.failed(ctx, c, ch, e, cantAnswer(name, code))
+				h.failed(ctx, c, ch, e, cantAnswer(order[0], primary))
 				return true
 			}
 			next := order[cur+1]
+			notice = ""
 			if h.noticeDue(ctx, c.ID, next) {
-				h.say(ctx, c, ch, "", switchNotice(name, next, code))
+				notice = switchNotice(name, next, code)
 			}
 			cur++
 			continue
@@ -585,10 +593,10 @@ func (h *Hub) turn(ctx context.Context, c Conversation, e *agentv1.Event, order 
 				return true
 			}
 		case *agentv1.StepResponse_Say:
-			h.say(ctx, c, ch, name, a.Say)
+			h.sayAfter(ctx, c, ch, notice, name, a.Say)
 			return true
 		case *agentv1.StepResponse_End:
-			h.say(ctx, c, ch, name, a.End)
+			h.sayAfter(ctx, c, ch, notice, name, a.End)
 			if err := h.cfg.Store.End(ctx, c.ID, h.running); err != nil {
 				slog.Error("converse: ending a conversation", "conversation", c.ID, "err", err)
 			}
@@ -677,6 +685,14 @@ func (h *Hub) runTool(ctx context.Context, conv, taking int64, agent string, cal
 		return false
 	}
 	return true
+}
+
+// sayAfter says the switch's notice, when one is due, and then the agent's own words.
+func (h *Hub) sayAfter(ctx context.Context, c Conversation, ch Channel, notice, agent, text string) {
+	if notice != "" {
+		h.say(ctx, c, ch, "", notice)
+	}
+	h.say(ctx, c, ch, agent, text)
 }
 
 // say keeps the words as the agent's ("" for the hub's own) and sends them to the owner on the

@@ -29,6 +29,9 @@ const (
 	// code), so the daemon ends it, not this request.
 	finishTimeout = 16 * time.Minute
 	firstWordsMax = 80
+	// limitShown is how long after an agent's limit the console is told of it: a limit not cleared by
+	// then (no step, sign-in or sign-out since) is stale, and not reported.
+	limitShown = 24 * time.Hour
 )
 
 // AgentStates is each agent's connector state in hostd (not_added, setting_up or added).
@@ -43,7 +46,7 @@ type AgentStates interface {
 // conversations then answer 503; states is hostd's connectors (nil: no state is said).
 func NewHandler(store *Store, agents map[string]agentv1connect.AgentServiceClient, states AgentStates) http.Handler {
 	return (&handler{store: store, agents: agents, states: states, needsCode: map[string]bool{},
-		loginTimeout: loginTimeout, finishTimeout: finishTimeout}).routes()
+		loginTimeout: loginTimeout, finishTimeout: finishTimeout, now: time.Now}).routes()
 }
 
 func (h *handler) routes() http.Handler {
@@ -69,6 +72,7 @@ type handler struct {
 	needsCode map[string]bool
 
 	loginTimeout, finishTimeout time.Duration
+	now                         func() time.Time
 }
 
 // AgentView is one agent as the console sees it. State is its connector's in hostd (not_added,
@@ -82,8 +86,8 @@ type AgentView struct {
 	Model      string `json:"model"`
 	Reachable  bool   `json:"reachable"`
 	State      string `json:"state"`
-	// LimitedAt is when the agent last said its plan's limit was reached; absent when it never has (or
-	// without -agent-db).
+	// LimitedAt is when the agent last said its plan's limit was reached, within limitShown; absent when
+	// it hasn't since (or without -agent-db).
 	LimitedAt *time.Time `json:"limited_at,omitempty"`
 }
 
@@ -134,7 +138,7 @@ func (h *handler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	for i := range out {
 		out[i].State = states[out[i].Name]
-		if at, ok := limited[out[i].Name]; ok {
+		if at, ok := limited[out[i].Name]; ok && h.now().Sub(at) < limitShown {
 			out[i].LimitedAt = &at
 		}
 	}
@@ -203,6 +207,7 @@ func (h *handler) finish(w http.ResponseWriter, r *http.Request) {
 		fail(w, name, "login finish", err)
 		return
 	}
+	h.clearLimit(r.Context(), name)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -217,7 +222,18 @@ func (h *handler) logout(w http.ResponseWriter, r *http.Request) {
 		fail(w, name, "logout", err)
 		return
 	}
+	h.clearLimit(r.Context(), name)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// clearLimit forgets the agent's limit: a finished sign-in or a sign-out starts it afresh.
+func (h *handler) clearLimit(ctx context.Context, name string) {
+	if h.store == nil {
+		return
+	}
+	if err := h.store.ClearLimited(context.WithoutCancel(ctx), name); err != nil {
+		slog.Error("converse: clearing an agent's limit", "agent", name, "err", err)
+	}
 }
 
 func agentName(w http.ResponseWriter, r *http.Request) (string, bool) {

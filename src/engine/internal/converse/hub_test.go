@@ -1197,28 +1197,53 @@ func TestFallbackKeepsTheWindow(t *testing.T) {
 			return toolCall("list_accounts", `{}`), nil
 		}
 		return nil, connect.NewError(connect.CodeUnavailable, errors.New("down"))
-	}, saying("ok"))
+	}, func(n int, _ *agentv1.StepRequest) (*agentv1.StepResponse, error) {
+		if n == 1 {
+			return toolCall("list_accounts", `{}`), nil
+		}
+		return say("ok"), nil
+	})
 	r.hub.Owner(context.Background(), "whatsapp", "chat", "go", Source{})
-	r.channel.next(t)
+	if got, want := r.channel.next(t), switchNotice("claude", "codex", connect.CodeUnavailable); got != want {
+		t.Fatalf("sent %q, want %q", got, want)
+	}
 	if got := r.channel.next(t); got != "ok" {
 		t.Fatalf("sent %q", got)
 	}
 	r.settle(t)
 	steps := r.codex.requests()
-	if len(steps) != 1 {
+	if len(steps) != 2 {
 		t.Fatalf("the secondary stepped %d times", len(steps))
 	}
-	if want := []string{"owner", "tool_call", "tool_result", "agent"}; !equal(kinds(steps[0].GetEvents()), want) {
+	if want := []string{"owner", "tool_call", "tool_result"}; !equal(kinds(steps[0].GetEvents()), want) {
 		t.Fatalf("the secondary saw %v", kinds(steps[0].GetEvents()))
+	}
+	if want := []string{"owner", "tool_call", "tool_result", "tool_call", "tool_result"}; !equal(kinds(steps[1].GetEvents()), want) {
+		t.Fatalf("the secondary saw %v next", kinds(steps[1].GetEvents()))
 	}
 	stored := r.stored(t)
 	var by []string
 	for _, se := range stored {
 		by = append(by, se.Agent)
 	}
-	if want := []string{"", "claude", "claude", "", "codex"}; !equal(by, want) {
+	if want := []string{"", "claude", "claude", "codex", "codex", "", "codex"}; !equal(by, want) {
 		t.Fatalf("said by %q, want %q (%v)", by, want, kinds(plain(stored)))
 	}
+}
+
+func TestNoNoticeWhenTheSecondaryFailsLater(t *testing.T) {
+	r := newRigOf(t, openStore(t), failing(connect.CodeUnavailable), func(n int, _ *agentv1.StepRequest) (*agentv1.StepResponse, error) {
+		if n == 1 {
+			return toolCall("list_accounts", `{}`), nil
+		}
+		return nil, connect.NewError(connect.CodeInternal, errors.New("broken"))
+	})
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "go", Source{})
+	if got := r.channel.next(t); got != couldNotFinish {
+		t.Fatalf("sent %q", got)
+	}
+	r.settle(t)
+	r.channel.none(t)
 }
 
 func TestNoSecondary(t *testing.T) {
@@ -1234,10 +1259,7 @@ func TestNoSecondary(t *testing.T) {
 func TestBothCantAnswer(t *testing.T) {
 	r := newRigOf(t, openStore(t), failing(connect.CodeUnauthenticated), failing(connect.CodeUnavailable))
 	r.hub.Owner(context.Background(), "whatsapp", "chat", "go", Source{})
-	if got, want := r.channel.next(t), switchNotice("claude", "codex", connect.CodeUnauthenticated); got != want {
-		t.Fatalf("sent %q, want %q", got, want)
-	}
-	if got, want := r.channel.next(t), couldNotFinish+". "+cantAnswer("codex", connect.CodeUnavailable); got != want {
+	if got, want := r.channel.next(t), couldNotFinish+". "+cantAnswer("claude", connect.CodeUnauthenticated); got != want {
 		t.Fatalf("sent %q, want %q", got, want)
 	}
 	r.settle(t)
