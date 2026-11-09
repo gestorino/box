@@ -265,6 +265,7 @@ describe('an agent’s setup page', () => {
   it('an agent already added says so, with Open', async () => {
     open('claude', { [AGENTS]: { body: [agent('claude', ADDED), agent('codex')] } })
     expect(await screen.findByText('✓ Claude is added')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1, name: 'Add Claude' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Open Claude' })).toHaveAttribute('href', '/agents/claude')
     expect(screen.queryByRole('button', { name: 'Sign in' })).toBeNull()
   })

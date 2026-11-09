@@ -139,7 +139,7 @@ function Setup({ name }: { name: AgentName }) {
   return (
     <div className="max-w-xl space-y-6">
       <PageHeader
-        title={state === 'added' ? `Sign in to ${meta.label}` : `Add ${meta.label}`}
+        title={state === 'added' && !done ? `Sign in to ${meta.label}` : `Add ${meta.label}`}
         description="Sign in with your own account on the provider's page."
         actions={
           <div className="flex flex-wrap gap-2">
