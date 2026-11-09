@@ -133,7 +133,7 @@ func TestSettingsMigratesV1RowsToAdded(t *testing.T) {
 	}
 	var v int
 	s.db.QueryRow(`PRAGMA user_version`).Scan(&v)
-	if v != 4 {
+	if v != 5 {
 		t.Fatalf("user_version %d", v)
 	}
 	s.Close()
@@ -177,12 +177,12 @@ func TestSettingsDropsTheOldSealedCardRow(t *testing.T) {
 		rows.Scan(&k)
 		keys = append(keys, k)
 	}
-	if fmt.Sprint(keys) != "[card_last4 sms_retention_days]" {
+	if fmt.Sprint(keys) != "[agent_primary card_last4 sms_retention_days]" {
 		t.Fatalf("keys = %v", keys)
 	}
 	var v int
 	s.db.QueryRow(`PRAGMA user_version`).Scan(&v)
-	if v != 4 {
+	if v != 5 {
 		t.Fatalf("user_version %d", v)
 	}
 }
@@ -338,29 +338,165 @@ func TestAgentSettingsRoundTrip(t *testing.T) {
 	svc, _, _, _ := newService()
 	st, _ := openSettings(t)
 	h := NewHandler(svc, st)
-	if rec := call(h, "GET", "/settings/agent", ""); rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != `{"agent":"","answer":{"whatsapp":false}}` {
-		t.Fatalf("empty: %d %s", rec.Code, rec.Body)
+	addAgents(t, st, "claude", "codex")
+	if rec := call(h, "GET", "/settings/agent", ""); rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != `{"primary":"claude","secondary":"codex","answer":{"whatsapp":false}}` {
+		t.Fatalf("first: %d %s", rec.Code, rec.Body)
 	}
-	if rec := call(h, "PUT", "/settings/agent", `{"agent":"codex","answer":{"whatsapp":true}}`); rec.Code != http.StatusNoContent {
+	// a sent secondary is ignored
+	if rec := call(h, "PUT", "/settings/agent", `{"primary":"codex","secondary":"nobody","answer":{"whatsapp":true}}`); rec.Code != http.StatusNoContent {
 		t.Fatalf("put: %d %s", rec.Code, rec.Body)
 	}
-	if rec := call(h, "GET", "/settings/agent", ""); strings.TrimSpace(rec.Body.String()) != `{"agent":"codex","answer":{"whatsapp":true}}` {
+	want := `{"primary":"codex","secondary":"claude","answer":{"whatsapp":true}}`
+	if rec := call(h, "GET", "/settings/agent", ""); strings.TrimSpace(rec.Body.String()) != want {
 		t.Fatalf("get: %s", rec.Body)
 	}
-	rec := call(h, "PUT", "/settings/agent", `{"agent":"gpt","answer":{"whatsapp":false}}`)
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "agent") {
+	rec := call(h, "PUT", "/settings/agent", `{"primary":"gpt","answer":{"whatsapp":false}}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "primary") {
 		t.Fatalf("gpt: %d %s", rec.Code, rec.Body)
 	}
-	if rec := call(h, "PUT", "/settings/agent", `{"agent":"claude","nope":1}`); rec.Code != http.StatusBadRequest {
+	if rec := call(h, "PUT", "/settings/agent", `{"primary":"claude","nope":1}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("unknown field: %d", rec.Code)
 	}
-	if rec := call(h, "GET", "/settings/agent", ""); strings.TrimSpace(rec.Body.String()) != `{"agent":"codex","answer":{"whatsapp":true}}` {
+	if rec := call(h, "GET", "/settings/agent", ""); strings.TrimSpace(rec.Body.String()) != want {
 		t.Fatalf("refused puts changed it: %s", rec.Body)
-	}
-	if rec := call(h, "PUT", "/settings/agent", `{"agent":"","answer":{"whatsapp":false}}`); rec.Code != http.StatusNoContent {
-		t.Fatalf("clear: %d", rec.Code)
 	}
 	if rec := call(NewSettingsHandler(st, svc), "GET", "/settings/agent", ""); rec.Code == http.StatusOK {
 		t.Fatal("the read-only socket serves /settings/agent")
+	}
+}
+
+// addAgents lists each name as added, in order, through Begin and Verify.
+func addAgents(t *testing.T, st *Settings, names ...string) {
+	t.Helper()
+	for _, n := range names {
+		if err := st.Begin(ctx, n); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := st.Verify(ctx, n); err != nil || !ok {
+			t.Fatalf("verify %s: %v %v", n, ok, err)
+		}
+	}
+}
+
+func wantAgent(t *testing.T, st *Settings, primary, secondary string) {
+	t.Helper()
+	a, err := st.Agent(ctx)
+	if err != nil || a.Primary != primary || a.Secondary != secondary {
+		t.Fatalf("agent = %+v %v, want primary %q secondary %q", a, err, primary, secondary)
+	}
+}
+
+func TestFirstVerifiedAgentBecomesPrimary(t *testing.T) {
+	st, _ := openSettings(t)
+	addAgents(t, st, "codex")
+	wantAgent(t, st, "codex", "")
+	addAgents(t, st, "claude")
+	wantAgent(t, st, "codex", "claude")
+}
+
+func TestVerifyAChannelSetsNoPrimary(t *testing.T) {
+	st, _ := openSettings(t)
+	addAgents(t, st, "whatsapp")
+	wantAgent(t, st, "", "")
+}
+
+func TestForgetPrimaryPromotesTheOther(t *testing.T) {
+	st, _ := openSettings(t)
+	addAgents(t, st, "claude", "codex")
+	if err := st.Forget(ctx, "claude"); err != nil {
+		t.Fatal(err)
+	}
+	wantAgent(t, st, "codex", "")
+	if err := st.Forget(ctx, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	wantAgent(t, st, "", "")
+}
+
+func TestForgetPrimaryWithOtherNotAddedClears(t *testing.T) {
+	st, _ := openSettings(t)
+	addAgents(t, st, "claude")
+	if err := st.Begin(ctx, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Forget(ctx, "claude"); err != nil {
+		t.Fatal(err)
+	}
+	wantAgent(t, st, "", "")
+}
+
+func TestSetAgentRefusesAnAgentNotAdded(t *testing.T) {
+	svc, _, _, _ := newService()
+	st, _ := openSettings(t)
+	addAgents(t, st, "claude")
+	if err := st.SetAgent(ctx, Agent{Primary: "codex"}); !errors.Is(err, ErrAgentNotAdded) {
+		t.Fatalf("err = %v", err)
+	}
+	if rec := call(NewHandler(svc, st), "PUT", "/settings/agent", `{"primary":"codex","answer":{"whatsapp":false}}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("put: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestSetAgentRefusesNoPrimaryWhileOneIsAdded(t *testing.T) {
+	st, _ := openSettings(t)
+	addAgents(t, st, "claude")
+	if err := st.SetAgent(ctx, Agent{Primary: ""}); !errors.Is(err, ErrAgentNotAdded) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestSetAgentAcceptsNoPrimaryWhileNoneIsAdded(t *testing.T) {
+	st, _ := openSettings(t)
+	if err := st.SetAgent(ctx, Agent{Answer: AgentAnswer{WhatsApp: true}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSwapPrimary(t *testing.T) {
+	st, _ := openSettings(t)
+	addAgents(t, st, "claude", "codex")
+	if err := st.SetAgent(ctx, Agent{Primary: "codex", Answer: AgentAnswer{WhatsApp: true}}); err != nil {
+		t.Fatal(err)
+	}
+	wantAgent(t, st, "codex", "claude")
+	if a, _ := st.Agent(ctx); !a.Answer.WhatsApp {
+		t.Fatalf("answer lost: %+v", a)
+	}
+}
+
+func TestMigrateV5MovesAgentToPrimary(t *testing.T) {
+	for _, c := range []struct{ name, agent, rows, want string }{
+		{"chosen and added", "codex", `('codex', 'added')`, "codex"},
+		{"none chosen, claude added", "", `('claude', 'added')`, "claude"},
+		{"chosen but not added", "codex", `('codex', 'setting_up'), ('claude', 'added')`, "claude"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "settings.db")
+			db, err := sql.Open("sqlite", "file:"+path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+				CREATE TABLE connectors (name TEXT PRIMARY KEY, state TEXT NOT NULL CHECK (state IN ('setting_up', 'added')));
+				INSERT INTO connectors (name, state) VALUES ` + c.rows + `;
+				INSERT INTO settings (key, value) VALUES ('agent', '` + c.agent + `');
+				PRAGMA user_version = 4;`); err != nil {
+				t.Fatal(err)
+			}
+			db.Close()
+			s, err := OpenSettings(path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			if a, err := s.Agent(ctx); err != nil || a.Primary != c.want {
+				t.Fatalf("agent = %+v %v, want %q", a, err, c.want)
+			}
+			var n int
+			s.db.QueryRow(`SELECT count(*) FROM settings WHERE key = 'agent'`).Scan(&n)
+			if n != 0 {
+				t.Fatal("the old agent key is still there")
+			}
+		})
 	}
 }

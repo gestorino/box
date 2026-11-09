@@ -131,7 +131,7 @@ func TestTheVoiceNameMovesIntoAccount(t *testing.T) {
 		var n, ver int
 		st.db.QueryRow(`SELECT count(*) FROM settings WHERE key LIKE 'voice_name%'`).Scan(&n)
 		st.db.QueryRow(`PRAGMA user_version`).Scan(&ver)
-		if n != 0 || ver != 4 {
+		if n != 0 || ver != 5 {
 			t.Fatalf("%q: %d voice_name rows left, user_version %d", voiceName, n, ver)
 		}
 		st.Close()
