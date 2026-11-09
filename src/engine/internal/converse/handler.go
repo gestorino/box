@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -81,6 +82,9 @@ type AgentView struct {
 	Model      string `json:"model"`
 	Reachable  bool   `json:"reachable"`
 	State      string `json:"state"`
+	// LimitedAt is when the agent last said its plan's limit was reached; absent when it never has (or
+	// without -agent-db).
+	LimitedAt *time.Time `json:"limited_at,omitempty"`
 }
 
 func (h *handler) status(ctx context.Context, name string) (*agentv1.StatusResponse, error) {
@@ -105,7 +109,7 @@ func (h *handler) list(w http.ResponseWriter, r *http.Request) {
 			defer func() { done <- struct{}{} }()
 			out[i] = AgentView{Name: name}
 			if s, err := h.status(r.Context(), name); err == nil {
-				out[i] = AgentView{name, s.GetSignedIn(), s.GetAccount(), s.GetCliVersion(), s.GetModel(), true, ""}
+				out[i] = AgentView{name, s.GetSignedIn(), s.GetAccount(), s.GetCliVersion(), s.GetModel(), true, "", nil}
 			}
 		}()
 	}
@@ -121,8 +125,18 @@ func (h *handler) list(w http.ResponseWriter, r *http.Request) {
 	for range AgentNames {
 		<-done
 	}
+	var limited map[string]time.Time
+	if h.store != nil {
+		var err error
+		if limited, err = h.store.Limited(r.Context()); err != nil {
+			slog.Warn("converse: reading the agents' limits", "err", err)
+		}
+	}
 	for i := range out {
 		out[i].State = states[out[i].Name]
+		if at, ok := limited[out[i].Name]; ok {
+			out[i].LimitedAt = &at
+		}
 	}
 	reply(w, http.StatusOK, out)
 }
@@ -266,10 +280,13 @@ type EventView struct {
 	At   time.Time `json:"at"`
 	Kind string    `json:"kind"` // owner, agent, tool, result or errand
 	Text string    `json:"text"`
+	// Agent is the agent whose step the event belongs to; "" for the owner's and the errands' events.
+	Agent string `json:"agent"`
 }
 
-func view(c Conversation, first string) ConversationView {
-	t := c.Total("")
+// view is a conversation with the usage of agent, or of every agent when it is "".
+func view(c Conversation, first, agent string) ConversationView {
+	t := c.Total(agent)
 	return ConversationView{c.ID, c.Channel, c.State, c.Started, c.Last, cut(first, firstWordsMax), t.CostUSD, t.CostKnown,
 		t.InTokens, t.OutTokens, t.Model}
 }
@@ -293,7 +310,12 @@ func (h *handler) conversations(w http.ResponseWriter, r *http.Request) {
 	if h.unavailable(w) {
 		return
 	}
-	list, err := h.store.List(r.Context(), "")
+	agent := r.URL.Query().Get("agent")
+	if agent != "" && !slices.Contains(AgentNames, agent) {
+		reply(w, http.StatusBadRequest, map[string]string{"error": "no such agent"})
+		return
+	}
+	list, err := h.store.List(r.Context(), agent)
 	var first map[int64]string
 	if err == nil {
 		first, err = h.store.FirstWords(r.Context())
@@ -305,7 +327,7 @@ func (h *handler) conversations(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]ConversationView, len(list))
 	for i, c := range list {
-		out[i] = view(c, first[c.ID])
+		out[i] = view(c, first[c.ID], agent)
 	}
 	reply(w, http.StatusOK, out)
 }
@@ -333,15 +355,23 @@ func (h *handler) conversation(w http.ResponseWriter, r *http.Request) {
 	evs := make([]EventView, len(events))
 	for i, e := range events {
 		evs[i] = eventView(e.Event, e.At)
+		evs[i].Agent = e.Agent
 		if first == "" && evs[i].Kind == "owner" {
 			first = evs[i].Text
+		}
+	}
+	usage := []Usage{}
+	for _, u := range c.Usage {
+		if u.Agent != "" {
+			usage = append(usage, u)
 		}
 	}
 	reply(w, http.StatusOK, struct {
 		ConversationView
 		Events []EventView `json:"events"`
 		Runs   []int64     `json:"runs"`
-	}{view(c, first), evs, runs})
+		Usage  []Usage     `json:"usage"`
+	}{view(c, first, ""), evs, runs, usage})
 }
 
 // eventView puts an event in words: a tool call as its name and arguments, a result as its JSON, an

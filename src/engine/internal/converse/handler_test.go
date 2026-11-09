@@ -112,7 +112,7 @@ func TestAgentsListReportsEach(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	want := []AgentView{{"claude", true, "me@example.org", "1.2.3", "m1", true, "added"}, {Name: "codex", State: "not_added"}}
+	want := []AgentView{{"claude", true, "me@example.org", "1.2.3", "m1", true, "added", nil}, {Name: "codex", State: "not_added"}}
 	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
@@ -317,5 +317,110 @@ func TestConversationsWithNoHubAre503(t *testing.T) {
 		if rec.Code != http.StatusServiceUnavailable || strings.TrimSpace(rec.Body.String()) != `{"error":"agent unavailable"}` {
 			t.Fatalf("%s: %d %s", p, rec.Code, rec.Body)
 		}
+	}
+}
+
+// twoAgents is a store with a conversation claude spoke in, one codex spoke in, and one both did.
+func twoAgents(t *testing.T) (s *Store, onlyClaude, onlyCodex, both int64) {
+	t.Helper()
+	ctx := context.Background()
+	s = openStore(t)
+	onlyClaude, onlyCodex, both = open(t, s, "a"), open(t, s, "b"), open(t, s, "c")
+	for _, x := range []struct {
+		conv  int64
+		agent string
+		cost  float64
+		in    int64
+	}{{onlyClaude, "claude", 1, 10}, {onlyCodex, "codex", 2, 20}, {both, "claude", 4, 40}, {both, "codex", 8, 80}} {
+		if _, err := s.Append(ctx, x.conv, x.agent, said("hi from "+x.agent), t0); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.AddUsage(ctx, x.conv, x.agent, &agentv1.Usage{Model: "m-" + x.agent, CostUsd: x.cost, CostKnown: true, InputTokens: x.in, OutputTokens: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return
+}
+
+func TestConversationsByAgent(t *testing.T) {
+	s, onlyClaude, _, both := twoAgents(t)
+	h := NewHandler(s, nil, nil)
+	var list []ConversationView
+	rec := do(h, "GET", "/api/v1/conversations?agent=claude", "")
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil || rec.Code != 200 {
+		t.Fatalf("%d %s %v", rec.Code, rec.Body, err)
+	}
+	if len(list) != 2 || list[0].ID != both || list[1].ID != onlyClaude {
+		t.Fatalf("list %+v", list)
+	}
+	if list[0].CostUSD != 4 || list[0].InTokens != 40 || list[0].Model != "m-claude" || list[1].CostUSD != 1 {
+		t.Fatalf("usage %+v", list)
+	}
+	rec = do(h, "GET", "/api/v1/conversations", "")
+	list = nil
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil || len(list) != 3 || list[0].CostUSD != 12 {
+		t.Fatalf("all %s %v", rec.Body, err)
+	}
+}
+
+func TestConversationsUnknownAgent400(t *testing.T) {
+	s, _, _, _ := twoAgents(t)
+	rec := do(NewHandler(s, nil, nil), "GET", "/api/v1/conversations?agent=gpt", "")
+	if rec.Code != http.StatusBadRequest || strings.TrimSpace(rec.Body.String()) != `{"error":"no such agent"}` {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestConversationEventsCarryAgent(t *testing.T) {
+	s, _, _, both := twoAgents(t)
+	rec := do(NewHandler(s, nil, nil), "GET", "/api/v1/conversations/"+strconv.FormatInt(both, 10), "")
+	var one struct {
+		Events []EventView `json:"events"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &one); err != nil || len(one.Events) != 2 {
+		t.Fatalf("%s %v", rec.Body, err)
+	}
+	if one.Events[0].Agent != "claude" || one.Events[1].Agent != "codex" {
+		t.Fatalf("events %+v", one.Events)
+	}
+}
+
+func TestConversationUsagePerAgent(t *testing.T) {
+	s, _, _, both := twoAgents(t)
+	if err := s.AddUsage(context.Background(), both, "", &agentv1.Usage{Model: "x", CostUsd: 100, CostKnown: true}); err != nil {
+		t.Fatal(err)
+	}
+	rec := do(NewHandler(s, nil, nil), "GET", "/api/v1/conversations/"+strconv.FormatInt(both, 10), "")
+	var one struct {
+		ConversationView
+		Usage []Usage `json:"usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &one); err != nil {
+		t.Fatal(err)
+	}
+	if len(one.Usage) != 2 || one.Usage[0].Agent != "claude" || one.Usage[0].CostUSD != 4 || one.Usage[1].Agent != "codex" ||
+		one.Usage[1].InTokens != 80 || one.Usage[1].Model != "m-codex" {
+		t.Fatalf("usage %+v", one.Usage)
+	}
+	if one.CostUSD != 112 {
+		t.Fatalf("total %v", one.CostUSD)
+	}
+}
+
+func TestAgentsReportLimit(t *testing.T) {
+	s := openStore(t)
+	if err := s.MarkLimited(context.Background(), "codex", t0); err != nil {
+		t.Fatal(err)
+	}
+	rec := do(NewHandler(s, nil, nil), "GET", "/api/v1/agents", "")
+	var raw []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil || len(raw) != 2 {
+		t.Fatalf("%s %v", rec.Body, err)
+	}
+	if _, ok := raw[0]["limited_at"]; ok {
+		t.Fatalf("claude limited: %v", raw[0])
+	}
+	if at, _ := raw[1]["limited_at"].(string); at == "" || !strings.HasPrefix(at, t0.UTC().Format("2006-01-02")) {
+		t.Fatalf("codex: %v", raw[1])
 	}
 }
