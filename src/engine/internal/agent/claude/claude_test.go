@@ -373,8 +373,19 @@ func TestACancelledStartAndAWaitTimeoutKillTheSetupToken(t *testing.T) {
 	os.WriteFile(bin, []byte("#!/bin/sh\necho $$ >> "+pids+"\nsleep 30\n"), 0o755)
 	l := NewLogin(bin, filepath.Join(homeWithToken(t, ""), "agent"))
 
-	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(300*time.Millisecond, cancel)
+	// Cancelled once the CLI is running (its pid written), not on a timer: a loaded machine may not
+	// have started it yet, and a CLI killed before it runs leaves nothing to check.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() {
+		for ctx.Err() == nil {
+			if b, err := os.ReadFile(pids); err == nil && len(b) > 0 {
+				cancel()
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
 	if _, err := l.Start(ctx); err == nil {
 		t.Fatal("Start without a link succeeded")
 	}
