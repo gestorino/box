@@ -20,8 +20,8 @@ func TestUnitsStopOrder(t *testing.T) {
 		}
 		seen[u] = true
 	}
-	if n != 18 {
-		t.Errorf("%d units; want 18", n)
+	if n != 22 {
+		t.Errorf("%d units; want 22", n)
 	}
 	// sensord reads the state directories (CAP_DAC_READ_SEARCH) through mounts on the old ones: it
 	// must not outlive a swap, and stops before secretd as everything else does.

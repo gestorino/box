@@ -185,13 +185,13 @@ docs/superpowers/  current design docs (specs/); implementation plans (plans/) a
   `docs/superpowers/specs/2026-11-07-backup-restore-design.md`.
 - **`src/engine/cmd/hostd` + `internal/hostd/`** — the host service: the ONLY process that may
   change the box's network. Own user `concierge-host`, no root, no capabilities; its rights are one
-  polkit rule (four NetworkManager actions, and start/stop of the ten connector units and the two agent units, claudd and codexd). Logic in `internal/hostd` (tested with fakes), D-Bus in
+  polkit rule (four NetworkManager actions, and start/stop of the ten connector units and the four agent units, claudd's and codexd's socket and service). Logic in `internal/hostd` (tested with fakes), D-Bus in
   `internal/hostd/sysbus` (thin, verified on the box). Every change runs under a NetworkManager
   checkpoint that rolls back in 60 s unless confirmed; a Wi-Fi password is never stored, logged or
   echoed. Never give the engine (or the browser worker) network rights, and never add a generic
   "run this" endpoint to hostd. Its API: `/network/*` (changes, checkpointed), `/settings/*` (the
   box's settings, which hostd owns) and `/connectors` (each channel's state; hostd starts and
-  stops their units — polkit grants start/stop of exactly those ten units, nothing else). Design: `docs/superpowers/specs/2026-10-27-settings-network-design.md`.
+  stops their units — polkit grants start/stop of exactly those fourteen units (the connectors' ten, the agents' four), nothing else). Design: `docs/superpowers/specs/2026-10-27-settings-network-design.md`.
 - **Account** — hostd also keeps the owner's Account (names, the box's phone, the owner's own contacts — phone and email, where SMS, Voice and Email send their setup checks —, addresses, one card) in `settings.db`: the
   card number is not in it: hostd keeps it in secretd (`card-number`; `-secrets-socket`, required;
   Show, Save and Remove answer 502 "secrets unavailable" when secretd is down), the box keeps only its brand and last
@@ -230,7 +230,7 @@ docs/superpowers/  current design docs (specs/); implementation plans (plans/) a
   "secrets unavailable" when secretd can't delete it, nothing changed, never forced past), and places no call or check without it (409; secretd unreachable: 502 "secrets unavailable"). **Voice's setup check is two-way only**:
   `internal/realtime` (below) holds the call while calld streams the card both ways (`arecord`/
   `aplay`), and calld — never the model — judges each spoken answer (`calls/spoken.go`: number words
-  in en/pt/ru/es, the last number counts). calld may open internet sockets, and so may claudd and codexd, each limited to its vendor's API (they reach only their vendor's API; the engine itself also reaches OpenRouter, for the key check). What the box heard is stored
+  in en/pt/ru/es, the last number counts). calld may open internet sockets, and so may claudd and codexd, which reach only the public internet (their units deny the LAN, loopback but the DNS resolver, and every private range; the engine itself also reaches OpenRouter, for the key check). What the box heard is stored
   on the call (`calls.heard`), never the audio. Retention is hostd's (`settings.db`, read-only
   socket for the daemons, `internal/hostsettings` is their client). The engine forwards
   `/api/v1/sms/*`, `/api/v1/calls` and its call, and `/api/v1/settings/*` (hostd). Design:
@@ -252,7 +252,7 @@ docs/superpowers/  current design docs (specs/); implementation plans (plans/) a
   the CLI in and out. The engine owns the conversation and the tools; a daemon only runs its model. Each has its own
   user and home (`concierge-claude`, `concierge-codex`; the login lives in that home and nowhere else, never in
   secretd, the engine, a log or a reply), socket-activated, with no rights at all: no tools of the CLI, no MCP, no
-  settings, an empty working directory, egress only to its vendor, and the CLI pinned and root-owned
+  settings, an empty working directory, egress only to the public internet, and the CLI pinned and root-owned
   (`/opt/concierge/agents/`). The shared logic is `internal/agent` (the server, the prompt, the schema) and
   `internal/agent/cliproc` (running a CLI and killing its group); `claude/` and `codex/` are thin runners, tested
   with a fake CLI on `PATH` that replays recorded replies, and `make test-agent-live` runs one real step. Design:

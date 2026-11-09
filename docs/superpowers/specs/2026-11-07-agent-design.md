@@ -109,8 +109,11 @@ codex", as two daemons, "so it can be configured separately and user can choose 
     two units). A daemon runs while it is set up, from Sign in until Sign out.
   - With neither signed in, the channels can't be switched on, and say why.
 - **No rights.** An agent daemon reaches no secretd, no channel daemon, no worker, and no file of the
-  box's outside its own home. Its only network is its vendor's API (an nftables rule like `inet
-  concierge_metrics`'s, *the builder's: the hosts each CLI needs*).
+  box's outside its own home. Its only network is the public internet: its unit denies the LAN,
+  loopback (but the box's DNS resolver, 127.0.0.53) and every private range (`IPAddressDeny=`, which
+  holds for the CLI it runs too). *The owner, 2026-11-09: not an allowlist of the vendor's hosts.
+  nftables matches addresses, not names, and the vendors' sign-in hosts sit behind a CDN whose
+  addresses are shared and rotate, so an address list would narrow little and break often.*
 - **Pinned CLIs.** Ansible installs a pinned version of each CLI for its daemon alone, with
   auto-update off. A new version is a deliberate bump with its recorded-reply test.
 - **The rules** are `internal/agent`'s system prompt, general like every prompt (CLAUDE.md "Prompts
@@ -312,7 +315,7 @@ gate, no-pay.
 ## Anti-goals
 
 - **The voice model saying anything that isn't the agent's text** ("One moment" aside), or acting.
-- **The agent sending to anyone**, naming a recipient, or reaching anything but its vendor's API.
+- **The agent sending to anyone**, naming a recipient, or reaching the LAN or the box's own services.
 - **A request acted on that isn't the owner's:** a group message, an unpassed DMARC, another number.
 - **A site's or a place's words in code or a prompt.** The guards (`nosite_test.go`,
   `test_no_site_named.py`, `words.test.ts`) also cover the agent's prompt and the new console words.
@@ -331,7 +334,7 @@ gate, no-pay.
   the owner's agent calls. There **the voice model leads nothing**: it speaks the agent's text.
 - calld may answer the owner's number when the engine asks, and call it about a waiting question.
 - "calld alone may open internet sockets" (among the daemons) gains claudd and codexd, each limited
-  to its vendor's API. The engine's own calls, to OpenRouter's key check and now to Places, are named
+  to the public internet (no LAN, no loopback but DNS). The engine's own calls, to OpenRouter's key check and now to Places, are named
   beside it.
 - hostd's polkit rule gains start/stop of the two agent units ("the ten connector units" become
   twelve units).

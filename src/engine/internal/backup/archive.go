@@ -33,7 +33,8 @@ type Header struct {
 }
 
 // Paths are what a backup holds, relative to the root: directories, and the TPM-sealed master
-// key's one file.
+// key's one file. Not the agents' homes (var/lib/concierge-claude, -codex): a CLI's login stays
+// in its daemon's home alone, and after a restore the owner signs the agent in again.
 var Paths = []string{
 	"var/lib/concierge",
 	"var/lib/concierge-worker",
