@@ -10,7 +10,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { useAgents } from '@/hooks/use-agents'
 import { useConnectors } from '@/hooks/use-connectors'
-import { AGENT_ROLES, AGENTS, type AgentStatus, agentSetupPath, setAgentSettings } from '@/lib/agent'
+import { AGENT_ROLES, AGENTS, type AgentStatus, agentSetupPath, changeAgentSettings } from '@/lib/agent'
 
 /** The owner's agents, set up as connectors are: a card each to add one (its setup page signs it
  *  in), and the switch that belongs to no one agent. */
@@ -47,7 +47,7 @@ function AnswerOnWhatsApp() {
     setSaving(true)
     setError(undefined)
     try {
-      await setAgentSettings({ ...settings, answer: { ...settings.answer, whatsapp } })
+      await changeAgentSettings((s) => ({ ...s, answer: { ...s.answer, whatsapp } }))
       refresh()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))

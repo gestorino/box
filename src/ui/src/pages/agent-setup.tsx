@@ -21,7 +21,8 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
  *  login; the owner finishes on the provider's page — Claude gives a code to paste back (sent once,
  *  never kept), Codex shows a code to type there and finishes by itself — then the box confirms it
  *  is signed in, and it is added. Opening the page starts nothing; Finish setup lands here and signs
- *  in without adding again. Cancel asks in a modal, then logs out and stops it. */
+ *  in without adding again, and so does Sign in again on an added agent signed out (no Cancel then:
+ *  it would remove it). Cancel asks in a modal, then logs out and stops it. */
 export function AgentSetupPage() {
   const param = useParams().name ?? ''
   if (!Object.hasOwn(AGENTS, param)) return <NotFound />
@@ -36,6 +37,8 @@ function Setup({ name }: { name: AgentName }) {
   const state = status?.state
   // Signed in, never confirmed (the confirm failed, or the owner left): only the confirm is left.
   const confirmOnly = state === 'setting_up' && status?.signed_in === true
+  // Added and signed in: nothing is left to do here. Added but signed out: it signs in again.
+  const done = state === 'added' && status?.signed_in === true
   // Added here, before the list has read it again.
   const [startedHere, setStartedHere] = useState(false)
   const [signingIn, setSigningIn] = useState(false)
@@ -48,7 +51,7 @@ function Setup({ name }: { name: AgentName }) {
   const mounted = useRef(true)
   const added = useRef<Promise<unknown>>(undefined)
   const loginStarted = useRef<Promise<unknown>>(undefined)
-  const started = startedHere || state === 'setting_up'
+  const started = startedHere || state === 'setting_up' || state === 'added'
 
   useEffect(() => {
     mounted.current = true
@@ -136,7 +139,7 @@ function Setup({ name }: { name: AgentName }) {
   return (
     <div className="max-w-xl space-y-6">
       <PageHeader
-        title={`Add ${meta.label}`}
+        title={state === 'added' ? `Sign in to ${meta.label}` : `Add ${meta.label}`}
         description="Sign in with your own account on the provider's page."
         actions={
           <div className="flex flex-wrap gap-2">
@@ -150,7 +153,7 @@ function Setup({ name }: { name: AgentName }) {
       ) : (
         <Card>
           <CardContent className="space-y-3 text-sm">
-            {state === 'added' ? (
+            {done ? (
               <>
                 <p className="font-medium text-status-done-foreground">✓ {meta.label} is added</p>
                 <p className="text-muted-foreground">It is in the sidebar now.</p>

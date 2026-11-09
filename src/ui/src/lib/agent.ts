@@ -18,7 +18,8 @@ export const agentSetupPath = (name: AgentName) => `/agents/${name}/setup`
 
 /** Its connector in hostd; '' when hostd can't say. An agent not added runs no daemon: not reachable, and no fault. */
 export type AgentConnectorState = 'not_added' | 'setting_up' | 'added' | ''
-/** limited_at: when it last said its plan's limit was reached, until its next step that works. */
+/** limited_at: when it last said its plan's limit was reached, until its next step that works, a
+ *  sign-in or a sign-out; the box stops telling it after 24 h. */
 export interface AgentStatus { name: AgentName; signed_in: boolean; account: string; cli_version: string; model: string; reachable: boolean; state: AgentConnectorState; limited_at?: string }
 /** The primary answers; the secondary (the other agent, when added) when the primary can't. hostd
  *  keeps the primary and derives the secondary; a PUT's secondary is ignored. */
@@ -34,6 +35,8 @@ export const AGENTS_POLL_MS = 60_000
 export const getAgents = (signal?: AbortSignal) => request<AgentStatus[]>('GET', '/api/v1/agents', undefined, signal)
 export const getAgentSettings = (signal?: AbortSignal) => request<AgentSettings>('GET', '/api/v1/settings/agent', undefined, signal)
 export const setAgentSettings = (s: AgentSettings) => request<void>('PUT', '/api/v1/settings/agent', s)
+/** Changes the settings as read now, not as the last poll had them: a field changed since is kept. */
+export const changeAgentSettings = async (change: (s: AgentSettings) => AgentSettings) => setAgentSettings(change(await getAgentSettings()))
 export const startAgentLogin = (name: string) => request<AgentLogin>('POST', `/api/v1/agents/${name}/login`)
 /** Claude: the pasted code. Codex: "" (waits for the device login, as long as the CLI does: no
  *  timeout here; the box ends the wait). */

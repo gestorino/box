@@ -245,6 +245,23 @@ describe('an agent’s setup page', () => {
     expect(writes(api.calls)).toEqual(['POST /api/v1/connectors/claude', 'POST /api/v1/agents/claude/login', 'POST /api/v1/agents/claude/login'])
   })
 
+  it('an added agent signed out signs in again: no second add, no Cancel, then login, finish and confirm', async () => {
+    const { api, router } = open('claude', {
+      [AGENTS]: { body: [agent('claude', { ...ADDED, signed_in: false }), agent('codex')] },
+      'POST /api/v1/agents/claude/login': CLAUDE_LOGIN,
+      'POST /api/v1/agents/claude/login/finish': { status: 204 },
+      'POST /api/v1/connectors/claude/confirm': { status: 204 },
+    })
+    expect(await screen.findByRole('heading', { level: 1, name: 'Sign in to Claude' })).toBeInTheDocument()
+    expect(screen.queryByText('✓ Claude is added')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull() // Cancel would remove it
+    await signIn()
+    await userEvent.type(await screen.findByLabelText('Code'), 'abc')
+    await userEvent.click(screen.getByRole('button', { name: 'Finish' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/agents/claude'))
+    expect(writes(api.calls)).toEqual(['POST /api/v1/agents/claude/login', 'POST /api/v1/agents/claude/login/finish', 'POST /api/v1/connectors/claude/confirm'])
+  })
+
   it('an agent already added says so, with Open', async () => {
     open('claude', { [AGENTS]: { body: [agent('claude', ADDED), agent('codex')] } })
     expect(await screen.findByText('✓ Claude is added')).toBeInTheDocument()

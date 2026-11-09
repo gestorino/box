@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { routes } from '@/app/router'
+import { whenShort } from '@/lib/runs'
 import { stubFetch } from '@/test/fetch'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -83,18 +84,19 @@ describe('An agent’s settings panel', () => {
     expect(panel.queryByRole('link', { name: 'Sign in again' })).not.toBeInTheDocument()
   })
 
-  it('Make primary on the secondary PUTs and the roles swap', async () => {
+  it('Make primary on the secondary PUTs from fresh settings and the roles swap', async () => {
     const user = userEvent.setup()
+    const off = { body: { primary: 'claude', secondary: 'codex', answer: { whatsapp: false } } } // switched off since the poll
     const { api } = open('/agents/codex', {
       [LIST]: { body: [] },
-      [SETTINGS]: [roles('claude', 'codex'), roles('codex', 'claude')],
+      [SETTINGS]: [roles('claude', 'codex'), off, { body: { primary: 'codex', secondary: 'claude', answer: { whatsapp: false } } }],
       'PUT /api/v1/settings/agent': { status: 204 },
     })
     const panel = await settingsPanel(user)
     await user.click(panel.getByRole('button', { name: 'Make primary' }))
     await waitFor(() => expect(panel.getByText('Primary')).toBeInTheDocument())
     expect(panel.queryByRole('button', { name: 'Make primary' })).not.toBeInTheDocument()
-    expect(writes(api.calls)).toEqual([{ key: 'PUT /api/v1/settings/agent', body: expect.objectContaining({ primary: 'codex', answer: { whatsapp: true } }) }])
+    expect(writes(api.calls)).toEqual([{ key: 'PUT /api/v1/settings/agent', body: expect.objectContaining({ primary: 'codex', answer: { whatsapp: false } }) }])
   })
 
   it('the primary has no Make primary', async () => {
@@ -110,6 +112,31 @@ describe('An agent’s settings panel', () => {
     open('/agents/codex', { [LIST]: { body: [] }, [AGENTS]: { body: [agent('claude'), agent('codex', { signed_in: false, account: '' })] } })
     const panel = await settingsPanel(user)
     expect(panel.getByRole('link', { name: 'Sign in again' })).toHaveAttribute('href', '/agents/codex/setup')
+  })
+
+  it('an agent not reachable says so, and offers no sign-in', async () => {
+    const user = userEvent.setup()
+    open('/agents/codex', { [LIST]: { body: [] }, [AGENTS]: { body: [agent('claude'), agent('codex', { reachable: false, signed_in: false, account: '', cli_version: '', model: '' })] } })
+    const panel = await settingsPanel(user)
+    expect(panel.getByText('Not reachable')).toBeInTheDocument()
+    expect(panel.queryByRole('link', { name: 'Sign in again' })).not.toBeInTheDocument()
+    expect(panel.queryByRole('button', { name: 'Sign out' })).not.toBeInTheDocument()
+  })
+
+  it('an agent out of its plan\'s limit says so, and since when', async () => {
+    const user = userEvent.setup()
+    const at = '2026-11-07T10:00:00Z'
+    open('/agents/codex', { [LIST]: { body: [] }, [AGENTS]: { body: [agent('claude'), agent('codex', { limited_at: at })] } })
+    const panel = await settingsPanel(user)
+    expect(panel.getByText(`Out of its plan's limit since ${whenShort(at)}`)).toBeInTheDocument()
+  })
+
+  it('an agent within its limit says nothing of one', async () => {
+    const user = userEvent.setup()
+    open('/agents/codex', { [LIST]: { body: [] } })
+    const panel = await settingsPanel(user)
+    expect(panel.queryByText(/plan's limit/)).not.toBeInTheDocument()
+    expect(panel.queryByText('Not reachable')).not.toBeInTheDocument()
   })
 
   it('Sign out calls logout and refreshes', async () => {
@@ -175,7 +202,8 @@ describe('An agent conversation', () => {
             { id: 3, at: '2026-11-07T10:00:06Z', kind: 'result', agent: '', text: '{"run":12}' },
             { id: 4, at: '2026-11-07T10:01:00Z', kind: 'errand', agent: '', text: 'question: Which time? (options: 10:00, 11:00)' },
             { id: 5, at: '2026-11-07T10:02:00Z', kind: 'agent', agent: 'claude', text: 'Booked for 10:00.' },
-            { id: 6, at: '2026-11-07T10:03:00Z', kind: 'agent', agent: 'codex', text: 'Anything else?' },
+            { id: 6, at: '2026-11-07T10:02:30Z', kind: 'agent', agent: '', text: 'Claude can\'t answer now (not reachable); Codex is answering.' },
+            { id: 7, at: '2026-11-07T10:03:00Z', kind: 'agent', agent: 'codex', text: 'Anything else?' },
           ],
         },
       },
@@ -183,6 +211,8 @@ describe('An agent conversation', () => {
     expect(await screen.findByText('Booked for 10:00.')).toBeInTheDocument()
     expect(screen.getByText(/^Claude · /)).toBeInTheDocument()
     expect(screen.getByText(/^Codex · /)).toBeInTheDocument()
+    expect(screen.getByText(/^Concierge · /)).toBeInTheDocument()
+    expect(screen.queryByText(/^Agent · /)).not.toBeInTheDocument()
     expect(screen.getByText('You', { exact: false })).toBeInTheDocument()
     expect(screen.getByText('Used a tool: start_errand')).toBeInTheDocument()
     expect(screen.queryByText(/"url"/)).not.toBeInTheDocument()

@@ -18,7 +18,7 @@ function Conversation({ name, id }: { name: string; id: string }) {
   const { data, error } = usePoll((signal) => getConversation(id, signal), CONVERSATIONS_POLL_MS)
   return (
     <div className="space-y-6">
-      <PageHeader title={data ? `${channelLabel(data.channel)} conversation` : 'Conversation'}  />
+      <PageHeader title={data ? `${channelLabel(data.channel)} conversation` : 'Conversation'} />
       <p className="text-sm"><Link to={AGENTS[name as AgentName].path} className="underline">All conversations</Link></p>
       {error && !data && <ReadError error={error} what="the conversation" />}
       {!data && !error && <Skeleton className="h-32 w-full" />}
@@ -48,7 +48,7 @@ function Line({ e }: { e: ConversationEvent }) {
       <li className={`flex ${owner ? 'justify-end' : 'justify-start'}`}>
         <div className={`max-w-prose rounded-lg px-3 py-2 text-sm ${owner ? 'bg-primary text-primary-foreground' : 'bg-muted'}`}>
           <p className="whitespace-pre-wrap">{e.text}</p>
-          <p className="mt-1 text-xs opacity-70">{owner ? 'You' : agentLabel(e.agent) || 'Agent'} · {whenShort(e.at)}</p>
+          <p className="mt-1 text-xs opacity-70">{owner ? 'You' : e.agent ? agentLabel(e.agent) : 'Concierge'} · {whenShort(e.at)}</p>
         </div>
       </li>
     )

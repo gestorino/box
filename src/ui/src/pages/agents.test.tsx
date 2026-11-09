@@ -151,6 +151,20 @@ describe('Answer me on WhatsApp', () => {
     await waitFor(() => expect(screen.getByRole('switch', { name: 'Answer me on WhatsApp' })).toBeChecked())
   })
 
+  it('the switch changes only its own field, on fresh settings', async () => {
+    const user = userEvent.setup()
+    const { api } = open({
+      'GET /api/v1/connectors': connectors('added'),
+      [AGENTS]: { body: [agent('claude', ADDED), agent('codex', ADDED)] },
+      [SETTINGS]: [roles('claude', 'codex'), roles('codex', 'claude')], // codex made primary since the poll
+      [PUT_SETTINGS]: { status: 204 },
+    })
+    const toggle = await screen.findByRole('switch', { name: 'Answer me on WhatsApp' })
+    await waitFor(() => expect(toggle).toBeEnabled())
+    await user.click(toggle)
+    await waitFor(() => expect(api.calls.find((c) => c.key === PUT_SETTINGS)?.body).toEqual({ primary: 'codex', secondary: 'claude', answer: { whatsapp: true } }))
+  })
+
   it('a failed save says why', async () => {
     const user = userEvent.setup()
     open({
