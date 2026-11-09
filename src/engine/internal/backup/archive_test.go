@@ -408,3 +408,25 @@ func TestPathsHoldRelaydsState(t *testing.T) {
 		t.Fatalf("Paths %v leave out var/lib/concierge-relay", Paths)
 	}
 }
+
+func TestPathsLeaveOutTheAgentsLogins(t *testing.T) {
+	// An agent's CLI login lives in its daemon's home and nowhere else: a restore on another box
+	// signs the agent in again from the console.
+	for _, p := range []string{"var/lib/concierge-claude", "var/lib/concierge-codex"} {
+		if slices.Contains(Paths, p) {
+			t.Fatalf("Paths %v hold %s", Paths, p)
+		}
+	}
+}
+
+func TestUnitsStopTheAgents(t *testing.T) {
+	// hostd starts the added agents again after the hold, as it does the connectors.
+	for _, u := range []string{"concierge-claude.service", "concierge-claude.socket", "concierge-codex.service", "concierge-codex.socket"} {
+		if !slices.Contains(Units, u) {
+			t.Fatalf("Units %v leave out %s", Units, u)
+		}
+		if slices.Contains(CoreUnits, u) {
+			t.Fatalf("CoreUnits %v start %s: hostd does", CoreUnits, u)
+		}
+	}
+}

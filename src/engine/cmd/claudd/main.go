@@ -1,5 +1,5 @@
 // Command claudd runs the owner's agent on Claude Code, signed in on the owner's plan, and serves the
-// agent contract to the engine over a Unix socket that systemd hands it (concierge-claudd.socket).
+// agent contract to the engine over a Unix socket that systemd hands it (concierge-claude.socket).
 package main
 
 import (

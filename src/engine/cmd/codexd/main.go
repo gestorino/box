@@ -1,5 +1,5 @@
 // Command codexd runs the owner's agent on Codex, signed in on the owner's plan, and serves the
-// agent contract to the engine over a Unix socket that systemd hands it (concierge-codexd.socket).
+// agent contract to the engine over a Unix socket that systemd hands it (concierge-codex.socket).
 package main
 
 import (
