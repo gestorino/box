@@ -56,7 +56,7 @@ removed in the account, the console says it is not connected within 10 minutes.
 - **`cmd/relayd` + `internal/relay`** (Go), own user `concierge-relay`, `StateDirectory`
   `/var/lib/concierge-relay` (0700), one `relay.db` (the pure-Go SQLite the daemons use).
 - **A socket of its own** (`/run/concierge-relay/relayd.sock`, HTTP/2 only, `internal/h2c`, group
-  `concierge-relay-clients`, of which the engine's user is a member). The engine forwards
+  the engine's own, `SocketGroup`, as every daemon socket on the box). The engine forwards
   `/api/v1/relay/*` to it (`api.SocketProxy`), behind the console login.
 - **A secretd caller**, namespace `relay` (`-secrets-socket`, required): `box-secret` and
   `device-ca` (the CA key and its certificate, one value). relayd reads the CA once at start and

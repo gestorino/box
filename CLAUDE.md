@@ -166,9 +166,9 @@ docs/superpowers/  current design docs (specs/); implementation plans (plans/) a
   from the vault) and refuses to start without one. `make run` uses dev / dev.
 - **`cmd/secretd` + `internal/secrets/`** — the box's secrets in one service: the site accounts'
   passwords and the OpenRouter key (engine), the OpenAI key (calld), the card number (hostd), the
-  mailbox's app password (emaild), each sealed (`internal/seal`, AES-256-GCM, the name as associated
+  mailbox's app password (emaild), the box's relay secret and device CA (relayd: `box-secret`, `device-ca`), each sealed (`internal/seal`, AES-256-GCM, the name as associated
   data) in one `secrets.db`. Own user `concierge-secrets`, no root, no network; socket-activated
-  (`concierge-secrets.socket`, group `concierge-secrets-clients`: exactly those four callers' users,
+  (`concierge-secrets.socket`, group `concierge-secrets-clients`: exactly those five callers' users,
   each passing `-secrets-socket`). The namespace is the kernel's word, never the request's: the
   socket peer's uid, mapped by `-caller name=user`; each caller sees only its own names, any other
   uid gets 403 (logged with the uid, never the name; root is never a caller). It logs caller, op and
@@ -230,7 +230,7 @@ docs/superpowers/  current design docs (specs/); implementation plans (plans/) a
   "secrets unavailable" when secretd can't delete it, nothing changed, never forced past), and places no call or check without it (409; secretd unreachable: 502 "secrets unavailable"). **Voice's setup check is two-way only**:
   `internal/realtime` (below) holds the call while calld streams the card both ways (`arecord`/
   `aplay`), and calld — never the model — judges each spoken answer (`calls/spoken.go`: number words
-  in en/pt/ru/es, the last number counts). calld may open internet sockets, and so may claudd and codexd, which reach only the public internet (their units deny the LAN, loopback but the DNS resolver, and every private range; the engine itself also reaches OpenRouter, for the key check). What the box heard is stored
+  in en/pt/ru/es, the last number counts). calld may open internet sockets, and so may relayd (the control plane over HTTPS, Let's Encrypt, the relay on 7000; its unit denies the LAN, not loopback) and claudd and codexd, which reach only the public internet (their units deny the LAN, loopback but the DNS resolver, and every private range; the engine itself also reaches OpenRouter, for the key check). What the box heard is stored
   on the call (`calls.heard`), never the audio. Retention is hostd's (`settings.db`, read-only
   socket for the daemons, `internal/hostsettings` is their client). The engine forwards
   `/api/v1/sms/*`, `/api/v1/calls` and its call, and `/api/v1/settings/*` (hostd). Design:
@@ -282,7 +282,7 @@ docs/superpowers/  current design docs (specs/); implementation plans (plans/) a
   engine's (which code, which link, whether it's the proof); `Client` re-opens a dropped listener
   with nothing lost or doubled, `listentest` fakes a connector. Design:
   `docs/superpowers/specs/2026-11-03-listeners-design.md`.
-- **Every Unix socket speaks only HTTP/2** (`internal/h2c`): hostd (both sockets) and the five
+- **Every Unix socket speaks only HTTP/2** (`internal/h2c`): hostd (both sockets), relayd and the five
   connector daemons serve unencrypted HTTP/2 alone (an HTTP/1.1 request is refused), and every client
   of one uses `h2c.Transport` — the console's forwards and the connector check (`api.SocketProxy`),
   the sign-ins' mail and hostd clients, the listeners, the daemons' `hostsettings`. By hand:
