@@ -13,7 +13,7 @@ box=${CONCIERGE_BOX:?"set CONCIERGE_BOX to the box's ssh target (see CLAUDE.loca
 b=${1:?"usage: box-restore.sh BACKUP_FILE"}
 [ -f "$b" ] || { echo "no such backup: $b" >&2; exit 1; }
 root=$(cd "$(dirname "$0")/.." && pwd)
-repo=telepenin/concierge
+repo=gestorino/box
 backup=/opt/concierge/bin/backup
 
 field() { tar -xzOf "$b" backup.json | python3 -I -c 'import json,sys; v=json.load(sys.stdin)[sys.argv[1]]; print(v if isinstance(v, str) else json.dumps(v))' "$1"; }

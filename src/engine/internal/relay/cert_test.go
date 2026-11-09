@@ -109,7 +109,7 @@ func TestCertForgetWipesItsStorage(t *testing.T) {
 	}
 	c.use()
 	// What certmagic keeps: the account and the certificate, under its own keys.
-	for _, f := range []string{"acme/acme-v02.api.letsencrypt.org-directory/users/default/default.key",
+	for _, f := range []string{"acme/acme-v02.api.letsencrypt.org-directory/account.key",
 		"certificates/acme-v02.api.letsencrypt.org-directory/b1.box.test/b1.box.test.key"} {
 		if err := c.cfg.Storage.Store(context.Background(), f, []byte("x")); err != nil {
 			t.Fatal(err)

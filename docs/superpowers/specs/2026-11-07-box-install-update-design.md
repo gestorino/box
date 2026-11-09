@@ -123,7 +123,7 @@ is its summary; that design is the one to build from.
   that program fetches, verifies and installs the latest release.
 - **Verification on the box** (*my call*): the box checks the archive and manifest against their
   Sigstore bundles with sigstore-go, the same check as `gh attestation verify` (signed by
-  `telepenin/concierge/.github/workflows/release.yml` from the tag, the archive's SHA-256), with no
+  `gestorino/box/.github/workflows/release.yml` from the tag, the archive's SHA-256), with no
   GitHub token. `release.yml` therefore also publishes each attestation's bundle as a release
   asset. The trust root is Sigstore's public one, kept fresh by its TUF repository from an embedded
   starting root.

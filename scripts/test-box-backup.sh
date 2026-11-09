@@ -174,9 +174,9 @@ export FAKE_RELEASE=yes
 archive "$work/pub.tar.gz" 0.5.0 bbb2222 true
 run box-restore.sh "$work/pub.tar.gz"
 [ $code -eq 0 ] && ok "restore published: succeeds" || fail "restore published: succeeds" "$out"
-grep -q 'gh release download v0.5.0 --repo telepenin/concierge --dir ' "$LOG" && ok "restore published: downloads the release" || fail "restore published: downloads the release" "$(cat "$LOG")"
-[ "$(logged 'gh attestation verify .*concierge-0.5.0-linux-amd64.tar.gz --repo telepenin/concierge --signer-workflow telepenin/concierge/.github/workflows/release.yml')" = 1 ] &&
-	[ "$(logged 'gh attestation verify .*manifest.json --repo telepenin/concierge --signer-workflow telepenin/concierge/.github/workflows/release.yml')" = 1 ] && ok "restore published: verifies the archive and the manifest" || fail "restore published: verifies both" "$(cat "$LOG")"
+grep -q 'gh release download v0.5.0 --repo gestorino/box --dir ' "$LOG" && ok "restore published: downloads the release" || fail "restore published: downloads the release" "$(cat "$LOG")"
+[ "$(logged 'gh attestation verify .*concierge-0.5.0-linux-amd64.tar.gz --repo gestorino/box --signer-workflow gestorino/box/.github/workflows/release.yml')" = 1 ] &&
+	[ "$(logged 'gh attestation verify .*manifest.json --repo gestorino/box --signer-workflow gestorino/box/.github/workflows/release.yml')" = 1 ] && ok "restore published: verifies the archive and the manifest" || fail "restore published: verifies both" "$(cat "$LOG")"
 d=$(line 'gh release download'); v1=$(line 'attestation verify.*tar.gz'); v2=$(line 'attestation verify.*manifest'); i=$(line 'install-build'); r=$(line ' restore -from')
 [ "$d" -lt "$v1" ] && [ "$v1" -lt "$i" ] && [ "$v2" -lt "$i" ] && [ "$i" -lt "$r" ] && ok "restore published: verified before install-build, installed before restore" || fail "restore published: order" "$(cat "$LOG")"
 [ "$(logged '^scp ')" = 2 ] && ok "restore published: copies the build and the backup" || fail "restore published: copies twice" "$(cat "$LOG")"

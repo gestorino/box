@@ -87,9 +87,9 @@ provenance anyone can verify; the owner's box still deploys from the Mac as toda
 
 ### The public repo
 
-- One commit: the audited tree, on `main`, pushed to **https://github.com/telepenin/concierge**
+- One commit: the audited tree, on `main`, pushed to **https://github.com/gestorino/box**
   (public, created empty by the owner) as remote `origin` over SSH
-  (`git@github.com:telepenin/concierge.git`; the Mac's SSH config already authenticates as the
+  (`git@github.com:gestorino/box.git`; the Mac's SSH config already authenticates as the
   repo's owner). The push waits for the owner's go
   after the audit report.
 - **License: MIT** (the owner's call), `LICENSE` at the root, copyright the owner (as in `LICENSE`), 2026.

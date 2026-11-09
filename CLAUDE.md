@@ -60,14 +60,14 @@ locally in the primary checkout first. The playbook refuses anything but a clean
 primary checkout; never work around that refusal. **Every deploy ships a version** (`VERSION`,
 patch bumped by `ansible/release.sh`); details in the `deploy` skill. Those patch tags are local: never push them (never use a blanket tag push).
 
-**Public repo and releases.** Public at https://github.com/telepenin/concierge, MIT. `ci.yml` runs
+**Public repo and releases.** Public at https://github.com/gestorino/box, MIT. `ci.yml` runs
 `make check` and `make test-dist` on Linux for every branch push and pull request. A release:
 `make release` runs `make check` and `make test-dist`, bumps `VERSION` to the next minor (X.Y.Z → X.(Y+1).0), commits
 `chore(release): vX.Y.0`, tags it, rolls back on failure or interrupt and pushes nothing; the owner
 then pushes `main` first, then the tag.
 Only a `vX.Y.0` tag whose commit is on `main` and equals `VERSION` publishes: `release.yml` builds
 without write credentials or caches, attests the archive and manifest, then publishes. Verify with
-`gh attestation verify … --repo telepenin/concierge --signer-workflow telepenin/concierge/.github/workflows/release.yml`.
+`gh attestation verify … --repo gestorino/box --signer-workflow gestorino/box/.github/workflows/release.yml`.
 The public `main` starts at one parentless commit; the history before it stays local (`pre-public`).
 **The pre-push hook guards that:** `scripts/git-hooks/pre-push`, installed in every clone that
 pushes with `cp scripts/git-hooks/pre-push .git/hooks/pre-push`, refuses any ref reaching a root

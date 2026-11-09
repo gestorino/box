@@ -34,9 +34,12 @@ provenance and publish them as the tag's release. Any other tag publishes nothin
 To check that a download was built by this repository's release workflow:
 
 ```sh
-gh attestation verify concierge-0.2.0-linux-amd64.tar.gz --repo telepenin/concierge \
-  --signer-workflow telepenin/concierge/.github/workflows/release.yml
+gh attestation verify concierge-0.3.0-linux-amd64.tar.gz --repo gestorino/box \
+  --signer-workflow gestorino/box/.github/workflows/release.yml
 ```
+
+`v0.2.0` was published before the repository moved to `gestorino/box`: its attestation names
+`telepenin/concierge`, so verify it with that name in both places.
 
 ## License
 
