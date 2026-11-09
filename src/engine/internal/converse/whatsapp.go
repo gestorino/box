@@ -201,7 +201,7 @@ func deliver(ctx context.Context, h owners, s Settings, now func() time.Time, ow
 	}
 	// Switched off: dropped. A switch that can't be read is not off: the hub keeps the message and
 	// decides once it can read the settings.
-	_, on, err := s.Agent(ctx)
+	_, on, err := s.Answering(ctx)
 	if err != nil {
 		slog.Warn("converse: reading the WhatsApp switch; the message is kept", "err", err)
 	} else if !on {
