@@ -1,7 +1,7 @@
 import { ArrowLeft, Loader } from 'lucide-react'
 import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
-import { CancelAgentSetup } from '@/components/cancel-agent-setup'
+import { StopAgent } from '@/components/stop-agent'
 import { ExternalLink } from '@/components/external-link'
 import { HostError } from '@/components/host-error'
 import { PageHeader } from '@/components/page-header'
@@ -141,7 +141,7 @@ function Setup({ name }: { name: AgentName }) {
         actions={
           <div className="flex flex-wrap gap-2">
             <Button asChild variant="outline" size="sm"><Link to="/agents"><ArrowLeft aria-hidden />All agents</Link></Button>
-            {started && state !== 'added' && <CancelAgentSetup name={name} settle={settle} onCancelled={() => navigate('/agents')} />}
+            {started && state !== 'added' && <StopAgent name={name} mode="cancel" settle={settle} onDone={() => navigate('/agents')} />}
           </div>
         }
       />

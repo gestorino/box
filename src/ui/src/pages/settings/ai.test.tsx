@@ -126,3 +126,13 @@ describe('AI settings', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })
+
+describe('AI settings has no agent section', () => {
+  it('the agents live on /agents', async () => {
+    stubFetch({ [G]: SET })
+    show()
+    await screen.findByText('sk-or-…a1b2')
+    expect(screen.queryByText('Agent')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: /agent/i })).not.toBeInTheDocument()
+  })
+})

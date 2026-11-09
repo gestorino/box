@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router'
-import { CancelAgentSetup } from '@/components/cancel-agent-setup'
+import { StopAgent } from '@/components/stop-agent'
 import { HostError } from '@/components/host-error'
 import { PageHeader } from '@/components/page-header'
 import { Button } from '@/components/ui/button'
@@ -101,7 +101,7 @@ function AgentCard({ a }: { a: AgentStatus }) {
             <p className="text-sm text-muted-foreground">Not set up yet</p>
             <div className="flex flex-wrap items-start gap-2">
               <Button asChild size="sm"><Link to={agentSetupPath(a.name)}>Finish setup</Link></Button>
-              <CancelAgentSetup name={a.name} />
+              <StopAgent name={a.name} mode="cancel" />
             </div>
           </div>
         ) : (

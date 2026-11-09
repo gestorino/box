@@ -54,16 +54,20 @@ export interface Conversation {
   out_tokens: number
   model: string
 }
-export interface ConversationEvent { id: number; at: string; kind: 'owner' | 'agent' | 'tool' | 'result' | 'errand'; text: string }
-export interface ConversationDetail extends Conversation { events: ConversationEvent[]; runs: number[] }
+/** agent: who spoke ('' for the owner's, an errand's and the hub's own words). */
+export interface ConversationEvent { id: number; at: string; kind: 'owner' | 'agent' | 'tool' | 'result' | 'errand'; agent: string; text: string }
+export interface Usage { cost_usd: number; cost_known: boolean; in_tokens: number; out_tokens: number; model: string }
+/** usage: one entry per agent that ran a step; the top-level totals are their sum. */
+export interface ConversationDetail extends Conversation { events: ConversationEvent[]; runs: number[]; usage: (Usage & { agent: AgentName })[] }
 
 export const CONVERSATIONS_POLL_MS = 5_000
-export const getConversations = (signal?: AbortSignal) => request<Conversation[]>('GET', '/api/v1/conversations', undefined, signal)
+/** The conversations an agent spoke in, its usage in each row. */
+export const getConversations = (agent: AgentName, signal?: AbortSignal) => request<Conversation[]>('GET', `/api/v1/conversations?agent=${agent}`, undefined, signal)
 export const getConversation = (id: string | number, signal?: AbortSignal) => request<ConversationDetail>('GET', `/api/v1/conversations/${id}`, undefined, signal)
-export const conversationPath = (id: number) => `/agent/${id}`
+export const agentConversationPath = (name: AgentName, id: number) => `/agents/${name}/${id}`
 
 /** "1,500 tokens · $0.0123 plan equivalent"; a cost the provider didn't tell is "price unknown", never $0. */
-export function usageLine(c: Pick<Conversation, 'cost_usd' | 'cost_known' | 'in_tokens' | 'out_tokens'>): string {
+export function usageLine(c: Omit<Usage, 'model'>): string {
   const tokens = `${(c.in_tokens + c.out_tokens).toLocaleString('en-US')} tokens`
   return `${tokens} · ${c.cost_known ? `$${c.cost_usd.toFixed(c.cost_usd < 1 ? 4 : 2)} plan equivalent` : 'price unknown'}`
 }
