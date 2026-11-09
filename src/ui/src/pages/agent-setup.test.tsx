@@ -147,6 +147,19 @@ describe('an agent’s setup page', () => {
     expect(writes(api.calls)).toEqual(['POST /api/v1/agents/claude/login', 'POST /api/v1/agents/claude/login/finish', 'POST /api/v1/connectors/claude/confirm'])
   })
 
+  it('Finish setup on an agent already signed in confirms it, with no new login', async () => {
+    const { api, router } = open('claude', {
+      [AGENTS]: { body: [agent('claude', { ...SETTING_UP, signed_in: true }), agent('codex')] },
+      'POST /api/v1/connectors/claude/confirm': [{ status: 502, body: { error: 'boom' } }, { status: 204 }],
+    })
+    await userEvent.click(await screen.findByRole('button', { name: 'Finish' }))
+    expect(screen.queryByRole('button', { name: 'Sign in' })).toBeNull()
+    expect(await screen.findByRole('alert')).toHaveTextContent('boom')
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/agents/claude'))
+    expect(writes(api.calls)).toEqual(['POST /api/v1/connectors/claude/confirm', 'POST /api/v1/connectors/claude/confirm'])
+  })
+
   it('Cancel asks first, then logs out — ending the login still waiting — and stops it, back on /agents', async () => {
     const { api, router } = open('codex', {
       'POST /api/v1/connectors/codex': { status: 204 },
@@ -168,11 +181,12 @@ describe('an agent’s setup page', () => {
     expect(keys).not.toContain('POST /api/v1/connectors/codex/confirm')
   })
 
-  it('a failed cancel says so, and stays', async () => {
+  it('a failed stop says so, and stays', async () => {
     const { router } = open('claude', {
       'POST /api/v1/connectors/claude': { status: 204 },
       'POST /api/v1/agents/claude/login': CLAUDE_LOGIN,
-      'POST /api/v1/agents/claude/logout': { status: 502, body: { error: 'boom' } },
+      'POST /api/v1/agents/claude/logout': { status: 204 },
+      'DELETE /api/v1/connectors/claude': { status: 502, body: { error: 'boom' } },
     })
     await signIn()
     await screen.findByLabelText('Code')

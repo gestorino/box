@@ -67,6 +67,33 @@ describe('Agents page', () => {
     expect(await within(card('Claude')).findByRole('button', { name: 'Add' })).toBeInTheDocument()
   })
 
+  it.each([502, 503])('a logout that fails (%i: its daemon not answering) still stops it', async (status) => {
+    const user = userEvent.setup()
+    const { api } = open({
+      [AGENTS]: [{ body: [agent('claude', { state: 'setting_up' }), agent('codex')] }, { body: [agent('claude'), agent('codex')] }],
+      'POST /api/v1/agents/claude/logout': { status, body: { error: 'not answering' } },
+      'DELETE /api/v1/connectors/claude': { status: 204 },
+    })
+    await user.click(within(await waitFor(() => card('Claude'))).getByRole('button', { name: 'Cancel' }))
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel setup' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(writes(api.calls).map((c) => c.key)).toEqual(['POST /api/v1/agents/claude/logout', 'DELETE /api/v1/connectors/claude'])
+    expect(await within(card('Claude')).findByRole('button', { name: 'Add' })).toBeInTheDocument()
+  })
+
+  it('a stop that fails says so, and the modal stays', async () => {
+    const user = userEvent.setup()
+    open({
+      [AGENTS]: { body: [agent('claude', { state: 'setting_up', reachable: true }), agent('codex')] },
+      'POST /api/v1/agents/claude/logout': { status: 204 },
+      'DELETE /api/v1/connectors/claude': { status: 502, body: { error: 'boom' } },
+    })
+    await user.click(within(await waitFor(() => card('Claude'))).getByRole('button', { name: 'Cancel' }))
+    const dialog = within(await screen.findByRole('dialog'))
+    await user.click(dialog.getByRole('button', { name: 'Cancel setup' }))
+    expect(await dialog.findByRole('alert')).toHaveTextContent("Couldn't cancel the setup: boom")
+  })
+
   it('Keep setting up changes nothing', async () => {
     const user = userEvent.setup()
     const { api } = open({ [AGENTS]: { body: [agent('claude', { state: 'setting_up', reachable: true }), agent('codex')] } })

@@ -32,7 +32,10 @@ function Setup({ name }: { name: AgentName }) {
   const meta = AGENTS[name]
   const { agents, error: listError, refresh } = useAgents()
   const navigate = useNavigate()
-  const state = agents?.find((a) => a.name === name)?.state
+  const status = agents?.find((a) => a.name === name)
+  const state = status?.state
+  // Signed in, never confirmed (the confirm failed, or the owner left): only the confirm is left.
+  const confirmOnly = state === 'setting_up' && status?.signed_in === true
   // Added here, before the list has read it again.
   const [startedHere, setStartedHere] = useState(false)
   const [signingIn, setSigningIn] = useState(false)
@@ -83,6 +86,7 @@ function Setup({ name }: { name: AgentName }) {
       }
       return false
     }
+    refresh()
     if (cancelled.current) return true
     setFinished(true)
     await confirm()
@@ -151,6 +155,11 @@ function Setup({ name }: { name: AgentName }) {
                 <p className="font-medium text-status-done-foreground">✓ {meta.label} is added</p>
                 <p className="text-muted-foreground">It is in the sidebar now.</p>
                 <Button asChild size="sm"><Link to={meta.path}>Open {meta.label}</Link></Button>
+              </>
+            ) : confirmOnly && !signingIn ? (
+              <>
+                <p className="text-muted-foreground">You are signed in to {meta.label}. The box has yet to finish setting it up.</p>
+                <Button size="sm" disabled={busy} onClick={() => void confirm()}>{error ? 'Try again' : 'Finish'}</Button>
               </>
             ) : !signingIn ? (
               <>

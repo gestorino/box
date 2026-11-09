@@ -28,7 +28,8 @@ export const AGENT_ROLES: Record<AgentRole, string> = { primary: 'Primary', seco
 /** needs_code: Claude (the owner pastes the code the page shows); otherwise Codex shows the code itself. */
 export interface AgentLogin { url: string; code: string; needs_code: boolean }
 
-export const AGENTS_POLL_MS = 10_000
+/** Each poll makes both daemons run their CLI: once a minute, and every action refreshes it at once. */
+export const AGENTS_POLL_MS = 60_000
 
 export const getAgents = (signal?: AbortSignal) => request<AgentStatus[]>('GET', '/api/v1/agents', undefined, signal)
 export const getAgentSettings = (signal?: AbortSignal) => request<AgentSettings>('GET', '/api/v1/settings/agent', undefined, signal)

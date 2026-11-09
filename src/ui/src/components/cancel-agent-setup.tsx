@@ -6,7 +6,8 @@ import { AGENTS, type AgentName, agentLogout } from '@/lib/agent'
 import { stopConnector } from '@/lib/connectors'
 
 /** Cancel an agent's setup, asked in a modal: its daemon logs out (which also ends a login still
- *  waiting on the box), then hostd stops it. settle: what must end first (a start under way). */
+ *  waiting on the box) when it answers, then hostd stops it. settle: what must end first (a start
+ *  under way). */
 export function CancelAgentSetup({ name, settle, onCancelled }: { name: AgentName; settle?: () => Promise<void>; onCancelled?: () => void }) {
   const { refresh } = useAgents()
   const [open, setOpen] = useState(false)
@@ -19,7 +20,9 @@ export function CancelAgentSetup({ name, settle, onCancelled }: { name: AgentNam
     setError(undefined)
     try {
       await settle?.()
-      await agentLogout(name)
+      // A daemon that doesn't answer can't log out; stopping it still ends the setup, and the next
+      // sign-in starts over in its home.
+      await agentLogout(name).catch(() => {})
       await stopConnector(name)
       setOpen(false)
       refresh()
