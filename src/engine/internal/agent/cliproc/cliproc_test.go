@@ -108,3 +108,25 @@ func TestSlotReplacesAndClaimsOnce(t *testing.T) {
 		t.Fatal("a released session is pending")
 	}
 }
+
+func TestSignInRefused(t *testing.T) {
+	for text, want := range map[string]bool{
+		"Invalid API key · Please run /login":      true,
+		"unexpected status 401 Unauthorized":       true,
+		"Authentication failed":                    true,
+		"OAuth token has expired":                  true,
+		"Not logged in":                            true,
+		"Your login expired, sign in again":        true,
+		"token expired":                            true,
+		"session expired":                          true,
+		"the network is down":                      false,
+		"Claude AI usage limit reached|1762300800": false,
+		"stream disconnected before completion":    false,
+		"the offer expired":                        false,
+		"please login to continue":                 false,
+	} {
+		if got := SignInRefused(text); got != want {
+			t.Errorf("SignInRefused(%q) = %v, want %v", text, got, want)
+		}
+	}
+}

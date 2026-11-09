@@ -145,15 +145,47 @@ func TestRunFailures(t *testing.T) {
 	}
 }
 
-func TestRunSaysNotSignedIn(t *testing.T) {
+func TestNotSignedInIsUnauthenticated(t *testing.T) {
 	dir, bin := fakeCLI(t, "")
 	os.WriteFile(bin, []byte("#!/bin/sh\ntouch "+dir+"/ran\n"), 0o755)
 	_, _, err := NewRunner(bin, homeWithToken(t, ""), "m").Run(context.Background(), "s", "i", []byte(`{}`))
-	if connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "not signed in") {
+	if connect.CodeOf(err) != connect.CodeUnauthenticated || !strings.Contains(err.Error(), "not signed in") {
 		t.Fatalf("err = %v", err)
 	}
 	if _, e := os.Stat(filepath.Join(dir, "ran")); e == nil {
 		t.Error("the CLI ran")
+	}
+}
+
+func TestLimitIsResourceExhausted(t *testing.T) {
+	wd, _ := os.Getwd()
+	for name, tail := range map[string]string{"exit 0": "", "exit 1": "exit 1\n"} {
+		t.Run(name, func(t *testing.T) {
+			_, bin := fakeCLI(t, "cat >/dev/null; cat "+wd+"/testdata/claude-limit.json\n"+tail)
+			_, _, err := NewRunner(bin, homeWithToken(t, "sk-ant-oat01-secret"), "m").Run(context.Background(), "s", "i", []byte(`{}`))
+			if connect.CodeOf(err) != connect.CodeResourceExhausted {
+				t.Fatalf("err = %v", err)
+			}
+			if strings.Contains(err.Error(), "sk-ant") || strings.Contains(err.Error(), "1762300800") {
+				t.Errorf("error leaks: %v", err)
+			}
+		})
+	}
+}
+
+func TestASignInRefusedIsUnauthenticated(t *testing.T) {
+	wd, _ := os.Getwd()
+	for name, tail := range map[string]string{"exit 0": "", "exit 1": "exit 1\n"} {
+		t.Run(name, func(t *testing.T) {
+			_, bin := fakeCLI(t, "cat >/dev/null; cat "+wd+"/testdata/claude-auth.json\n"+tail)
+			_, _, err := NewRunner(bin, homeWithToken(t, "sk-ant-oat01-secret"), "m").Run(context.Background(), "s", "i", []byte(`{}`))
+			if connect.CodeOf(err) != connect.CodeUnauthenticated {
+				t.Fatalf("err = %v", err)
+			}
+			if strings.Contains(err.Error(), "sk-ant") || strings.Contains(err.Error(), "API key") || strings.Contains(err.Error(), "/login") {
+				t.Errorf("error leaks: %v", err)
+			}
+		})
 	}
 }
 

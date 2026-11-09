@@ -17,7 +17,7 @@ export const AGENTS_NONE = [
   { name: 'claude', signed_in: false, account: '', cli_version: '', model: '', reachable: false, state: 'not_added' },
   { name: 'codex', signed_in: false, account: '', cli_version: '', model: '', reachable: false, state: 'not_added' },
 ]
-export const AGENT_SETTINGS = { agent: '', answer: { whatsapp: false } }
+export const AGENT_SETTINGS = { primary: '', secondary: '', answer: { whatsapp: false } }
 
 /** calld holds an OpenAI key: what a page test gets unless it stubs GET /api/v1/calls/key. */
 export const CALLS_KEY_SET = { set: true, masked: 'sk-…test' }

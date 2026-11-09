@@ -5,6 +5,7 @@ import { SidePanelHost } from '@/components/side-panel'
 import { Separator } from '@/components/ui/separator'
 import { SidebarInset, SidebarProvider, SidebarTrigger } from '@/components/ui/sidebar'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { AgentsProvider } from '@/hooks/use-agents'
 import { ConnectorsProvider } from '@/hooks/use-connectors'
 import { UnreadProvider } from '@/hooks/use-unread'
 import { AppSidebar } from './app-sidebar'
@@ -19,6 +20,7 @@ export function DashboardLayout() {
   return (
     <TooltipProvider>
       <ConnectorsProvider>
+      <AgentsProvider>
         <UnreadProvider>
         <SidePanelHost>{(sidePanel) => (
         <SidebarProvider>
@@ -45,6 +47,7 @@ export function DashboardLayout() {
         </SidebarProvider>
         )}</SidePanelHost>
         </UnreadProvider>
+      </AgentsProvider>
       </ConnectorsProvider>
     </TooltipProvider>
   )

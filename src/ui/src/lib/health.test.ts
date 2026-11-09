@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { healthOf, markOf, OUTAGE_MS } from './health'
+import { agentMark, healthOf, markOf, OUTAGE_MS } from './health'
 
 describe('healthOf', () => {
   it.each([
@@ -55,5 +55,18 @@ describe('markOf', () => {
 
   it('working: the green mark, and when it was checked', () => {
     expect(markOf({ kind: 'ok' }, { checkedAt: 0, okAt: 0 }, 30_000)).toEqual({ tone: 'ok', reason: 'Working', lines: ['Checked just now'] })
+  })
+})
+
+describe('agentMark', () => {
+  const a = (o: object = {}) => ({ name: 'claude' as const, signed_in: true, account: '', cli_version: '', model: '', reachable: true, state: 'added' as const, ...o })
+  it.each([
+    [{ reachable: false, signed_in: false }, { tone: 'outage', reason: 'Not reachable', lines: [] }],
+    [{ signed_in: false }, { tone: 'attention', reason: 'Not signed in', lines: [] }],
+    [{ signed_in: false, limited_at: '2026-11-08T10:00:00Z' }, { tone: 'attention', reason: 'Not signed in', lines: [] }],
+    [{ limited_at: '2026-11-08T10:00:00Z' }, { tone: 'attention', reason: "Out of its plan's limit", lines: [] }],
+    [{}, { tone: 'ok', reason: 'Signed in', lines: [] }],
+  ])('%o', (o, want) => {
+    expect(agentMark(a(o))).toEqual(want)
   })
 })

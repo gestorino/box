@@ -136,17 +136,18 @@ func (h *HostdClient) AgentStates(ctx context.Context) (map[string]string, error
 	return states, nil
 }
 
-// AgentSettings is hostd's `/settings/agent`: the chosen agent ("" for none) and whether the owner
-// answers on WhatsApp.
-func (h *HostdClient) AgentSettings(ctx context.Context) (agent string, whatsapp bool, err error) {
+// AgentSettings is hostd's `/settings/agent`: the primary agent and the secondary ("" for none),
+// and whether the owner answers on WhatsApp.
+func (h *HostdClient) AgentSettings(ctx context.Context) (primary, secondary string, whatsapp bool, err error) {
 	var out struct {
-		Agent  string `json:"agent"`
-		Answer struct {
+		Primary   string `json:"primary"`
+		Secondary string `json:"secondary"`
+		Answer    struct {
 			WhatsApp bool `json:"whatsapp"`
 		} `json:"answer"`
 	}
 	if err := h.c.get(ctx, "/settings/agent", &out); err != nil {
-		return "", false, err
+		return "", "", false, err
 	}
-	return out.Agent, out.Answer.WhatsApp, nil
+	return out.Primary, out.Secondary, out.Answer.WhatsApp, nil
 }

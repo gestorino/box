@@ -2,6 +2,7 @@ package converse
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"slices"
 	"strconv"
@@ -48,6 +49,41 @@ const (
 	restarted = `{"error":"the box restarted before this finished"}`
 )
 
+// labels are the agents' names as the owner reads them.
+var labels = map[string]string{"claude": "Claude", "codex": "Codex"}
+
+// reasons are the words for each step failure that falls back to the next agent.
+var reasons = map[connect.Code]string{
+	connect.CodeUnauthenticated:   "not signed in",
+	connect.CodeResourceExhausted: "out of its plan's limit",
+	connect.CodeUnavailable:       "not reachable",
+}
+
+// label is the agent's name as the owner reads it.
+func label(name string) string {
+	if l, ok := labels[name]; ok {
+		return l
+	}
+	return name
+}
+
+// fallsBack is a step failure the next agent answers instead: not signed in, out of the plan's limit,
+// or not reachable.
+func fallsBack(err error) bool {
+	_, ok := reasons[connect.CodeOf(err)]
+	return ok
+}
+
+// switchNotice tells the owner that the agent from can't answer, for the reason of code, and to does.
+func switchNotice(from, to string, code connect.Code) string {
+	return label(from) + " can't answer now (" + reasons[code] + "); " + label(to) + " is answering."
+}
+
+// cantAnswer tells the owner that the agent can't answer, for the reason of code.
+func cantAnswer(name string, code connect.Code) string {
+	return label(name) + " can't answer now (" + reasons[code] + ")."
+}
+
 // waits are the kinds of an errand's event that wait on the owner.
 var waits = map[string]bool{"question": true, "confirm": true, "human_check": true}
 
@@ -60,10 +96,11 @@ type Channel interface {
 	Send(ctx context.Context, text string) error
 }
 
-// Settings are the owner's choices the hub reads every turn: the chosen agent ("" for none) and
-// whether the owner switched WhatsApp on, and the owner's Contacts phone.
+// Settings are the owner's choices the hub reads every turn: the agents answering, the primary first
+// and then the secondary (none when no agent is added), and whether the owner switched WhatsApp on,
+// and the owner's Contacts phone.
 type Settings interface {
-	Agent(ctx context.Context) (name string, whatsapp bool, err error)
+	Answering(ctx context.Context) (agents []string, whatsapp bool, err error)
 	OwnerPhone(ctx context.Context) (string, error)
 }
 
@@ -82,8 +119,8 @@ type Config struct {
 }
 
 // Hub runs the owner's conversations: each event (the owner's message, an errand's) is stored in its
-// conversation as the hub takes it in, and becomes a turn of the chosen agent, whose words go to the
-// owner on the conversation's channel.
+// conversation as the hub takes it in, and becomes a turn of the primary agent, whose words go to the
+// owner on the conversation's channel; of the secondary when the primary can't answer.
 //
 // Each conversation has a queue its own goroutine drains, one event and its turn at a time, in the
 // order the hub took them in; different conversations run in parallel. An event stays pending in the
@@ -166,7 +203,7 @@ func (h *Hub) closeDangling(conv int64) {
 		}
 	}
 	for _, c := range open {
-		if _, err := h.cfg.Store.Append(h.base, conv, &agentv1.Event{Kind: &agentv1.Event_ToolResult{ToolResult: &agentv1.ToolResult{
+		if _, err := h.cfg.Store.Append(h.base, conv, "", &agentv1.Event{Kind: &agentv1.Event_ToolResult{ToolResult: &agentv1.ToolResult{
 			CallId: c.GetCallId(), ResultJson: restarted}}}, h.cfg.Now()); err != nil {
 			slog.Error("converse: closing a tool call the restart cut short", "conversation", conv, "err", err)
 		}
@@ -398,8 +435,8 @@ func (h *Hub) conversationOf(run int64) int64 {
 }
 
 // take answers an event taken in: a human check with the console's link to the errand, a Confirm by
-// sending it to the owner as the site said it, anything else with a turn of the chosen agent; nothing
-// at all while the conversation's channel is off or no agent is chosen. The event stops being pending
+// sending it to the owner as the site said it, anything else with a turn of the agents answering;
+// nothing at all while the conversation's channel is off or no agent is added. The event stops being pending
 // once answered, unless the hub's stop cut its turn short.
 func (h *Hub) take(conv int64, e *agentv1.Event) {
 	ctx := h.base
@@ -424,38 +461,38 @@ func (h *Hub) take(conv int64, e *agentv1.Event) {
 // wait that ended before its turn (answered in the console, or its run gone with a restart) is told
 // nothing: it asks nothing any more.
 func (h *Hub) answer(ctx context.Context, c Conversation, e *agentv1.Event) bool {
-	name, ch, err := h.answering(ctx, c)
+	order, ch, err := h.answering(ctx, c)
 	for delay := h.retryFirst; err != nil; delay = min(2*delay, h.retryMax) {
 		select {
 		case <-ctx.Done():
 			return false
 		case <-time.After(delay):
 		}
-		name, ch, err = h.answering(ctx, c)
+		order, ch, err = h.answering(ctx, c)
 	}
 	if x := e.GetErrand(); waits[x.GetKind()] && !h.cfg.Tools.Waits(x.GetRun(), x.GetKind(), x.GetWait()) {
 		slog.Info("converse: an errand's wait that ended, not told", "conversation", c.ID, "run", x.GetRun(), "kind", x.GetKind())
 		return true
 	}
-	if name == "" {
+	if len(order) == 0 {
 		return true
 	}
 	switch x := e.GetErrand(); x.GetKind() {
 	case "human_check":
-		h.say(ctx, c, ch, humanCheckWords+": "+h.errandLink(x.GetRun()))
+		h.say(ctx, c, ch, "", humanCheckWords+": "+h.errandLink(x.GetRun()))
 		return true
 	case "confirm":
 		h.relayConfirm(ctx, c, ch, e.GetId(), x)
 		return true
 	}
-	return h.turn(ctx, c, e, name, ch)
+	return h.turn(ctx, c, e, order, ch)
 }
 
 // relayConfirm sends the owner the errand's Confirm as the site said it, its options with it, and
 // only once it was sent marks it told: a Confirm the owner never got is never answerable.
 func (h *Hub) relayConfirm(ctx context.Context, c Conversation, ch Channel, id int64, x *agentv1.ErrandEvent) {
 	words := strings.Join(append([]string{x.GetText()}, x.GetOptions()...), "\n")
-	if !h.say(ctx, c, ch, words) {
+	if !h.say(ctx, c, ch, "", words) {
 		return
 	}
 	if err := h.cfg.Store.tellConfirm(ctx, c.ID, id); err != nil {
@@ -463,26 +500,26 @@ func (h *Hub) relayConfirm(ctx context.Context, c Conversation, ch Channel, id i
 	}
 }
 
-// answering is the chosen agent and the conversation's channel, when the owner switched that
-// channel on and chose an agent; "" when not. An error is settings that could not be read: not an
-// answer either way.
-func (h *Hub) answering(ctx context.Context, c Conversation) (string, Channel, error) {
+// answering is the agents answering, in order, and the conversation's channel, when the owner
+// switched that channel on and added an agent; none when not. An error is settings that could not be
+// read: not an answer either way.
+func (h *Hub) answering(ctx context.Context, c Conversation) ([]string, Channel, error) {
 	sctx, cancel := context.WithTimeout(ctx, settingsTimeout)
 	defer cancel()
-	name, whatsapp, err := h.cfg.Settings.Agent(sctx)
+	order, whatsapp, err := h.cfg.Settings.Answering(sctx)
 	if err != nil {
 		slog.Error("converse: reading the agent's settings", "conversation", c.ID, "err", err)
-		return "", nil, err
+		return nil, nil, err
 	}
-	if name == "" || !switchedOn(c.Channel, whatsapp) {
-		return "", nil, nil
+	if len(order) == 0 || !switchedOn(c.Channel, whatsapp) {
+		return nil, nil, nil
 	}
 	ch, ok := h.cfg.Channels[c.Channel]
 	if !ok {
 		slog.Error("converse: no such channel", "conversation", c.ID, "channel", c.Channel)
-		return "", nil, nil
+		return nil, nil, nil
 	}
-	return name, ch, nil
+	return order, ch, nil
 }
 
 // switchedOn is the owner's "Answer me on" switch of the channel; WhatsApp has the only one yet.
@@ -495,106 +532,154 @@ func (h *Hub) errandLink(run int64) string {
 	return strings.TrimRight(h.cfg.ConsoleURL, "/") + "/errands/runs/" + strconv.FormatInt(run, 10)
 }
 
-// turn steps the agent on the event e until it says something or ends, running each tool it calls,
-// at most MaxTools; false when the hub's stop cut it short (nothing said: it runs again). A turn that
-// fails tells the owner what it could (failed).
-func (h *Hub) turn(ctx context.Context, c Conversation, e *agentv1.Event, name string, ch Channel) bool {
+// turn steps the first agent of the order on the event e until it says something or ends, running
+// each tool it calls, at most MaxTools; false when the hub's stop cut it short (nothing said: it runs
+// again). A step the agent can't answer (fallsBack) goes to the next agent of the order, on the same
+// window. Whether the owner is told of the switch is decided at the switch: unless the next agent said
+// the conversation's last words already (once a stretch); the notice is said only just before the next
+// agent's own words, so it is never in that agent's window and never said when it fails too. A turn
+// that fails tells the owner what it could (failed), and, when no agent could answer, why the primary
+// couldn't.
+func (h *Hub) turn(ctx context.Context, c Conversation, e *agentv1.Event, order []string, ch Channel) bool {
 	taking := e.GetId()
-	agent, ok := h.cfg.Agents[name]
-	if !ok {
-		slog.Error("converse: the chosen agent is not configured", "conversation", c.ID, "agent", name)
-		h.failed(ctx, c, ch, e)
-		return true
-	}
+	cur := 0
+	var primary connect.Code // why the primary couldn't answer
+	notice := ""             // the switch's notice, said before the answering agent's words; "" when none is due
 	for tools := 0; ; {
-		resp, ok := h.step(ctx, c, taking, agent)
-		if !ok {
+		name := order[cur]
+		resp, err := h.step(ctx, c, taking, name)
+		if err != nil {
 			if ctx.Err() != nil {
 				return false
 			}
-			h.failed(ctx, c, ch, e)
-			return true
+			if !fallsBack(err) {
+				h.failed(ctx, c, ch, e, "")
+				return true
+			}
+			code := connect.CodeOf(err)
+			if code == connect.CodeResourceExhausted {
+				if err := h.cfg.Store.MarkLimited(ctx, name, h.cfg.Now()); err != nil {
+					slog.Error("converse: marking an agent's limit", "agent", name, "err", err)
+				}
+			}
+			if cur == 0 {
+				primary = code
+			}
+			if cur+1 == len(order) {
+				h.failed(ctx, c, ch, e, cantAnswer(order[0], primary))
+				return true
+			}
+			next := order[cur+1]
+			notice = ""
+			if h.noticeDue(ctx, c.ID, next) {
+				notice = switchNotice(name, next, code)
+			}
+			cur++
+			continue
 		}
 		switch a := resp.GetAction().(type) {
 		case *agentv1.StepResponse_ToolCall:
 			if tools == MaxTools {
 				slog.Warn("converse: a turn ran out of tool calls", "conversation", c.ID, "tools", MaxTools)
-				h.failed(ctx, c, ch, e)
+				h.failed(ctx, c, ch, e, "")
 				return true
 			}
 			tools++
-			if !h.runTool(ctx, c.ID, taking, a.ToolCall) {
+			if !h.runTool(ctx, c.ID, taking, name, a.ToolCall) {
 				if ctx.Err() != nil {
 					return false
 				}
-				h.failed(ctx, c, ch, e)
+				h.failed(ctx, c, ch, e, "")
 				return true
 			}
 		case *agentv1.StepResponse_Say:
-			h.say(ctx, c, ch, a.Say)
+			h.sayAfter(ctx, c, ch, notice, name, a.Say)
 			return true
 		case *agentv1.StepResponse_End:
-			h.say(ctx, c, ch, a.End)
+			h.sayAfter(ctx, c, ch, notice, name, a.End)
 			if err := h.cfg.Store.End(ctx, c.ID, h.running); err != nil {
 				slog.Error("converse: ending a conversation", "conversation", c.ID, "err", err)
 			}
 			return true
 		default:
 			slog.Error("converse: a step with no action", "conversation", c.ID)
-			h.failed(ctx, c, ch, e)
+			h.failed(ctx, c, ch, e, "")
 			return true
 		}
 	}
 }
 
+// noticeDue is a switch to the agent next the owner is not told of yet: another agent said the
+// conversation's last words, or none did. A store that can't tell counts as due.
+func (h *Hub) noticeDue(ctx context.Context, conv int64, next string) bool {
+	last, err := h.cfg.Store.LastAgent(ctx, conv)
+	if err != nil {
+		slog.Error("converse: reading who answered last", "conversation", conv, "err", err)
+		return true
+	}
+	return last != next
+}
+
 // failed tells the owner what a failed turn on the event could not: an errand's question still
 // waiting, as the site asked it with its options, or an errand's end in the errand's own words, as a
-// Confirm is relayed; anything else, that the agent couldn't finish. A question told this way is
-// answered, as any is, only with one of its options or the owner's own message (answer_errand).
-func (h *Hub) failed(ctx context.Context, c Conversation, ch Channel, e *agentv1.Event) {
+// Confirm is relayed; anything else, that the agent couldn't finish, and why when reason says (no
+// agent could answer). A question told this way is answered, as any is, only with one of its options
+// or the owner's own message (answer_errand).
+func (h *Hub) failed(ctx context.Context, c Conversation, ch Channel, e *agentv1.Event, reason string) {
 	x := e.GetErrand()
 	switch {
 	case x.GetKind() == "question" && h.cfg.Tools.Waits(x.GetRun(), x.GetKind(), x.GetWait()):
-		h.say(ctx, c, ch, strings.Join(append([]string{x.GetText()}, x.GetOptions()...), "\n"))
+		h.say(ctx, c, ch, "", strings.Join(append([]string{x.GetText()}, x.GetOptions()...), "\n"))
 	case ends[x.GetKind()] && strings.TrimSpace(x.GetText()) != "":
-		h.say(ctx, c, ch, x.GetText())
+		h.say(ctx, c, ch, "", x.GetText())
+	case reason != "":
+		h.say(ctx, c, ch, "", couldNotFinish+". "+reason)
 	default:
-		h.say(ctx, c, ch, couldNotFinish)
+		h.say(ctx, c, ch, "", couldNotFinish)
 	}
 }
 
-// step is the agent's next action on the conversation's window for the event #taking, its usage
-// added up; false when the step failed (logged by its code alone: a daemon's error may quote the
-// model's words).
-func (h *Hub) step(ctx context.Context, c Conversation, taking int64, agent agentv1connect.AgentServiceClient) (*agentv1.StepResponse, bool) {
+// step is the named agent's next action on the conversation's window for the event #taking, its
+// usage added up as the agent's and its limit, if it had one, cleared. A failed step's error is
+// logged by its code alone (a daemon's error may quote the model's words); an agent not configured
+// fails as not reachable.
+func (h *Hub) step(ctx context.Context, c Conversation, taking int64, name string) (*agentv1.StepResponse, error) {
+	agent, ok := h.cfg.Agents[name]
+	if !ok {
+		slog.Error("converse: an agent answering is not configured", "conversation", c.ID, "agent", name)
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("the agent is not configured"))
+	}
 	events, err := h.cfg.Store.Window(ctx, c.ID, SeenEvents, taking)
 	if err != nil {
 		slog.Error("converse: reading a conversation's events", "conversation", c.ID, "err", err)
-		return nil, false
+		return nil, err
 	}
 	stepCtx, cancel := context.WithTimeout(ctx, stepTimeout)
 	defer cancel()
 	resp, err := agent.Step(stepCtx, connect.NewRequest(&agentv1.StepRequest{Channel: c.Channel, Events: events,
 		Tools: h.cfg.Tools.Specs(), Now: timestamppb.New(h.cfg.Now()), TimeZone: h.cfg.TimeZone}))
 	if err != nil {
-		slog.Error("converse: a step failed", "conversation", c.ID, "code", connect.CodeOf(err).String())
-		return nil, false
+		slog.Error("converse: a step failed", "conversation", c.ID, "agent", name, "code", connect.CodeOf(err).String())
+		return nil, err
 	}
-	if err := h.cfg.Store.AddUsage(ctx, c.ID, resp.Msg.GetUsage()); err != nil {
+	if err := h.cfg.Store.AddUsage(ctx, c.ID, name, resp.Msg.GetUsage()); err != nil {
 		slog.Error("converse: adding a step's usage", "conversation", c.ID, "err", err)
 	}
-	return resp.Msg, true
+	if err := h.cfg.Store.ClearLimited(ctx, name); err != nil {
+		slog.Error("converse: clearing an agent's limit", "agent", name, "err", err)
+	}
+	return resp.Msg, nil
 }
 
-// runTool appends the call, runs it in the turn taking #taking and appends its result; false when
-// either can't be kept.
-func (h *Hub) runTool(ctx context.Context, conv, taking int64, call *agentv1.ToolCall) bool {
-	if _, err := h.cfg.Store.Append(ctx, conv, &agentv1.Event{Kind: &agentv1.Event_ToolCall{ToolCall: call}}, h.cfg.Now()); err != nil {
+// runTool appends the agent's call, runs it in the turn taking #taking and appends its result as the
+// agent's; false when either can't be kept.
+func (h *Hub) runTool(ctx context.Context, conv, taking int64, agent string, call *agentv1.ToolCall) bool {
+	if _, err := h.cfg.Store.Append(ctx, conv, agent, &agentv1.Event{Kind: &agentv1.Event_ToolCall{ToolCall: call}}, h.cfg.Now()); err != nil {
 		slog.Error("converse: keeping a tool call", "conversation", conv, "err", err)
 		return false
 	}
 	result := h.cfg.Tools.Call(ctx, conv, taking, call)
-	if _, err := h.cfg.Store.Append(ctx, conv, &agentv1.Event{Kind: &agentv1.Event_ToolResult{ToolResult: &agentv1.ToolResult{
+	if _, err := h.cfg.Store.Append(ctx, conv, agent, &agentv1.Event{Kind: &agentv1.Event_ToolResult{ToolResult: &agentv1.ToolResult{
 		CallId: call.GetCallId(), ResultJson: result}}}, h.cfg.Now()); err != nil {
 		slog.Error("converse: keeping a tool's result", "conversation", conv, "err", err)
 		return false
@@ -602,10 +687,18 @@ func (h *Hub) runTool(ctx context.Context, conv, taking int64, call *agentv1.Too
 	return true
 }
 
-// say keeps the words as the agent's and sends them to the owner on the conversation's channel;
-// false when the send failed.
-func (h *Hub) say(ctx context.Context, c Conversation, ch Channel, text string) bool {
-	if _, err := h.cfg.Store.Append(ctx, c.ID, &agentv1.Event{Kind: &agentv1.Event_Agent{Agent: text}}, h.cfg.Now()); err != nil {
+// sayAfter says the switch's notice, when one is due, and then the agent's own words.
+func (h *Hub) sayAfter(ctx context.Context, c Conversation, ch Channel, notice, agent, text string) {
+	if notice != "" {
+		h.say(ctx, c, ch, "", notice)
+	}
+	h.say(ctx, c, ch, agent, text)
+}
+
+// say keeps the words as the agent's ("" for the hub's own) and sends them to the owner on the
+// conversation's channel; false when the send failed.
+func (h *Hub) say(ctx context.Context, c Conversation, ch Channel, agent, text string) bool {
+	if _, err := h.cfg.Store.Append(ctx, c.ID, agent, &agentv1.Event{Kind: &agentv1.Event_Agent{Agent: text}}, h.cfg.Now()); err != nil {
 		slog.Error("converse: keeping the agent's words", "conversation", c.ID, "err", err)
 	}
 	sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)

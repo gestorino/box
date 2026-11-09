@@ -57,17 +57,18 @@ func OpenSettings(path string, sec *secrets.Client) (*Settings, error) {
 	return &Settings{db: db, secrets: sec}, nil
 }
 
-// migrate brings settings.db to version 4. Version 2: a connector has a state, setting_up or added;
+// migrate brings settings.db to version 5. Version 2: a connector has a state, setting_up or added;
 // version 1 listed added connectors only, before setup was verified, and those count as verified (the
 // owner's ruling). Version 3: the owner's name moves from the Voice settings into Account, split at
 // the last space into first and last name. Version 4: the card number's old sealed row is deleted
-// (the number lives in secretd).
+// (the number lives in secretd). Version 5: the chosen agent (`agent`) becomes the primary
+// (`agent_primary`): kept only while it is added, else the first added agent, else none.
 func migrate(db *sql.DB) error {
 	var v int
 	if err := db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
 		return err
 	}
-	if v > 4 {
+	if v > 5 {
 		return fmt.Errorf("settings.db is version %d, newer than this hostd", v)
 	}
 	tx, err := db.Begin()
@@ -87,6 +88,16 @@ func migrate(db *sql.DB) error {
 	}
 	if err == nil && v < 4 {
 		_, err = tx.Exec(`DELETE FROM settings WHERE key = 'card_number_sealed'; PRAGMA user_version = 4`)
+	}
+	if err == nil && v < 5 {
+		_, err = tx.Exec(`UPDATE settings SET key = 'agent_primary' WHERE key = 'agent';
+			INSERT INTO settings (key, value) VALUES ('agent_primary', '') ON CONFLICT DO NOTHING;
+			UPDATE settings SET value = '' WHERE key = 'agent_primary'
+				AND value NOT IN (SELECT name FROM connectors WHERE state = 'added');
+			UPDATE settings SET value = COALESCE((SELECT name FROM connectors
+				WHERE state = 'added' AND name IN ('claude', 'codex') ORDER BY name LIMIT 1), '')
+				WHERE key = 'agent_primary' AND value = '';
+			PRAGMA user_version = 5`)
 	}
 	if err != nil {
 		return err
@@ -257,18 +268,34 @@ func (s *Settings) Begin(ctx context.Context, name string) error {
 	return err
 }
 
-// Verify marks a listed connector added; ok is false when it isn't listed.
+// Verify marks a listed connector added; ok is false when it isn't listed. The first agent added
+// becomes the primary, in the same transaction.
 func (s *Settings) Verify(ctx context.Context, name string) (ok bool, err error) {
-	res, err := s.db.ExecContext(ctx, `UPDATE connectors SET state = 'added' WHERE name = ?`, name)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE connectors SET state = 'added' WHERE name = ?`, name)
 	if err != nil {
 		return false, err
 	}
 	n, err := res.RowsAffected()
-	return n > 0, err
+	if err != nil || n == 0 {
+		return false, err
+	}
+	if isAgent(name) {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES ('agent_primary', ?)
+			ON CONFLICT (key) DO UPDATE SET value = excluded.value WHERE value = ''`, name); err != nil {
+			return false, err
+		}
+	}
+	return true, tx.Commit()
 }
 
-// Forget unlists name, in one transaction with what goes with it: when it is the chosen agent the
-// choice is cleared, and when it is WhatsApp the agent's answering there is switched off.
+// Forget unlists name, in one transaction with what goes with it: when it is the primary agent the
+// other agent takes over if it is added (else there is none), and when it is WhatsApp the agent's
+// answering there is switched off.
 func (s *Settings) Forget(ctx context.Context, name string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -278,7 +305,8 @@ func (s *Settings) Forget(ctx context.Context, name string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM connectors WHERE name = ?`, name); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE settings SET value = '' WHERE key = 'agent' AND value = ?`, name); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE settings SET value = COALESCE((SELECT name FROM connectors
+		WHERE state = 'added' AND name = ?), '') WHERE key = 'agent_primary' AND value = ?`, otherAgent(name), name); err != nil {
 		return err
 	}
 	if name == "whatsapp" {
@@ -289,23 +317,42 @@ func (s *Settings) Forget(ctx context.Context, name string) error {
 	return tx.Commit()
 }
 
-// Agent is which agent answers the owner (claude, codex or none) and where it answers. Only the
-// console reads it, through hostd's main socket.
+func isAgent(name string) bool {
+	return slices.ContainsFunc(connectors, func(c connectorUnit) bool { return c.name == name && c.kind == "agent" })
+}
+
+// otherAgent is the agent that is not name ("" when name is not one of the two).
+func otherAgent(name string) string {
+	if !isAgent(name) {
+		return ""
+	}
+	for _, c := range connectors {
+		if c.kind == "agent" && c.name != name {
+			return c.name
+		}
+	}
+	return ""
+}
+
+// Agent is the owner's primary agent (an added agent, or none), the other one when it is added
+// (the secondary, computed, never stored), and where the agent answers. Only the console reads it,
+// through hostd's main socket.
 type Agent struct {
-	Agent  string      `json:"agent"`
-	Answer AgentAnswer `json:"answer"`
+	Primary   string      `json:"primary"`
+	Secondary string      `json:"secondary"`
+	Answer    AgentAnswer `json:"answer"`
 }
 
 type AgentAnswer struct {
 	WhatsApp bool `json:"whatsapp"`
 }
 
-var ErrAgent = errors.New("agent must be claude, codex or empty")
+var ErrAgentNotAdded = errors.New("the primary must be an added agent")
 
 func (s *Settings) Agent(ctx context.Context) (Agent, error) {
 	var a Agent
 	for key, set := range map[string]func(string){
-		"agent":                 func(v string) { a.Agent = v },
+		"agent_primary":         func(v string) { a.Primary = v },
 		"agent_answer_whatsapp": func(v string) { a.Answer.WhatsApp = v == "1" },
 	} {
 		var v string
@@ -317,12 +364,33 @@ func (s *Settings) Agent(ctx context.Context) (Agent, error) {
 			set(v)
 		}
 	}
+	if other := otherAgent(a.Primary); other != "" {
+		states, err := s.States(ctx)
+		if err != nil {
+			return Agent{}, err
+		}
+		if states[other] == "added" {
+			a.Secondary = other
+		}
+	}
 	return a, nil
 }
 
+// SetAgent keeps the primary and where the agent answers; a sent Secondary is ignored. The primary
+// must be an added agent, and may be empty only while no agent is added.
 func (s *Settings) SetAgent(ctx context.Context, a Agent) error {
-	if !slices.Contains([]string{"", "claude", "codex"}, a.Agent) {
-		return ErrAgent
+	states, err := s.States(ctx)
+	if err != nil {
+		return err
+	}
+	if a.Primary == "" {
+		for _, c := range connectors {
+			if c.kind == "agent" && states[c.name] == "added" {
+				return ErrAgentNotAdded
+			}
+		}
+	} else if !isAgent(a.Primary) || states[a.Primary] != "added" {
+		return ErrAgentNotAdded
 	}
 	whatsapp := "0"
 	if a.Answer.WhatsApp {
@@ -333,7 +401,7 @@ func (s *Settings) SetAgent(ctx context.Context, a Agent) error {
 		return err
 	}
 	defer tx.Rollback()
-	for key, v := range map[string]string{"agent": a.Agent, "agent_answer_whatsapp": whatsapp} {
+	for key, v := range map[string]string{"agent_primary": a.Primary, "agent_answer_whatsapp": whatsapp} {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES (?, ?)
 			ON CONFLICT (key) DO UPDATE SET value = excluded.value`, key, v); err != nil {
 			return err
@@ -448,11 +516,11 @@ func agentRoutes(mux *http.ServeMux, st *Settings) {
 		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&in); err != nil {
-			reply(w, "agent-update", 0, nil, errBadRequest("body must be {agent, answer: {whatsapp}}"))
+			reply(w, "agent-update", 0, nil, errBadRequest("body must be {primary, answer: {whatsapp}}"))
 			return
 		}
 		err := st.SetAgent(r.Context(), in)
-		if errors.Is(err, ErrAgent) {
+		if errors.Is(err, ErrAgentNotAdded) {
 			err = errBadRequest(err.Error())
 		}
 		reply(w, "agent-update", http.StatusNoContent, nil, err)

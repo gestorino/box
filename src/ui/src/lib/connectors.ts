@@ -32,7 +32,7 @@ export const SECTIONS: ConnectorName[][] = [['email'], ['voice', 'sms'], ['whats
 
 export const CONNECTORS_POLL_MS = 10_000
 
-/** The channels only: the agents are the Agent page's and the AI tab's, never a card, a poll or a sidebar row here. */
+/** The channels only: the agents are their own group (hooks/use-agents, /agents), never a card, a poll or a sidebar row here. */
 export const getConnectors = async (signal?: AbortSignal): Promise<Connectors> => {
   const all = await request<{ sim: boolean; connectors: Row[] }>('GET', '/api/v1/connectors', undefined, signal)
   return { sim: all.sim, connectors: all.connectors.filter((c) => c.kind === 'channel') as Connector[] }

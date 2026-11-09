@@ -26,21 +26,47 @@ const stateOpen = "open"
 // ErrNoConversation is an id that names no conversation.
 var ErrNoConversation = errors.New("no such conversation")
 
+// Usage is what one agent's steps in a conversation used, added up (Agent "" in a total of every
+// agent). CostKnown is false once any step gave no cost: the total is then unknown, never a smaller number.
+type Usage struct {
+	Agent     string  `json:"agent"`
+	CostUSD   float64 `json:"cost_usd"`
+	CostKnown bool    `json:"cost_known"`
+	InTokens  int64   `json:"in_tokens"`
+	OutTokens int64   `json:"out_tokens"`
+	Model     string  `json:"model"`
+}
+
 // Conversation is one conversation with the owner: its channel and thread, open or closed, when it
-// started and when its last event was, and what the agent's steps used, added up. CostKnown is false
-// once any step gave no cost: the total is then unknown, never a smaller number.
+// started and when its last event was, and what each agent's steps used (Usage, agent "" first, then
+// by name).
 type Conversation struct {
-	ID        int64     `json:"id"`
-	Channel   string    `json:"channel"`
-	Thread    string    `json:"thread"`
-	State     string    `json:"state"`
-	Started   time.Time `json:"started"`
-	Last      time.Time `json:"last"`
-	CostUSD   float64   `json:"cost_usd"`
-	CostKnown bool      `json:"cost_known"`
-	InTokens  int64     `json:"in_tokens"`
-	OutTokens int64     `json:"out_tokens"`
-	Model     string    `json:"model"`
+	ID      int64     `json:"id"`
+	Channel string    `json:"channel"`
+	Thread  string    `json:"thread"`
+	State   string    `json:"state"`
+	Started time.Time `json:"started"`
+	Last    time.Time `json:"last"`
+	Usage   []Usage   `json:"usage"`
+}
+
+// Total is the usage of the agent, or of every agent added up when agent is "": the model is the last
+// one any step named. An agent with no steps has no use: zero, its cost known.
+func (c Conversation) Total(agent string) Usage {
+	t := Usage{Agent: agent, CostKnown: true}
+	for _, u := range c.Usage {
+		if agent != "" && u.Agent != agent {
+			continue
+		}
+		t.CostUSD += u.CostUSD
+		t.CostKnown = t.CostKnown && u.CostKnown
+		t.InTokens += u.InTokens
+		t.OutTokens += u.OutTokens
+		if u.Model != "" {
+			t.Model = u.Model
+		}
+	}
+	return t
 }
 
 // Store is the agent's own database (-agent-db): conversations, their events and the errands each
@@ -83,6 +109,26 @@ CREATE INDEX conversation_runs_by_conversation ON conversation_runs (conversatio
 ALTER TABLE conversation_events ADD COLUMN source TEXT NOT NULL DEFAULT '';
 CREATE UNIQUE INDEX conversation_events_source ON conversation_events (source) WHERE source <> '';
 CREATE TABLE heard (channel TEXT PRIMARY KEY, stored_at INTEGER NOT NULL, message INTEGER NOT NULL);`,
+	// agent is the agent that produced an event ('' for the hub's own words and the owner's).
+	// conversation_usage is what each agent's steps used in a conversation (agent '' holds what was
+	// counted before agents had names). agent_limits is when an agent last hit its plan's limit.
+	`
+ALTER TABLE conversation_events ADD COLUMN agent TEXT NOT NULL DEFAULT '';
+CREATE INDEX conversation_events_by_agent ON conversation_events (agent, conversation) WHERE agent <> '';
+CREATE TABLE conversation_usage (
+	conversation INTEGER NOT NULL REFERENCES conversations (id), agent TEXT NOT NULL,
+	cost_usd REAL NOT NULL DEFAULT 0, cost_known INTEGER NOT NULL DEFAULT 1,
+	in_tokens INTEGER NOT NULL DEFAULT 0, out_tokens INTEGER NOT NULL DEFAULT 0, model TEXT NOT NULL DEFAULT '',
+	PRIMARY KEY (conversation, agent));
+INSERT INTO conversation_usage (conversation, agent, cost_usd, cost_known, in_tokens, out_tokens, model)
+	SELECT id, '', cost_usd, cost_known, in_tokens, out_tokens, model FROM conversations
+	WHERE cost_usd <> 0 OR cost_known = 0 OR in_tokens <> 0 OR out_tokens <> 0 OR model <> '';
+ALTER TABLE conversations DROP COLUMN cost_usd;
+ALTER TABLE conversations DROP COLUMN cost_known;
+ALTER TABLE conversations DROP COLUMN in_tokens;
+ALTER TABLE conversations DROP COLUMN out_tokens;
+ALTER TABLE conversations DROP COLUMN model;
+CREATE TABLE agent_limits (agent TEXT PRIMARY KEY, at TEXT NOT NULL);`,
 }
 
 // OpenStore opens (creating if needed) the store at path: WAL, and synchronous=FULL so a stored event
@@ -108,13 +154,12 @@ func parseTS(v string) (time.Time, error) { return time.Parse(time.RFC3339Nano, 
 
 type scanner interface{ Scan(...any) error }
 
-const conversationCols = `id, channel, thread, state, started, last, cost_usd, cost_known, in_tokens, out_tokens, model`
+const conversationCols = `id, channel, thread, state, started, last`
 
 func scanConversation(r scanner) (Conversation, error) {
 	var c Conversation
 	var started, last string
-	if err := r.Scan(&c.ID, &c.Channel, &c.Thread, &c.State, &started, &last, &c.CostUSD, &c.CostKnown,
-		&c.InTokens, &c.OutTokens, &c.Model); err != nil {
+	if err := r.Scan(&c.ID, &c.Channel, &c.Thread, &c.State, &started, &last); err != nil {
 		return Conversation{}, err
 	}
 	var err error
@@ -149,8 +194,7 @@ func (s *Store) Open(ctx context.Context, channel, thread string, at time.Time) 
 	if err := tx.Commit(); err != nil {
 		return Conversation{}, err
 	}
-	return Conversation{ID: id, Channel: channel, Thread: thread, State: stateOpen, Started: at.UTC(), Last: at.UTC(),
-		CostKnown: true}, nil
+	return Conversation{ID: id, Channel: channel, Thread: thread, State: stateOpen, Started: at.UTC(), Last: at.UTC()}, nil
 }
 
 // Source is the connector's message an owner's event came from: its channel, the message's own
@@ -172,17 +216,17 @@ func (src Source) key() string {
 // ErrHeard is a connector's message taken in already.
 var ErrHeard = errors.New("that message was taken in already")
 
-// Append keeps the event in the conversation at at, and moves the conversation's last event there.
+// Append keeps the event in the conversation at at, said by the agent ("" for the hub's own words), and moves the conversation's last event there.
 // It sets the event's id to the stored one and returns it.
-func (s *Store) Append(ctx context.Context, conv int64, e *agentv1.Event, at time.Time) (int64, error) {
-	return s.append(ctx, conv, e, at, false, Source{})
+func (s *Store) Append(ctx context.Context, conv int64, agent string, e *agentv1.Event, at time.Time) (int64, error) {
+	return s.append(ctx, conv, agent, e, at, false, Source{})
 }
 
 // Intake appends an event the hub took in, from src, pending until Taken says its turn finished. A
 // src taken in before is ErrHeard and changes nothing; otherwise it becomes its channel's newest
 // heard message when it is newer.
 func (s *Store) Intake(ctx context.Context, conv int64, e *agentv1.Event, at time.Time, src Source) (int64, error) {
-	return s.append(ctx, conv, e, at, true, src)
+	return s.append(ctx, conv, "", e, at, true, src)
 }
 
 // Heard is src taken in already.
@@ -243,7 +287,7 @@ func (s *Store) Pending(ctx context.Context) ([]Queued, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) append(ctx context.Context, conv int64, e *agentv1.Event, at time.Time, pending bool, src Source) (int64, error) {
+func (s *Store) append(ctx context.Context, conv int64, agent string, e *agentv1.Event, at time.Time, pending bool, src Source) (int64, error) {
 	stored := proto.Clone(e).(*agentv1.Event)
 	stored.Id = 0 // the row's id is the event's
 	raw, err := protojson.Marshal(stored)
@@ -277,8 +321,8 @@ func (s *Store) append(ctx context.Context, conv int64, e *agentv1.Event, at tim
 	} else if n == 0 {
 		return 0, ErrNoConversation
 	}
-	res, err = tx.ExecContext(ctx, `INSERT INTO conversation_events (conversation, at, event, pending, confirm_run, confirm_wait, source)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`, conv, ts(at), string(raw), pending, confirmRun, confirmWait, src.key())
+	res, err = tx.ExecContext(ctx, `INSERT INTO conversation_events (conversation, at, event, pending, confirm_run, confirm_wait, source, agent)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, conv, ts(at), string(raw), pending, confirmRun, confirmWait, src.key(), agent)
 	if err != nil {
 		return 0, err
 	}
@@ -366,20 +410,51 @@ func (s *Store) event(ctx context.Context, conv, id int64) (e *agentv1.Event, pe
 	return e, pending, err == nil, err
 }
 
-// AddUsage adds a step's usage to the conversation's totals; its model becomes the conversation's.
-func (s *Store) AddUsage(ctx context.Context, conv int64, u *agentv1.Usage) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE conversations SET cost_usd = cost_usd + ?, cost_known = cost_known AND ?,
-		in_tokens = in_tokens + ?, out_tokens = out_tokens + ?, model = CASE WHEN ? = '' THEN model ELSE ? END
-		WHERE id = ?`, u.GetCostUsd(), u.GetCostKnown(), u.GetInputTokens(), u.GetOutputTokens(), u.GetModel(), u.GetModel(), conv)
+// AddUsage adds a step's usage to the agent's totals in the conversation; its model becomes the agent's.
+func (s *Store) AddUsage(ctx context.Context, conv int64, agent string, u *agentv1.Usage) error {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	if n, err := res.RowsAffected(); err != nil {
+	defer tx.Rollback()
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM conversations WHERE id = ?`, conv).Scan(&n); err != nil {
 		return err
-	} else if n == 0 {
+	}
+	if n == 0 {
 		return ErrNoConversation
 	}
-	return nil
+	if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_usage (conversation, agent, cost_usd, cost_known, in_tokens, out_tokens, model)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (conversation, agent) DO UPDATE SET cost_usd = cost_usd + excluded.cost_usd,
+		cost_known = cost_known AND excluded.cost_known, in_tokens = in_tokens + excluded.in_tokens,
+		out_tokens = out_tokens + excluded.out_tokens,
+		model = CASE WHEN excluded.model = '' THEN model ELSE excluded.model END`,
+		conv, agent, u.GetCostUsd(), u.GetCostKnown(), u.GetInputTokens(), u.GetOutputTokens(), u.GetModel()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// usageOf is each conversation's usage rows (agent "" first, then by name), by conversation id; of the
+// one conversation when conv is not 0, of every conversation when it is 0.
+func (s *Store) usageOf(ctx context.Context, conv int64) (map[int64][]Usage, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT conversation, agent, cost_usd, cost_known, in_tokens, out_tokens, model
+		FROM conversation_usage WHERE ? = 0 OR conversation = ? ORDER BY conversation, agent`, conv, conv)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64][]Usage{}
+	for rows.Next() {
+		var id int64
+		var u Usage
+		if err := rows.Scan(&id, &u.Agent, &u.CostUSD, &u.CostKnown, &u.InTokens, &u.OutTokens, &u.Model); err != nil {
+			return nil, err
+		}
+		out[id] = append(out[id], u)
+	}
+	return out, rows.Err()
 }
 
 // LinkRun records that the conversation started the run: its events come back to it, and only it
@@ -480,12 +555,20 @@ func (s *Store) conversation(ctx context.Context, id int64) (Conversation, error
 	if errors.Is(err, sql.ErrNoRows) {
 		return Conversation{}, ErrNoConversation
 	}
+	if err != nil {
+		return Conversation{}, err
+	}
+	usage, err := s.usageOf(ctx, id)
+	c.Usage = usage[id]
 	return c, err
 }
 
-// List is every conversation, the latest last event first.
-func (s *Store) List(ctx context.Context) ([]Conversation, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+conversationCols+` FROM conversations ORDER BY last DESC, id DESC`)
+// List is every conversation, the latest last event first; with an agent, only those it said
+// something in.
+func (s *Store) List(ctx context.Context, agent string) ([]Conversation, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+conversationCols+` FROM conversations
+		WHERE ? = '' OR id IN (SELECT conversation FROM conversation_events WHERE agent = ?)
+		ORDER BY last DESC, id DESC`, agent, agent)
 	if err != nil {
 		return nil, err
 	}
@@ -498,18 +581,56 @@ func (s *Store) List(ctx context.Context) ([]Conversation, error) {
 		}
 		out = append(out, c)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	usage, err := s.usageOf(ctx, 0)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Usage = usage[out[i].ID]
+	}
+	return out, nil
+}
+
+// StoredEvent is an event as kept: the agent that said it ("" for the owner's and the hub's own) and
+// when.
+type StoredEvent struct {
+	Event *agentv1.Event
+	Agent string
+	At    time.Time
 }
 
 // One is a conversation with all its events and the runs it started; ErrNoConversation when there is
 // none of that id.
-func (s *Store) One(ctx context.Context, id int64) (Conversation, []*agentv1.Event, []int64, error) {
+func (s *Store) One(ctx context.Context, id int64) (Conversation, []StoredEvent, []int64, error) {
 	c, err := s.conversation(ctx, id)
 	if err != nil {
 		return Conversation{}, nil, nil, err
 	}
-	events, err := s.Events(ctx, id, 0)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, event, agent, at FROM conversation_events WHERE conversation = ? ORDER BY id`, id)
 	if err != nil {
+		return Conversation{}, nil, nil, err
+	}
+	defer rows.Close()
+	events := []StoredEvent{}
+	for rows.Next() {
+		var eid int64
+		var raw, at string
+		var se StoredEvent
+		if err := rows.Scan(&eid, &raw, &se.Agent, &at); err != nil {
+			return Conversation{}, nil, nil, err
+		}
+		if se.Event, err = decodeEvent(eid, raw); err != nil {
+			return Conversation{}, nil, nil, err
+		}
+		if se.At, err = parseTS(at); err != nil {
+			return Conversation{}, nil, nil, err
+		}
+		events = append(events, se)
+	}
+	if err := rows.Err(); err != nil {
 		return Conversation{}, nil, nil, err
 	}
 	runs, err := s.runsOf(ctx, id)
@@ -517,6 +638,52 @@ func (s *Store) One(ctx context.Context, id int64) (Conversation, []*agentv1.Eve
 		return Conversation{}, nil, nil, err
 	}
 	return c, events, runs, nil
+}
+
+// LastAgent is the agent of the conversation's newest event an agent said; "" when none was.
+func (s *Store) LastAgent(ctx context.Context, conv int64) (string, error) {
+	var agent string
+	err := s.db.QueryRowContext(ctx, `SELECT agent FROM conversation_events WHERE conversation = ? AND agent <> ''
+		ORDER BY id DESC LIMIT 1`, conv).Scan(&agent)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return agent, err
+}
+
+// MarkLimited remembers that the agent hit its plan's limit at at.
+func (s *Store) MarkLimited(ctx context.Context, agent string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO agent_limits (agent, at) VALUES (?, ?)
+		ON CONFLICT (agent) DO UPDATE SET at = excluded.at`, agent, ts(at))
+	return err
+}
+
+// ClearLimited forgets the agent's limit.
+func (s *Store) ClearLimited(ctx context.Context, agent string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM agent_limits WHERE agent = ?`, agent)
+	return err
+}
+
+// Limited is each agent that hit its plan's limit and not cleared since, and when.
+func (s *Store) Limited(ctx context.Context) (map[string]time.Time, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT agent, at FROM agent_limits`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]time.Time{}
+	for rows.Next() {
+		var agent, at string
+		if err := rows.Scan(&agent, &at); err != nil {
+			return nil, err
+		}
+		t, err := parseTS(at)
+		if err != nil {
+			return nil, err
+		}
+		out[agent] = t
+	}
+	return out, rows.Err()
 }
 
 // tellConfirm marks the confirm event #id told: the owner was sent it, after the conversation's last
@@ -611,29 +778,6 @@ func (s *Store) FirstWords(ctx context.Context) (map[int64]string, error) {
 			return nil, err
 		}
 		out[conv] = text
-	}
-	return out, rows.Err()
-}
-
-// EventTimes is when each of the conversation's events was kept, by event id.
-func (s *Store) EventTimes(ctx context.Context, conv int64) (map[int64]time.Time, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, at FROM conversation_events WHERE conversation = ?`, conv)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[int64]time.Time{}
-	for rows.Next() {
-		var id int64
-		var at string
-		if err := rows.Scan(&id, &at); err != nil {
-			return nil, err
-		}
-		t, err := parseTS(at)
-		if err != nil {
-			return nil, err
-		}
-		out[id] = t
 	}
 	return out, rows.Err()
 }

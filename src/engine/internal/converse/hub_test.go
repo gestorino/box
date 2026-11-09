@@ -121,21 +121,21 @@ func (c *fakeChannel) none(t *testing.T) {
 
 type fakeSettings struct {
 	mu       sync.Mutex
-	agent    string
+	agents   []string
 	whatsapp bool
 	// failing is how many of the next reads fail, as hostd away does; reads counts them all.
 	failing, reads int
 }
 
-func (s *fakeSettings) Agent(context.Context) (string, bool, error) {
+func (s *fakeSettings) Answering(context.Context) ([]string, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.reads++
 	if s.failing > 0 {
 		s.failing--
-		return "", false, errors.New("hostd away")
+		return nil, false, errors.New("hostd away")
 	}
-	return s.agent, s.whatsapp, nil
+	return append([]string(nil), s.agents...), s.whatsapp, nil
 }
 
 // fail makes the next n reads fail.
@@ -150,10 +150,12 @@ func (s *fakeSettings) readCount() int {
 	defer s.mu.Unlock()
 	return s.reads
 }
-func (s *fakeSettings) set(agent string, whatsapp bool) {
+
+// set is the WhatsApp switch and the agents answering, in order.
+func (s *fakeSettings) set(whatsapp bool, agents ...string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.agent, s.whatsapp = agent, whatsapp
+	s.agents, s.whatsapp = agents, whatsapp
 }
 func (s *fakeSettings) OwnerPhone(context.Context) (string, error) { return "+351900000000", nil }
 
@@ -178,7 +180,8 @@ func (c *clock) set(t time.Time) {
 type rig struct {
 	hub      *Hub
 	store    *Store
-	agent    *fakeAgent
+	agent    *fakeAgent // claude
+	codex    *fakeAgent // nil but in a rig of two agents
 	channel  *fakeChannel
 	settings *fakeSettings
 	errands  *fakeErrands
@@ -187,12 +190,27 @@ type rig struct {
 	stop func()
 }
 
-func newRig(t *testing.T, store *Store, step func(n int, req *agentv1.StepRequest) (*agentv1.StepResponse, error)) *rig {
+type stepFunc = func(n int, req *agentv1.StepRequest) (*agentv1.StepResponse, error)
+
+func newRig(t *testing.T, store *Store, step stepFunc) *rig {
+	t.Helper()
+	return newRigOf(t, store, step, nil)
+}
+
+// newRigOf is a rig of claude stepping as step and, when codex isn't nil, codex stepping as codex:
+// claude answers, codex when claude can't.
+func newRigOf(t *testing.T, store *Store, step, codex stepFunc) *rig {
 	t.Helper()
 	r := &rig{store: store, agent: &fakeAgent{step: step}, channel: newChannel(),
-		settings: &fakeSettings{agent: "claude", whatsapp: true}, errands: newFake(), clock: &clock{now: t0}}
+		settings: &fakeSettings{agents: []string{"claude"}, whatsapp: true}, errands: newFake(), clock: &clock{now: t0}}
+	agents := map[string]agentv1connect.AgentServiceClient{"claude": serveAgent(t, r.agent)}
+	if codex != nil {
+		r.codex = &fakeAgent{step: codex}
+		agents["codex"] = serveAgent(t, r.codex)
+		r.settings.agents = []string{"claude", "codex"}
+	}
 	r.hub = NewHub(Config{Store: store, Tools: NewTools(r.errands, store),
-		Agents:   map[string]agentv1connect.AgentServiceClient{"claude": serveAgent(t, r.agent)},
+		Agents:   agents,
 		Channels: map[string]Channel{"whatsapp": r.channel}, Settings: r.settings, Now: r.clock.Now,
 		TimeZone: "Europe/Lisbon", ConsoleURL: "http://box.local"})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -251,7 +269,7 @@ func (r *rig) settle(t *testing.T) {
 // only is the one conversation of the store.
 func (r *rig) only(t *testing.T) (Conversation, []*agentv1.Event) {
 	t.Helper()
-	list, err := r.store.List(context.Background())
+	list, err := r.store.List(context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +280,16 @@ func (r *rig) only(t *testing.T) (Conversation, []*agentv1.Event) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return c, events
+	return c, plain(events)
+}
+
+// plain is the events without their agent and time.
+func plain(stored []StoredEvent) []*agentv1.Event {
+	out := make([]*agentv1.Event, len(stored))
+	for i, se := range stored {
+		out[i] = se.Event
+	}
+	return out
 }
 
 // kinds is each event's kind, in order.
@@ -308,7 +335,7 @@ func TestATurnLoopsThroughToolsToASay(t *testing.T) {
 		events[2].GetToolResult().GetCallId() != "c1" || events[3].GetAgent() != "On it" {
 		t.Fatalf("events: %v", events)
 	}
-	if c.InTokens != 30 || c.OutTokens != 5 || !c.CostKnown || c.CostUSD < 0.0299 || c.CostUSD > 0.0301 || c.Model != "m" {
+	if u := c.Total(""); u.InTokens != 30 || u.OutTokens != 5 || !u.CostKnown || u.CostUSD < 0.0299 || u.CostUSD > 0.0301 || u.Model != "m" {
 		t.Fatalf("usage: %+v", c)
 	}
 	steps := r.agent.requests()
@@ -365,11 +392,11 @@ func TestAnAgentErrorSaysSo(t *testing.T) {
 func TestAnUnreachableAgentSaysSo(t *testing.T) {
 	r := newRig(t, openStore(t), nil)
 	r.hub.cfg.Agents["codex"] = client(filepath.Join(sockDir(t), "nobody.sock"))
-	for _, name := range []string{"codex", "unknown"} {
-		r.settings.set(name, true)
+	for _, name := range []string{"codex", "unknown"} { // a dead socket, an agent not configured
+		r.settings.set(true, name)
 		r.hub.Owner(context.Background(), "whatsapp", "chat", "go", Source{})
-		if got := r.channel.next(t); got != couldNotFinish {
-			t.Fatalf("%s: sent %q", name, got)
+		if got, want := r.channel.next(t), couldNotFinish+". "+cantAnswer(name, connect.CodeUnavailable); got != want {
+			t.Fatalf("%s: sent %q, want %q", name, got, want)
 		}
 		r.settle(t)
 	}
@@ -382,7 +409,7 @@ func TestAFailedTurnOnAnErrandsQuestionOrEndRelaysItAsTheSiteSaidIt(t *testing.T
 	r.hub.cfg.Agents["codex"] = client(filepath.Join(sockDir(t), "nobody.sock"))
 	r.linked(t, 41)
 	for _, name := range []string{"claude", "codex"} { // a step error, an unreachable agent
-		r.settings.set(name, true)
+		r.settings.set(true, name)
 		r.errands.wait(41, "question", 7)
 		r.hub.RunEvent(signins.RunEvent{Run: 41, Kind: "question", Text: "Pick a time", Options: []string{"10:00", "11:00"}, Wait: 7})
 		if got := r.channel.next(t); got != "Pick a time\n10:00\n11:00" {
@@ -398,6 +425,7 @@ func TestAFailedTurnOnAnErrandsQuestionOrEndRelaysItAsTheSiteSaidIt(t *testing.T
 		}
 	}
 	// An owner's message is still told the agent couldn't finish.
+	r.settings.set(true, "claude")
 	r.hub.Owner(context.Background(), "whatsapp", "chat", "go", Source{})
 	if got := r.channel.next(t); got != couldNotFinish {
 		t.Fatalf("sent %q", got)
@@ -575,8 +603,8 @@ func TestAnErrandsQuestionBecomesATurn(t *testing.T) {
 		t.Fatalf("last event: %v", events[len(events)-1])
 	}
 	r.settle(t)
-	if _, stored, _, _ := r.store.One(context.Background(), conv); !equal(kinds(stored), []string{"errand:question", "agent"}) {
-		t.Fatalf("stored: %v", kinds(stored))
+	if _, stored, _, _ := r.store.One(context.Background(), conv); !equal(kinds(plain(stored)), []string{"errand:question", "agent"}) {
+		t.Fatalf("stored: %v", kinds(plain(stored)))
 	}
 }
 
@@ -653,7 +681,7 @@ func TestAConfirmWithTheChannelOffIsNeverAnswerable(t *testing.T) {
 	r := newRig(t, openStore(t), answeringAgent)
 	conv := r.linked(t, 41)
 	r.errands.wait(41, "confirm", 9)
-	r.settings.set("claude", false)
+	r.settings.set(false, "claude")
 	r.hub.RunEvent(signins.RunEvent{Run: 41, Kind: "confirm", Text: "Confirm: go?", Wait: 9})
 	r.settle(t)
 	r.channel.none(t)
@@ -676,8 +704,8 @@ func TestAHumanCheckSendsTheConsoleLink(t *testing.T) {
 		t.Fatalf("sent %q, want %q", got, want)
 	}
 	r.settle(t)
-	if _, stored, _, _ := r.store.One(context.Background(), conv); !equal(kinds(stored), []string{"errand:human_check", "agent"}) {
-		t.Fatalf("stored: %v", kinds(stored))
+	if _, stored, _, _ := r.store.One(context.Background(), conv); !equal(kinds(plain(stored)), []string{"errand:human_check", "agent"}) {
+		t.Fatalf("stored: %v", kinds(plain(stored)))
 	}
 	r.hub.cfg.ConsoleURL = ""
 	r.hub.RunEvent(signins.RunEvent{Run: 41, Kind: "human_check"})
@@ -717,7 +745,7 @@ func TestAnEventOfNoConversationIsDropped(t *testing.T) {
 		t.Fatalf("dropping three events took %v", took)
 	}
 	r.channel.none(t)
-	if list, _ := r.store.List(context.Background()); len(list) != 0 {
+	if list, _ := r.store.List(context.Background(), ""); len(list) != 0 {
 		t.Fatalf("conversations: %v", list)
 	}
 }
@@ -727,10 +755,10 @@ func TestNoChosenAgentNoTurn(t *testing.T) {
 		t.Error("stepped with no agent chosen or the channel off")
 		return say("no"), nil
 	})
-	r.settings.set("", true)
+	r.settings.set(true)
 	r.hub.Owner(context.Background(), "whatsapp", "chat", "hello", Source{})
 	r.settle(t)
-	r.settings.set("claude", false)
+	r.settings.set(false, "claude")
 	r.hub.Owner(context.Background(), "whatsapp", "chat", "again", Source{})
 	r.hub.RunEvent(signins.RunEvent{Run: 41, Kind: "human_check"})
 	r.linked(t, 41)
@@ -807,7 +835,7 @@ func TestAnIdleConversationIsNotReused(t *testing.T) {
 	r.hub.Owner(context.Background(), "whatsapp", "chat", "later", Source{})
 	r.channel.next(t)
 	r.settle(t)
-	list, err := r.store.List(context.Background())
+	list, err := r.store.List(context.Background(), "")
 	if err != nil || len(list) != 2 {
 		t.Fatalf("conversations: %+v %v", list, err)
 	}
@@ -988,5 +1016,291 @@ func TestAResumedTurnSeesItsCutToolCallEnded(t *testing.T) {
 	}
 	if res := events[4].GetToolResult(); res.GetCallId() != "c7" || res.GetResultJson() != restarted {
 		t.Fatalf("the cut call's result: %v", res)
+	}
+}
+
+// failing is a step that fails with code.
+func failing(code connect.Code) stepFunc {
+	return func(int, *agentv1.StepRequest) (*agentv1.StepResponse, error) {
+		return nil, connect.NewError(code, errors.New("the daemon's words"))
+	}
+}
+
+// saying is a step that says text.
+func saying(text string) stepFunc {
+	return func(int, *agentv1.StepRequest) (*agentv1.StepResponse, error) { return say(text), nil }
+}
+
+// stored is the one conversation's events as kept, with their agents.
+func (r *rig) stored(t *testing.T) []StoredEvent {
+	t.Helper()
+	c, _ := r.only(t)
+	_, events, _, err := r.store.One(context.Background(), c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return events
+}
+
+// saidBy is who said each of the conversation's agent events ("" for the hub), by its words.
+func (r *rig) saidBy(t *testing.T) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for _, se := range r.stored(t) {
+		if a, ok := se.Event.GetKind().(*agentv1.Event_Agent); ok {
+			out[a.Agent] = se.Agent
+		}
+	}
+	return out
+}
+
+func TestPrimaryAnswers(t *testing.T) {
+	r := newRigOf(t, openStore(t), saying("hi"), func(int, *agentv1.StepRequest) (*agentv1.StepResponse, error) {
+		t.Error("the secondary was stepped")
+		return say("no"), nil
+	})
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "hello", Source{})
+	if got := r.channel.next(t); got != "hi" {
+		t.Fatalf("sent %q", got)
+	}
+	r.settle(t)
+	r.channel.none(t)
+	if by := r.saidBy(t); by["hi"] != "claude" {
+		t.Fatalf("said by %v", by)
+	}
+}
+
+func TestFallbackOnEachCode(t *testing.T) {
+	for _, code := range []connect.Code{connect.CodeUnauthenticated, connect.CodeResourceExhausted, connect.CodeUnavailable} {
+		t.Run(code.String(), func(t *testing.T) {
+			r := newRigOf(t, openStore(t), failing(code), saying("ok"))
+			r.hub.Owner(context.Background(), "whatsapp", "chat", "hello", Source{})
+			notice := switchNotice("claude", "codex", code)
+			if a, b := r.channel.next(t), r.channel.next(t); a != notice || b != "ok" {
+				t.Fatalf("sent %q then %q", a, b)
+			}
+			r.settle(t)
+			r.channel.none(t)
+			if by := r.saidBy(t); by["ok"] != "codex" || by[notice] != "" || len(by) != 2 {
+				t.Fatalf("said by %v", by)
+			}
+		})
+	}
+}
+
+func TestTheNoticeAndTheReasonsWords(t *testing.T) {
+	cases := []struct{ got, want string }{
+		{switchNotice("claude", "codex", connect.CodeUnauthenticated), "Claude can't answer now (not signed in); Codex is answering."},
+		{switchNotice("codex", "claude", connect.CodeResourceExhausted), "Codex can't answer now (out of its plan's limit); Claude is answering."},
+		{cantAnswer("claude", connect.CodeUnavailable), "Claude can't answer now (not reachable)."},
+	}
+	for _, c := range cases {
+		if c.got != c.want {
+			t.Errorf("%q, want %q", c.got, c.want)
+		}
+	}
+	for code, want := range map[connect.Code]bool{connect.CodeUnauthenticated: true, connect.CodeResourceExhausted: true,
+		connect.CodeUnavailable: true, connect.CodeInternal: false, connect.CodeDeadlineExceeded: false, connect.CodeUnknown: false} {
+		if got := fallsBack(connect.NewError(code, errors.New("x"))); got != want {
+			t.Errorf("fallsBack(%v) = %v", code, got)
+		}
+	}
+	if fallsBack(errors.New("not a step's")) {
+		t.Error("a plain error falls back")
+	}
+}
+
+func TestNoFallbackOnOtherCodes(t *testing.T) {
+	r := newRigOf(t, openStore(t), failing(connect.CodeInternal), func(int, *agentv1.StepRequest) (*agentv1.StepResponse, error) {
+		t.Error("the secondary was stepped")
+		return say("no"), nil
+	})
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "hello", Source{})
+	if got := r.channel.next(t); got != couldNotFinish {
+		t.Fatalf("sent %q", got)
+	}
+	r.settle(t)
+	r.channel.none(t)
+}
+
+func TestNextTurnTriesThePrimaryAgain(t *testing.T) {
+	r := newRigOf(t, openStore(t), func(n int, _ *agentv1.StepRequest) (*agentv1.StepResponse, error) {
+		if n == 1 {
+			return nil, connect.NewError(connect.CodeUnavailable, errors.New("down"))
+		}
+		return say("back"), nil
+	}, saying("ok"))
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "one", Source{})
+	r.channel.next(t)
+	r.channel.next(t)
+	r.settle(t)
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "two", Source{})
+	if got := r.channel.next(t); got != "back" {
+		t.Fatalf("sent %q", got)
+	}
+	r.settle(t)
+	r.channel.none(t)
+	if n := len(r.agent.requests()); n != 2 {
+		t.Fatalf("the primary stepped %d times", n)
+	}
+	if n := len(r.codex.requests()); n != 1 {
+		t.Fatalf("the secondary stepped %d times", n)
+	}
+}
+
+func TestNoticeOncePerStretch(t *testing.T) {
+	r := newRigOf(t, openStore(t), func(n int, _ *agentv1.StepRequest) (*agentv1.StepResponse, error) {
+		if n == 3 {
+			return say("claude here"), nil
+		}
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("signed out"))
+	}, saying("codex here"))
+	notice := switchNotice("claude", "codex", connect.CodeUnauthenticated)
+	var sent []string
+	for _, text := range []string{"one", "two", "three", "four"} {
+		r.hub.Owner(context.Background(), "whatsapp", "chat", text, Source{})
+		r.settle(t)
+	loop:
+		for {
+			select {
+			case s := <-r.channel.sent:
+				sent = append(sent, s)
+			default:
+				break loop
+			}
+		}
+	}
+	want := []string{notice, "codex here", "codex here", "claude here", notice, "codex here"}
+	if !equal(sent, want) {
+		t.Fatalf("sent %q, want %q", sent, want)
+	}
+}
+
+func TestPromotedPrimaryGetsNoNotice(t *testing.T) {
+	r := newRigOf(t, openStore(t), failing(connect.CodeUnavailable), saying("ok"))
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "one", Source{})
+	r.channel.next(t) // the notice
+	r.channel.next(t)
+	r.settle(t)
+	r.settings.set(true, "codex") // codex is the primary now, claude removed
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "two", Source{})
+	if got := r.channel.next(t); got != "ok" {
+		t.Fatalf("sent %q", got)
+	}
+	r.settle(t)
+	r.channel.none(t)
+}
+
+func TestFallbackKeepsTheWindow(t *testing.T) {
+	r := newRigOf(t, openStore(t), func(n int, _ *agentv1.StepRequest) (*agentv1.StepResponse, error) {
+		if n == 1 {
+			return toolCall("list_accounts", `{}`), nil
+		}
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("down"))
+	}, func(n int, _ *agentv1.StepRequest) (*agentv1.StepResponse, error) {
+		if n == 1 {
+			return toolCall("list_accounts", `{}`), nil
+		}
+		return say("ok"), nil
+	})
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "go", Source{})
+	if got, want := r.channel.next(t), switchNotice("claude", "codex", connect.CodeUnavailable); got != want {
+		t.Fatalf("sent %q, want %q", got, want)
+	}
+	if got := r.channel.next(t); got != "ok" {
+		t.Fatalf("sent %q", got)
+	}
+	r.settle(t)
+	steps := r.codex.requests()
+	if len(steps) != 2 {
+		t.Fatalf("the secondary stepped %d times", len(steps))
+	}
+	if want := []string{"owner", "tool_call", "tool_result"}; !equal(kinds(steps[0].GetEvents()), want) {
+		t.Fatalf("the secondary saw %v", kinds(steps[0].GetEvents()))
+	}
+	if want := []string{"owner", "tool_call", "tool_result", "tool_call", "tool_result"}; !equal(kinds(steps[1].GetEvents()), want) {
+		t.Fatalf("the secondary saw %v next", kinds(steps[1].GetEvents()))
+	}
+	stored := r.stored(t)
+	var by []string
+	for _, se := range stored {
+		by = append(by, se.Agent)
+	}
+	if want := []string{"", "claude", "claude", "codex", "codex", "", "codex"}; !equal(by, want) {
+		t.Fatalf("said by %q, want %q (%v)", by, want, kinds(plain(stored)))
+	}
+}
+
+func TestNoNoticeWhenTheSecondaryFailsLater(t *testing.T) {
+	r := newRigOf(t, openStore(t), failing(connect.CodeUnavailable), func(n int, _ *agentv1.StepRequest) (*agentv1.StepResponse, error) {
+		if n == 1 {
+			return toolCall("list_accounts", `{}`), nil
+		}
+		return nil, connect.NewError(connect.CodeInternal, errors.New("broken"))
+	})
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "go", Source{})
+	if got := r.channel.next(t); got != couldNotFinish {
+		t.Fatalf("sent %q", got)
+	}
+	r.settle(t)
+	r.channel.none(t)
+}
+
+func TestNoSecondary(t *testing.T) {
+	r := newRig(t, openStore(t), failing(connect.CodeResourceExhausted))
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "go", Source{})
+	if got, want := r.channel.next(t), "I couldn't finish that, please try again. Claude can't answer now (out of its plan's limit)."; got != want {
+		t.Fatalf("sent %q, want %q", got, want)
+	}
+	r.settle(t)
+	r.channel.none(t)
+}
+
+func TestBothCantAnswer(t *testing.T) {
+	r := newRigOf(t, openStore(t), failing(connect.CodeUnauthenticated), failing(connect.CodeUnavailable))
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "go", Source{})
+	if got, want := r.channel.next(t), couldNotFinish+". "+cantAnswer("claude", connect.CodeUnauthenticated); got != want {
+		t.Fatalf("sent %q, want %q", got, want)
+	}
+	r.settle(t)
+	r.channel.none(t)
+}
+
+func TestLimitMarkedAndCleared(t *testing.T) {
+	r := newRigOf(t, openStore(t), func(n int, _ *agentv1.StepRequest) (*agentv1.StepResponse, error) {
+		if n == 1 {
+			return nil, connect.NewError(connect.CodeResourceExhausted, errors.New("limit"))
+		}
+		return say("back"), nil
+	}, saying("ok"))
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "one", Source{})
+	r.channel.next(t)
+	r.channel.next(t)
+	r.settle(t)
+	if limited, err := r.store.Limited(context.Background()); err != nil || len(limited) != 1 || !limited["claude"].Equal(t0) {
+		t.Fatalf("limited: %v %v", limited, err)
+	}
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "two", Source{})
+	r.channel.next(t)
+	r.settle(t)
+	if limited, err := r.store.Limited(context.Background()); err != nil || len(limited) != 0 {
+		t.Fatalf("still limited: %v %v", limited, err)
+	}
+}
+
+func TestUsageGoesToTheAgent(t *testing.T) {
+	r := newRigOf(t, openStore(t), saying("hi"), saying("no"))
+	r.hub.Owner(context.Background(), "whatsapp", "chat", "hello", Source{})
+	r.channel.next(t)
+	r.settle(t)
+	c, _ := r.only(t)
+	if u := c.Total("claude"); u.InTokens != 20 || u.OutTokens != 3 || u.Model != "m" {
+		t.Fatalf("claude's usage: %+v", c.Usage)
+	}
+	if u := c.Total("codex"); u.InTokens != 0 {
+		t.Fatalf("codex's usage: %+v", c.Usage)
+	}
+	if len(c.Usage) != 1 || c.Usage[0].Agent != "claude" {
+		t.Fatalf("usage: %+v", c.Usage)
 	}
 }

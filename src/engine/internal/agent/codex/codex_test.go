@@ -146,15 +146,59 @@ func TestExecFailures(t *testing.T) {
 	}
 }
 
-func TestExecSaysNotSignedIn(t *testing.T) {
+func TestNotSignedInIsUnauthenticated(t *testing.T) {
 	dir, bin := fakeCLI(t, "")
 	os.WriteFile(bin, []byte("#!/bin/sh\ntouch "+dir+"/ran\n"), 0o755)
 	_, _, err := NewRunner(bin, newHome(t, false), "m").Run(context.Background(), "s", "i", []byte(`{}`))
-	if connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "not signed in") {
+	if connect.CodeOf(err) != connect.CodeUnauthenticated || !strings.Contains(err.Error(), "not signed in") {
 		t.Fatalf("err = %v", err)
 	}
 	if _, e := os.Stat(filepath.Join(dir, "ran")); e == nil {
 		t.Error("the CLI ran")
+	}
+}
+
+func TestLimitIsResourceExhausted(t *testing.T) {
+	wd, _ := os.Getwd()
+	for name, body := range map[string]string{
+		"error event":   "cat " + wd + "/testdata/codex-limit.jsonl\n",
+		"error, exit 1": "cat " + wd + "/testdata/codex-limit.jsonl\nexit 1\n",
+		"turn failed":   "echo '{\"type\":\"turn.failed\",\"error\":{\"message\":\"You have hit the usage limit for your plan\"}}'\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, bin := fakeCLI(t, "cat >/dev/null\n"+body)
+			_, _, err := NewRunner(bin, newHome(t, true), "m").Run(context.Background(), "s", "i", []byte(`{}`))
+			if connect.CodeOf(err) != connect.CodeResourceExhausted {
+				t.Fatalf("err = %v", err)
+			}
+			if strings.Contains(err.Error(), "Try again") {
+				t.Errorf("error carries the CLI's text: %v", err)
+			}
+		})
+	}
+}
+
+func TestASignInRefusedIsUnauthenticated(t *testing.T) {
+	wd, _ := os.Getwd()
+	for name, tail := range map[string]string{"exit 0": "", "exit 1": "exit 1\n"} {
+		t.Run(name, func(t *testing.T) {
+			_, bin := fakeCLI(t, "cat >/dev/null\ncat "+wd+"/testdata/codex-auth.jsonl\n"+tail)
+			_, _, err := NewRunner(bin, newHome(t, true), "m").Run(context.Background(), "s", "i", []byte(`{}`))
+			if connect.CodeOf(err) != connect.CodeUnauthenticated {
+				t.Fatalf("err = %v", err)
+			}
+			if strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "Unauthorized") {
+				t.Errorf("error carries the CLI's text: %v", err)
+			}
+		})
+	}
+}
+
+func TestOtherErrorStaysInternal(t *testing.T) {
+	_, bin := fakeCLI(t, "cat >/dev/null\necho '{\"type\":\"error\",\"message\":\"the network is down\"}'\n")
+	_, _, err := NewRunner(bin, newHome(t, true), "m").Run(context.Background(), "s", "i", []byte(`{}`))
+	if connect.CodeOf(err) != connect.CodeInternal {
+		t.Fatalf("err = %v", err)
 	}
 }
 

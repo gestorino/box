@@ -32,10 +32,10 @@ type phoneSettings struct {
 	whatsapp bool
 }
 
-func (s *phoneSettings) Agent(context.Context) (string, bool, error) {
+func (s *phoneSettings) Answering(context.Context) ([]string, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return "claude", s.whatsapp, nil
+	return []string{"claude"}, s.whatsapp, nil
 }
 func (s *phoneSettings) OwnerPhone(context.Context) (string, error) {
 	s.mu.Lock()
@@ -321,14 +321,14 @@ func (l lastHeard) LastHeard(context.Context, string) (time.Time, bool, error) {
 
 func TestASwitchThatCantBeReadStillKeepsTheMessage(t *testing.T) {
 	now := time.Now()
-	s := &fakeSettings{agent: "claude", whatsapp: true}
+	s := &fakeSettings{agents: []string{"claude"}, whatsapp: true}
 	s.fail(1)
 	o := &fakeOwners{got: make(chan ownerMsg, 1)}
 	deliver(context.Background(), o, s, func() time.Time { return now }, "351912345678", wa("351912345678", "x", now))
 	if len(o.got) != 1 {
 		t.Fatal("hostd away dropped the owner's message: the hub keeps it and decides once it can read the switch")
 	}
-	s.set("claude", false)
+	s.set(false, "claude")
 	deliver(context.Background(), o, s, func() time.Time { return now }, "351912345678", wa("351912345678", "y", now))
 	if len(o.got) != 1 {
 		t.Fatal("a message reached the hub with the switch off")

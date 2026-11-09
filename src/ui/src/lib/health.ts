@@ -1,3 +1,4 @@
+import type { AgentStatus } from './agent'
 import { CONNECTORS, type ConnectorName } from './connectors'
 import { ago } from './format'
 
@@ -62,4 +63,13 @@ export function markOf(h: Health, t: Times, now: number): Mark {
   if (h.kind === 'ok' || (h.kind === 'down' && !outage)) return { tone: 'ok', reason: 'Working', lines: [`Checked ${ago(t.okAt ?? t.checkedAt, now)}`] }
   const when = t.okAt === undefined ? `Checked ${ago(t.checkedAt, now)}` : `Last worked ${ago(t.okAt, now)}`
   return { tone: h.kind === 'attention' ? 'attention' : 'outage', reason: h.reason, lines: [when, h.hint] }
+}
+
+/** An added agent's sidebar mark, from its own status alone: grey while its daemon doesn't answer,
+ *  amber when the owner must act (sign it in again, or wait out its plan's limit), else green. */
+export function agentMark(a: AgentStatus): Mark {
+  if (!a.reachable) return { tone: 'outage', reason: 'Not reachable', lines: [] }
+  if (!a.signed_in) return { tone: 'attention', reason: 'Not signed in', lines: [] }
+  if (a.limited_at) return { tone: 'attention', reason: "Out of its plan's limit", lines: [] }
+  return { tone: 'ok', reason: 'Signed in', lines: [] }
 }

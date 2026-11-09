@@ -366,20 +366,21 @@ func TestTheChosenAgentIsClearedWhenItsUnitIsRemoved(t *testing.T) {
 	if err := s.AddConnector(ctx, "codex"); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetAgent(ctx, Agent{Agent: "codex", Answer: AgentAnswer{WhatsApp: true}}); err != nil {
+	addAgents(t, st, "claude", "codex")
+	if err := st.SetAgent(ctx, Agent{Primary: "codex", Answer: AgentAnswer{WhatsApp: true}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RemoveConnector(ctx, "claude"); err != nil { // another agent: the choice stays
 		t.Fatal(err)
 	}
-	if a, _ := st.Agent(ctx); a.Agent != "codex" {
+	if a, _ := st.Agent(ctx); a.Primary != "codex" {
 		t.Fatalf("%+v", a)
 	}
 	if err := s.RemoveConnector(ctx, "codex"); err != nil {
 		t.Fatal(err)
 	}
 	a, err := st.Agent(ctx)
-	if err != nil || a.Agent != "" || !a.Answer.WhatsApp {
+	if err != nil || a.Primary != "" || !a.Answer.WhatsApp {
 		t.Fatalf("%+v %v", a, err)
 	}
 }
@@ -389,7 +390,8 @@ func TestRemovingWhatsAppSwitchesOffTheAgentsAnswerThere(t *testing.T) {
 	if err := s.AddConnector(ctx, "whatsapp"); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetAgent(ctx, Agent{Agent: "claude", Answer: AgentAnswer{WhatsApp: true}}); err != nil {
+	addAgents(t, st, "claude")
+	if err := st.SetAgent(ctx, Agent{Primary: "claude", Answer: AgentAnswer{WhatsApp: true}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RemoveConnector(ctx, "telegram"); err != nil { // another channel: the switch stays
@@ -402,7 +404,7 @@ func TestRemovingWhatsAppSwitchesOffTheAgentsAnswerThere(t *testing.T) {
 		t.Fatal(err)
 	}
 	a, err := st.Agent(ctx)
-	if err != nil || a.Agent != "claude" || a.Answer.WhatsApp {
+	if err != nil || a.Primary != "claude" || a.Answer.WhatsApp {
 		t.Fatalf("%+v %v", a, err)
 	}
 }

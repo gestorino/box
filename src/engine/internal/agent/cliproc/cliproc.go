@@ -82,3 +82,33 @@ func Fail(what, stderr string, err error, secrets ...string) error {
 	}
 	return connect.NewError(connect.CodeInternal, errors.New(msg))
 }
+
+// ErrLimit says the owner's plan has no more to give for now. It carries none of the CLI's text.
+var ErrLimit = connect.NewError(connect.CodeResourceExhausted, errors.New("the plan's limit is reached"))
+
+// LimitReached is whether a CLI's own words say the plan's usage limit is reached.
+func LimitReached(text string) bool {
+	t := strings.ToLower(text)
+	return strings.Contains(t, "usage limit") || strings.Contains(t, "limit reached")
+}
+
+// SignInRefused is whether a CLI's own words say its vendor refused the sign-in: a key or token
+// invalid, revoked or expired. The words are provisional, settled by recorded replies
+// (make test-agent-live ARGS=--record).
+func SignInRefused(text string) bool {
+	t := strings.ToLower(text)
+	for _, w := range []string{"invalid api key", "authentication", "unauthorized", "401", "oauth token", "not logged in"} {
+		if strings.Contains(t, w) {
+			return true
+		}
+	}
+	if !strings.Contains(t, "expired") {
+		return false
+	}
+	for _, w := range []string{"login", "token", "session"} {
+		if strings.Contains(t, w) {
+			return true
+		}
+	}
+	return false
+}

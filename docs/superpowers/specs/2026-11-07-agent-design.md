@@ -188,7 +188,7 @@ codex", as two daemons, "so it can be configured separately and user can choose 
 - **The console:** `/agent`, a list of conversations (channel, first words, how it ended, cost), and
   each one's page: the transcript (the owner's words, the agent's words, each tool call in plain
   words), the errands it started (linking to their run pages), and the cost. It follows
-  `docs/STYLE-GUIDE.md`.
+  `docs/STYLE-GUIDE.md`. `2026-11-08-agents-like-connectors-design.md` supersedes this for the console (`/agents`, no `/agent`) and for who answers (primary and secondary).
 
 ### 3. Calls: the voice model only speaks
 

@@ -43,12 +43,22 @@ func (f *eventForwarder) Event(e signins.RunEvent) {
 	h.RunEvent(e)
 }
 
-// ownerSettings is converse.Settings over hostd: the chosen agent and the WhatsApp switch, and the
-// owner's Contacts phone, read fresh each time.
+// ownerSettings is converse.Settings over hostd: the agents answering (the primary, then the
+// secondary) and the WhatsApp switch, and the owner's Contacts phone, read fresh each time.
 type ownerSettings struct{ hostd *signins.HostdClient }
 
-func (s ownerSettings) Agent(ctx context.Context) (string, bool, error) {
-	return s.hostd.AgentSettings(ctx)
+func (s ownerSettings) Answering(ctx context.Context) ([]string, bool, error) {
+	primary, secondary, whatsapp, err := s.hostd.AgentSettings(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	var agents []string
+	for _, name := range []string{primary, secondary} {
+		if name != "" {
+			agents = append(agents, name)
+		}
+	}
+	return agents, whatsapp, nil
 }
 
 func (s ownerSettings) OwnerPhone(ctx context.Context) (string, error) {

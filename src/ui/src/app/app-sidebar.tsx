@@ -1,4 +1,4 @@
-import { Activity, Bot, Cable, CalendarClock, ClipboardCheck, ConciergeBell, KeyRound, LayoutDashboard, type LucideIcon, Menu, ScrollText, Settings, UserRound } from 'lucide-react'
+import { Activity, Cable, CalendarClock, ClipboardCheck, ConciergeBell, KeyRound, LayoutDashboard, type LucideIcon, Menu, ScrollText, Settings, UserRound } from 'lucide-react'
 import { Fragment, type ReactNode } from 'react'
 import { NavLink, useLocation } from 'react-router'
 import { StatusDot } from '@/components/status-dot'
@@ -19,22 +19,24 @@ import {
   SidebarSeparator,
 } from '@/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { useAgents } from '@/hooks/use-agents'
 import { useConnectors } from '@/hooks/use-connectors'
 import { useEngineStatus } from '@/hooks/use-engine-status'
 import { useHealth } from '@/hooks/use-health'
 import { useUnread } from '@/hooks/use-unread'
+import { AGENT_ROLES, type AgentName, AGENTS } from '@/lib/agent'
 import { CONNECTORS, SECTIONS } from '@/lib/connectors'
 import { formatBuild } from '@/lib/format'
-import type { Mark } from '@/lib/health'
+import { agentMark, type Mark } from '@/lib/health'
 
-interface NavItem { to: string; label: string; icon: LucideIcon; mark?: ReactNode; unread?: number }
+/** tooltip: the collapsed sidebar's tip, when it says more than the label. */
+interface NavItem { to: string; label: string; tooltip?: string; icon: LucideIcon; mark?: ReactNode; unread?: number }
 
 const CONSOLE: NavItem[] = [
   { to: '/', label: 'Overview', icon: LayoutDashboard },
   { to: '/connections', label: 'Connections', icon: Cable },
   { to: '/accounts', label: 'Accounts', icon: KeyRound },
   { to: '/errands', label: 'Errands', icon: ClipboardCheck },
-  { to: '/agent', label: 'Agent', icon: Bot },
   { to: '/appointments', label: 'Appointments', icon: CalendarClock },
   { to: '/logs', label: 'Logs', icon: ScrollText },
 ]
@@ -64,6 +66,7 @@ export function AppSidebar() {
       <SidebarContent>
         <NavGroup label="Console" sections={[CONSOLE]} />
         <ConnectorsGroup />
+        <AgentsGroup />
         {/* The owner's Account and the box's own pages sit at the bottom, out of the way of the day-to-day ones. */}
         <NavGroup label="System" sections={[SYSTEM]} className="mt-auto" />
       </SidebarContent>
@@ -95,6 +98,38 @@ function ConnectorsGroup() {
       action={
         <SidebarGroupAction asChild title="Manage connectors">
           <NavLink to="/connectors" aria-label="Manage connectors">
+            <Menu aria-hidden />
+          </NavLink>
+        </SidebarGroupAction>
+      }
+    />
+  )
+}
+
+// The owner's agents: only the added ones, the primary first, each with its status circle; its
+// role is in the tip, not the row. The ☰ opens the Agents page, where they are added.
+function AgentsGroup() {
+  const { agents, roleOf } = useAgents()
+  const primaryFirst = (n: AgentName) => (roleOf(n) === 'primary' ? 0 : 1)
+  const added = (agents ?? []).filter((a) => a.state === 'added').sort((a, b) => primaryFirst(a.name) - primaryFirst(b.name))
+  const items = added.map((a): NavItem => {
+    const meta = AGENTS[a.name]
+    const role = roleOf(a.name)
+    return {
+      to: meta.path,
+      label: meta.label,
+      tooltip: role ? `${meta.label} · ${AGENT_ROLES[role]}` : meta.label,
+      icon: meta.icon,
+      mark: <HealthMark mark={agentMark(a)} to={`${meta.path}?settings=1`} />,
+    }
+  })
+  return (
+    <NavGroup
+      label="Agents"
+      sections={items.length > 0 ? [items] : []}
+      action={
+        <SidebarGroupAction asChild title="Manage agents">
+          <NavLink to="/agents" aria-label="Manage agents">
             <Menu aria-hidden />
           </NavLink>
         </SidebarGroupAction>
@@ -149,11 +184,11 @@ function NavGroup({ label, sections, action, className }: { label: string; secti
           <Fragment key={items[0].to}>
             {i > 0 && <SidebarSeparator className="my-2" />}
             <SidebarMenu>
-          {items.map(({ to, label, icon: Icon, mark, unread }) => (
+          {items.map(({ to, label, tooltip, icon: Icon, mark, unread }) => (
             <SidebarMenuItem key={to}>
               <SidebarMenuButton
                 asChild
-                tooltip={label}
+                tooltip={tooltip ?? label}
                 isActive={to === '/' ? pathname === '/' : pathname.startsWith(to)}
               >
                 <NavLink to={to}>
