@@ -19,10 +19,13 @@ import (
 
 var loginWait = 60 * time.Second
 
+// The terminal the sign-in runs on: wide enough that the link and the token each fit on one row.
+const cols, rows = 1000, 50
+
 var (
-	urlRe = regexp.MustCompile(`https://\S+\s`)
-	// The token counts only once its line is complete: a read may split it.
-	tokenRe  = regexp.MustCompile(`(sk-ant-\S+)\n`)
+	// Both are read off the screen's rows, judged once drawn (cliproc.Session.Await).
+	urlRe    = regexp.MustCompile(`https://\S+`)
+	tokenRe  = regexp.MustCompile(`sk-ant-\S+`)
 	errNoJob = connect.NewError(connect.CodeFailedPrecondition, errors.New("no sign-in in progress"))
 )
 
@@ -43,19 +46,18 @@ func (l *Login) Start(ctx context.Context) (*agentv1.LoginStartResponse, error) 
 	}
 	cmd := exec.Command(l.bin, "setup-token")
 	cmd.Env = cliEnv("HOME=" + l.home)
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 50, Cols: 1000}) // its own session and group
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: rows, Cols: cols}) // its own session and group
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("starting the sign-in failed"))
 	}
-	s := cliproc.NewSession(cmd, ptmx)
-	s.Input = ptmx
+	s := cliproc.NewTermSession(cmd, ptmx, cols, rows)
 	l.pending.Set(s)
 	out, ok := s.Await(ctx, loginWait, urlRe.MatchString)
 	if !ok {
 		l.pending.Release(s)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("the sign-in gave no link"))
 	}
-	return &agentv1.LoginStartResponse{Url: strings.TrimSpace(urlRe.FindString(out)), NeedsCode: true}, nil
+	return &agentv1.LoginStartResponse{Url: urlRe.FindString(out), NeedsCode: true}, nil
 }
 
 // Finish types the owner's code to the pending sign-in and keeps the token it prints. A Start or
@@ -73,7 +75,7 @@ func (l *Login) Finish(ctx context.Context, code string) error {
 	if !ok {
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("the code was not accepted, start again"))
 	}
-	if err := writeToken(l.home, tokenRe.FindStringSubmatch(out)[1]); err != nil {
+	if err := writeToken(l.home, tokenRe.FindString(out)); err != nil {
 		return connect.NewError(connect.CodeInternal, errors.New("keeping the token failed"))
 	}
 	return nil

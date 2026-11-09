@@ -189,15 +189,15 @@ func TestASignInRefusedIsUnauthenticated(t *testing.T) {
 	}
 }
 
+// setupTokenScript draws as the real CLI does: words placed by column (ESC[nG), rows reached by
+// cursor moves (ESC[nB), never a newline; it ends half a second after showing the token.
 const setupTokenScript = `if [ "$1" = "--version" ]; then echo "2.1.319 (Claude Code)"; exit 0; fi
 [ "$1" = "setup-token" ] || exit 9
-echo "Open this URL to sign in:"
-echo "https://claude.ai/oauth/authorize?code=true&client_id=x"
-printf "Paste code here: "
+printf '\033[2J\033[H Browser\033[10Gdidn'"'"'t\033[17Gopen?\r\033[2B\033[1Chttps://claude.ai/oauth/authorize?code=true&client_id=x\r\033[2B\033[1CPaste\033[8Gcode\033[13Ghere\033[18G>\033[20G'
 read code
-[ "$code" = "abc" ] || { echo "bad code"; exit 1; }
-echo "Your token:"
-echo "sk-ant-oat01-x"
+[ "$code" = "abc" ] || { printf '\r\033[2B\033[1COAuth\033[7Gerror\r\033[1B'; exit 1; }
+printf '\r\033[2B\033[1C\342\234\223\033[4GLong-lived\033[15Gtoken\033[21Gcreated\r\033[2B\033[1CYour\033[6GOAuth\033[12Gtoken:\r\033[2B\033[1C\033[33msk-ant-oat01-x\033[39m\r\033[2B\033[1CStore\033[7Gthis\033[12Gtoken\033[18Gsecurely.\r\033[1B'
+sleep 0.5
 `
 
 func TestLoginStartGivesTheLinkAndFinishKeepsTheToken(t *testing.T) {
@@ -279,13 +279,14 @@ func TestStatusReadsVersion(t *testing.T) {
 	}
 }
 
-func TestTheTokenIsKeptWholeWhenItsLineArrivesInTwoReads(t *testing.T) {
+func TestTheTokenIsKeptWholeWhenItsRowArrivesInTwoReads(t *testing.T) {
 	_, bin := fakeCLI(t, `[ "$1" = "setup-token" ] || exit 9
-echo "https://claude.ai/oauth/authorize?x=1"
+printf '\033[1Chttps://claude.ai/oauth/authorize?x=1\r\033[2B'
 read code
-printf "sk-ant-oat01-ab"
-sleep 0.4
-echo "cdef"
+printf '\r\033[2B\033[1Csk-ant-oat01-ab'
+sleep 0.05
+printf 'cdef\r\033[2B\033[1CStore'
+sleep 0.5
 `)
 	home := filepath.Join(homeWithToken(t, ""), "agent")
 	l := NewLogin(bin, home)
