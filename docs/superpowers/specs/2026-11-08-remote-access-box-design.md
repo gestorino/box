@@ -4,9 +4,8 @@ Status: draft for the owner's review, 2026-11-08.
 
 Part of three. **Only this one is public** (the owner): the control plane (a Cloudflare Worker:
 accounts, the box registry, claiming, frps's hooks) and the relay (frps on a VPS) are the maker's
-service, built and kept in a private repo of their own (`cloud/`, git-ignored here, like
-`ansible/`). What the box needs from them is the contract below; nothing in this tree depends on
-their code.
+service, built and kept in private repos of their own, outside this tree. What the box needs from
+them is the contract below; nothing in this tree depends on their code.
 
 What stays checkable from this tree alone: the phone's TLS ends on the box, the box checks the
 relay's certificate, and the box tells the control plane only its `box_id`, its secret, the
