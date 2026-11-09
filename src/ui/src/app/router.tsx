@@ -2,6 +2,8 @@ import { Navigate, type RouteObject } from 'react-router'
 import { ConnectorGate } from '@/components/connector-page'
 import { AgentPage } from '@/pages/agent'
 import { AgentConversationPage } from '@/pages/agent-conversation'
+import { AgentSetupPage } from '@/pages/agent-setup'
+import { AgentsPage } from '@/pages/agents'
 import { AccountPage } from '@/pages/account'
 import { Connections } from '@/pages/connections'
 import { ConnectorSetupPage } from '@/pages/connector-setup'
@@ -62,6 +64,8 @@ export const routes: RouteObject[] = [
           { path: 'errands/runs/:run/logs', element: <ErrandRunLogPage />, ...page('Errands') },
           { path: 'agent', element: <AgentPage />, ...page('Agent') },
           { path: 'agent/:id', element: <AgentConversationPage />, ...page('Agent') },
+          { path: 'agents', element: <AgentsPage />, ...page('Agents') },
+          { path: 'agents/:name/setup', element: <AgentSetupPage />, ...page('Agents') },
           { path: 'appointments', element: <AppointmentsPage />, ...page('Appointments') },
           { path: 'account', element: <AccountPage />, ...page('Account') },
           { path: 'logs', element: <Logs />, ...page('Logs') },

@@ -1,24 +1,34 @@
+import { type LucideIcon, Sparkles, SquareTerminal } from 'lucide-react'
 import { request } from './http'
 
-// The owner's agent: Claude or Codex answers the owner on a channel (src/engine/internal/converse,
-// served as /api/v1/agents and /api/v1/conversations; hostd's choice as /api/v1/settings/agent).
-// Change these with the Go types. A login never leaves its daemon: the console only relays the
-// link and the code the owner pastes.
+// The owner's agents: Claude and Codex answer the owner on a channel (src/engine/internal/converse,
+// served as /api/v1/agents and /api/v1/conversations; hostd's roles as /api/v1/settings/agent).
+// Each is a hostd connector of its own group, added once signed in. Change these with the Go types.
+// A login never leaves its daemon: the console only relays the link and the code the owner pastes.
 
 export type AgentName = 'claude' | 'codex'
-export const AGENTS: { name: AgentName; label: string }[] = [
-  { name: 'claude', label: 'Claude' },
-  { name: 'codex', label: 'Codex' },
-]
-export const agentLabel = (name: string) => AGENTS.find((a) => a.name === name)?.label ?? name
+export const AGENT_NAMES: AgentName[] = ['claude', 'codex']
+export const AGENTS: Record<AgentName, { label: string; icon: LucideIcon; description: string; path: string }> = {
+  claude: { label: 'Claude', icon: Sparkles, description: 'Your Claude plan, through Claude Code.', path: '/agents/claude' },
+  codex: { label: 'Codex', icon: SquareTerminal, description: 'Your ChatGPT plan, through Codex.', path: '/agents/codex' },
+}
+export const agentLabel = (name: string) => (Object.hasOwn(AGENTS, name) ? AGENTS[name as AgentName].label : name)
+/** An agent's setup page, where Add and Finish setup land. */
+export const agentSetupPath = (name: AgentName) => `/agents/${name}/setup`
 
 /** Its connector in hostd; '' when hostd can't say. An agent not added runs no daemon: not reachable, and no fault. */
 export type AgentConnectorState = 'not_added' | 'setting_up' | 'added' | ''
-export interface AgentStatus { name: AgentName; signed_in: boolean; account: string; cli_version: string; model: string; reachable: boolean; state: AgentConnectorState }
-/** Which agent answers (none: ""), and on which channels. */
-export interface AgentSettings { agent: AgentName | ''; answer: { whatsapp: boolean } }
+/** limited_at: when it last said its plan's limit was reached, until its next step that works. */
+export interface AgentStatus { name: AgentName; signed_in: boolean; account: string; cli_version: string; model: string; reachable: boolean; state: AgentConnectorState; limited_at?: string }
+/** The primary answers; the secondary (the other agent, when added) when the primary can't. hostd
+ *  keeps the primary and derives the secondary; a PUT's secondary is ignored. */
+export interface AgentSettings { primary: AgentName | ''; secondary: AgentName | ''; answer: { whatsapp: boolean } }
+export type AgentRole = 'primary' | 'secondary'
+export const AGENT_ROLES: Record<AgentRole, string> = { primary: 'Primary', secondary: 'Secondary' }
 /** needs_code: Claude (the owner pastes the code the page shows); otherwise Codex shows the code itself. */
 export interface AgentLogin { url: string; code: string; needs_code: boolean }
+
+export const AGENTS_POLL_MS = 10_000
 
 export const getAgents = (signal?: AbortSignal) => request<AgentStatus[]>('GET', '/api/v1/agents', undefined, signal)
 export const getAgentSettings = (signal?: AbortSignal) => request<AgentSettings>('GET', '/api/v1/settings/agent', undefined, signal)

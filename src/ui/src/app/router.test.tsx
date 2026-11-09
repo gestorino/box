@@ -32,6 +32,9 @@ describe('routes', () => {
     ['/email', 'Email'],
     ['/style-guide', 'Style guide'],
     ['/connectors', 'Connectors'],
+    ['/agents', 'Agents'],
+    ['/agents/claude/setup', 'Add Claude'],
+    ['/agents/nobody/setup', 'Page not found'],
     ['/settings/wifi', 'Settings'],
     ['/settings/sim', 'Settings'],
     ['/settings/ai', 'Settings'],
@@ -86,7 +89,7 @@ describe('routes', () => {
     stubFetch({ 'GET /api/v1/connectors': { body: connectors(['sms', 'email', 'telegram']) } })
     render(<RouterProvider router={createMemoryRouter(routes, { initialEntries: ['/'] })} />)
     expect(await screen.findByRole('link', { name: 'SMS' })).toBeInTheDocument()
-    expect(sections(group('Console'))).toEqual([['Overview', 'Connections', 'Accounts', 'Errands', 'Agent', 'Appointments', 'Logs']])
+    expect(sections(group('Console'))).toEqual([['Overview', 'Connections', 'Accounts', 'Errands', 'Appointments', 'Logs']])
     expect(sections(group('System'))).toEqual([['Account', 'Settings', 'Health']])
     expect(sections(group('Connectors'))).toEqual([['Email'], ['SMS'], ['Telegram']])
     expect(group('Connectors').querySelectorAll('[data-sidebar="separator"]')).toHaveLength(2)
@@ -172,6 +175,53 @@ describe('routes', () => {
     render(<RouterProvider router={createMemoryRouter(routes, { initialEntries: ['/'] })} />)
     expect(await screen.findByRole('link', { name: 'Manage connectors' })).toBeInTheDocument()
     expect(sections(group('Connectors'))).toEqual([])
+  })
+
+  const agentRow = (name: string, o: object = {}) => ({ name, signed_in: true, account: '', cli_version: '', model: '', reachable: true, state: 'added', ...o })
+  const roles = (primary: string, secondary = '') => ({ body: { primary, secondary, answer: { whatsapp: false } } })
+
+  it('the Agents group lists only added agents, the primary first even when it is Codex, and ☰ opens /agents', async () => {
+    stubFetch({ 'GET /api/v1/agents': { body: [agentRow('claude'), agentRow('codex')] }, 'GET /api/v1/settings/agent': roles('codex', 'claude') })
+    render(<RouterProvider router={createMemoryRouter(routes, { initialEntries: ['/'] })} />)
+    await waitFor(() => expect(sections(group('Agents'))).toEqual([['Codex', 'Claude']]))
+    expect(screen.getByRole('link', { name: 'Codex' })).toHaveAttribute('href', '/agents/codex')
+    expect(screen.getByRole('link', { name: 'Manage agents' })).toHaveAttribute('href', '/agents')
+    expect(within(group('Console')).queryByRole('link', { name: 'Agent' })).toBeNull()
+  })
+
+  it('an agent not added has no row', async () => {
+    stubFetch({ 'GET /api/v1/agents': { body: [agentRow('claude'), agentRow('codex', { state: 'setting_up' })] }, 'GET /api/v1/settings/agent': roles('claude') })
+    render(<RouterProvider router={createMemoryRouter(routes, { initialEntries: ['/'] })} />)
+    await waitFor(() => expect(sections(group('Agents'))).toEqual([['Claude']]))
+  })
+
+  it('with no agent added the Agents group holds only its menu', async () => {
+    stubFetch({})
+    render(<RouterProvider router={createMemoryRouter(routes, { initialEntries: ['/'] })} />)
+    expect(await screen.findByRole('link', { name: 'Manage agents' })).toBeInTheDocument()
+    expect(sections(group('Agents'))).toEqual([])
+  })
+
+  it('an agent not signed in has an amber circle that opens its settings; one not reachable a grey one; a working one green', async () => {
+    stubFetch({
+      'GET /api/v1/agents': { body: [agentRow('claude', { signed_in: false }), agentRow('codex', { reachable: false, signed_in: false })] },
+      'GET /api/v1/settings/agent': roles('claude', 'codex'),
+    })
+    render(<RouterProvider router={createMemoryRouter(routes, { initialEntries: ['/'] })} />)
+    const amber = await screen.findByRole('link', { name: 'Not signed in' })
+    expect(amber).toHaveAttribute('href', '/agents/claude?settings=1')
+    expect(amber.querySelector('[data-tone]')).toHaveAttribute('data-tone', 'attention')
+    const grey = screen.getByRole('link', { name: 'Not reachable' })
+    expect(grey).toHaveAttribute('href', '/agents/codex?settings=1')
+    expect(grey.querySelector('[data-tone]')).toHaveAttribute('data-tone', 'outage')
+  })
+
+  it('a signed-in agent is only a green circle', async () => {
+    stubFetch({ 'GET /api/v1/agents': { body: [agentRow('claude'), agentRow('codex', { state: 'not_added' })] }, 'GET /api/v1/settings/agent': roles('claude') })
+    render(<RouterProvider router={createMemoryRouter(routes, { initialEntries: ['/'] })} />)
+    const green = await within(await waitFor(() => group('Agents'))).findByRole('img', { name: 'Signed in' })
+    expect(green.closest('a')).toBeNull()
+    expect(green.querySelector('[data-tone]')).toHaveAttribute('data-tone', 'ok')
   })
 
   it('an unknown path says so', async () => {
