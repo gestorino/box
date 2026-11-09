@@ -173,6 +173,22 @@ func TestLimitIsResourceExhausted(t *testing.T) {
 	}
 }
 
+func TestASignInRefusedIsUnauthenticated(t *testing.T) {
+	wd, _ := os.Getwd()
+	for name, tail := range map[string]string{"exit 0": "", "exit 1": "exit 1\n"} {
+		t.Run(name, func(t *testing.T) {
+			_, bin := fakeCLI(t, "cat >/dev/null; cat "+wd+"/testdata/claude-auth.json\n"+tail)
+			_, _, err := NewRunner(bin, homeWithToken(t, "sk-ant-oat01-secret"), "m").Run(context.Background(), "s", "i", []byte(`{}`))
+			if connect.CodeOf(err) != connect.CodeUnauthenticated {
+				t.Fatalf("err = %v", err)
+			}
+			if strings.Contains(err.Error(), "sk-ant") || strings.Contains(err.Error(), "API key") || strings.Contains(err.Error(), "/login") {
+				t.Errorf("error leaks: %v", err)
+			}
+		})
+	}
+}
+
 const setupTokenScript = `if [ "$1" = "--version" ]; then echo "2.1.319 (Claude Code)"; exit 0; fi
 [ "$1" = "setup-token" ] || exit 9
 echo "Open this URL to sign in:"

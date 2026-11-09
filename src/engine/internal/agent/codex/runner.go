@@ -117,6 +117,9 @@ func (r *Runner) Run(ctx context.Context, system, input string, schema []byte) (
 			if cliproc.LimitReached(ev.Message) || cliproc.LimitReached(ev.Error.Message) {
 				return nil, nil, cliproc.ErrLimit
 			}
+			if cliproc.SignInRefused(ev.Message) || cliproc.SignInRefused(ev.Error.Message) {
+				return nil, nil, errNotSignedIn
+			}
 			if runErr != nil {
 				break
 			}

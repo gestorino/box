@@ -83,8 +83,13 @@ func (r *Runner) Run(ctx context.Context, system, input string, schema []byte) (
 	runErr := cmd.Run()
 	var rep cliReply
 	jsonErr := json.Unmarshal(stdout.Bytes(), &rep)
-	if jsonErr == nil && rep.IsError && cliproc.LimitReached(rep.Result) { // the CLI may exit non-zero with it
-		return nil, nil, cliproc.ErrLimit
+	if jsonErr == nil && rep.IsError { // the CLI may exit non-zero with either
+		if cliproc.LimitReached(rep.Result) {
+			return nil, nil, cliproc.ErrLimit
+		}
+		if cliproc.SignInRefused(rep.Result) {
+			return nil, nil, errNotSignedIn
+		}
 	}
 	if runErr != nil {
 		return nil, nil, cliproc.Fail("claude failed", stderr.String(), runErr, token)
