@@ -3,6 +3,7 @@ package claude
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -65,20 +66,48 @@ func (l *Login) Start(ctx context.Context) (*agentv1.LoginStartResponse, error) 
 func (l *Login) Finish(ctx context.Context, code string) error {
 	s := l.pending.Claim()
 	if s == nil {
+		slog.Warn("claudd: a sign-in's code came with none pending")
 		return errNoJob
 	}
 	defer l.pending.Release(s)
-	if _, err := s.Input.Write([]byte(strings.TrimSpace(code) + "\r")); err != nil {
+	// The code, then Enter once it is shown: the CLI takes Enter in the same read as a long code
+	// as part of a paste, and submits nothing.
+	_, err := s.Input.Write([]byte(strings.TrimSpace(code)))
+	if err == nil {
+		s.Await(ctx, loginWait, func(string) bool { return true })
+		_, err = s.Input.Write([]byte("\r"))
+	}
+	if err != nil {
+		slog.Warn("claudd: the sign-in ended before its code", "cli", ended(s))
 		return connect.NewError(connect.CodeInternal, errors.New("the sign-in ended before the code"))
 	}
+	begun := time.Now()
 	out, ok := s.Await(ctx, loginWait, tokenRe.MatchString)
 	if !ok {
+		// How it ended, never what the screen says: a token or the code could be on it.
+		slog.Warn("claudd: the sign-in gave no token", "cli", ended(s), "after", time.Since(begun).Round(100*time.Millisecond),
+			"token_on_screen", tokenRe.MatchString(s.Text()))
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("the code was not accepted, start again"))
 	}
 	if err := writeToken(l.home, tokenRe.FindString(out)); err != nil {
+		slog.Error("claudd: keeping the token failed", "err", err)
 		return connect.NewError(connect.CodeInternal, errors.New("keeping the token failed"))
 	}
+	slog.Info("claudd: signed in")
 	return nil
+}
+
+// ended says how the sign-in's CLI stands: its exit, or still running.
+func ended(s *cliproc.Session) string {
+	select {
+	case <-s.Exited():
+		if s.Err() == nil {
+			return "exit status 0"
+		}
+		return s.Err().Error()
+	default:
+		return "running"
+	}
 }
 
 // Logout forgets the token and ends a pending sign-in.

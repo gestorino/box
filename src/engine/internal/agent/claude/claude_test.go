@@ -190,11 +190,17 @@ func TestASignInRefusedIsUnauthenticated(t *testing.T) {
 }
 
 // setupTokenScript draws as the real CLI does: words placed by column (ESC[nG), rows reached by
-// cursor moves (ESC[nB), never a newline; it ends half a second after showing the token.
+// cursor moves (ESC[nB), never a newline; it ends half a second after showing the token. Like the
+// real one, it reads its terminal raw and takes a read that holds Enter as a paste, Enter included
+// as text: nothing is submitted until Enter comes on its own.
 const setupTokenScript = `if [ "$1" = "--version" ]; then echo "2.1.319 (Claude Code)"; exit 0; fi
 [ "$1" = "setup-token" ] || exit 9
+stty raw -echo
 printf '\033[2J\033[H Browser\033[10Gdidn'"'"'t\033[17Gopen?\r\033[2B\033[1Chttps://claude.ai/oauth/authorize?code=true&client_id=x\r\033[2B\033[1CPaste\033[8Gcode\033[13Ghere\033[18G>\033[20G'
-read code
+code=$(dd bs=4096 count=1 2>/dev/null)
+case "$code" in *"$(printf '\r')"*) sleep 30; exit 1;; esac
+printf '\033[20G***'
+[ "$(dd bs=1 count=1 2>/dev/null)" = "$(printf '\r')" ] || exit 1
 [ "$code" = "abc" ] || { printf '\r\033[2B\033[1COAuth\033[7Gerror\r\033[1B'; exit 1; }
 printf '\r\033[2B\033[1C\342\234\223\033[4GLong-lived\033[15Gtoken\033[21Gcreated\r\033[2B\033[1CYour\033[6GOAuth\033[12Gtoken:\r\033[2B\033[1C\033[33msk-ant-oat01-x\033[39m\r\033[2B\033[1CStore\033[7Gthis\033[12Gtoken\033[18Gsecurely.\r\033[1B'
 sleep 0.5
@@ -206,6 +212,9 @@ func TestLoginStartGivesTheLinkAndFinishKeepsTheToken(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(old) })
 
+	oldWait := loginWait
+	loginWait = 5 * time.Second // a code not submitted fails fast
+	t.Cleanup(func() { loginWait = oldWait })
 	_, bin := fakeCLI(t, setupTokenScript)
 	home := filepath.Join(homeWithToken(t, ""), "agent")
 	l := NewLogin(bin, home)
